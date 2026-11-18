@@ -495,7 +495,7 @@ pub(crate) fn vector_scalar_binop(
             out.h = h;
             if changes_metric_schema(op) || return_bool {
                 if !ev.enable_delayed_name_removal {
-                    out.metric = drop_metadata(&out.metric);
+                    out.metric = enh.drop_metadata_cached(&s.metric);
                 }
                 out.drop_name = true;
             }

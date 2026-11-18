@@ -1649,7 +1649,7 @@ fn clamp(vec: &[Sample], min_val: f64, max_val: f64, enh: &mut EvalNodeHelper) -
             // Process only float samples.
             continue;
         }
-        let metric = if !enh.enable_delayed_name_removal { drop_metadata(&el.metric) } else { el.metric.clone() };
+        let metric = if !enh.enable_delayed_name_removal { enh.drop_metadata_cached(&el.metric) } else { el.metric.clone() };
         enh.out.push(Sample { metric, f: go_max(min_val, go_min(max_val, el.f)), drop_name: true, ..Default::default() });
     }
     Ok(Annotations::new())
@@ -2247,7 +2247,7 @@ fn simple_float_func(vals: &[Vector], enh: &mut EvalNodeHelper, f: impl Fn(f64) 
     for el in &vals[0] {
         if el.h.is_none() {
             // Process only float samples.
-            let metric = if !delayed { drop_metadata(&el.metric) } else { el.metric.clone() };
+            let metric = if !delayed { enh.drop_metadata_cached(&el.metric) } else { el.metric.clone() };
             enh.out.push(Sample { metric, f: f(el.f), drop_name: true, ..Default::default() });
         }
     }
@@ -2312,7 +2312,7 @@ fn func_pi(_: &[Vector], _: &[SeriesView<'_>], _: &[Expr], enh: &mut EvalNodeHel
 fn func_timestamp(vals: &[Vector], _: &[SeriesView<'_>], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     let delayed = enh.enable_delayed_name_removal;
     for el in &vals[0] {
-        let metric = if !delayed { drop_metadata(&el.metric) } else { el.metric.clone() };
+        let metric = if !delayed { enh.drop_metadata_cached(&el.metric) } else { el.metric.clone() };
         enh.out.push(Sample { metric, f: el.t as f64 / 1000.0, drop_name: true, ..Default::default() });
     }
     Ok(Annotations::new())
@@ -2331,7 +2331,7 @@ fn func_start_timestamp(vals: &[Vector], _: &[SeriesView<'_>], _: &[Expr], enh: 
             // Only return results if start timestamps slice is populated.
             continue;
         }
-        let metric = if !delayed { drop_metadata(&el.metric) } else { el.metric.clone() };
+        let metric = if !delayed { enh.drop_metadata_cached(&el.metric) } else { el.metric.clone() };
         enh.out.push(Sample { metric, f: floats[i] as f64 / 1000.0, drop_name: true, ..Default::default() });
     }
     enh.start_timestamps = sts;
@@ -2442,7 +2442,7 @@ fn simple_histogram_func(vals: &[Vector], enh: &mut EvalNodeHelper, f: impl Fn(&
     for el in &vals[0] {
         if let Some(h) = &el.h {
             // Process only histogram samples.
-            let metric = if !delayed { drop_metadata(&el.metric) } else { el.metric.clone() };
+            let metric = if !delayed { enh.drop_metadata_cached(&el.metric) } else { el.metric.clone() };
             enh.out.push(Sample { metric, f: f(h), drop_name: true, ..Default::default() });
         }
     }
@@ -3174,7 +3174,7 @@ fn date_wrapper(vals: &[Vector], enh: &mut EvalNodeHelper, f: fn(u64) -> i64) ->
             continue;
         }
         let t = abs_sec(go_f64_to_i64(el.f));
-        let metric = if !delayed { drop_metadata(&el.metric) } else { el.metric.clone() };
+        let metric = if !delayed { enh.drop_metadata_cached(&el.metric) } else { el.metric.clone() };
         enh.out.push(Sample { metric, f: f(t) as f64, drop_name: true, ..Default::default() });
     }
     Ok(Annotations::new())

@@ -144,6 +144,10 @@ pub struct EvalNodeHelper {
 
     // Info series matching.
     pub(crate) right_str_sigs: HashMap<String, Sample>,
+
+    /// The labels without metric name, type and unit, by the address of the input label buffer. The input
+    /// labels are kept in the value, so the address stays unique.
+    pub(crate) drop_cache: FxMap<(usize, usize), (Labels, Labels)>,
 }
 
 impl EvalNodeHelper {
@@ -181,6 +185,19 @@ impl EvalNodeHelper {
         } else {
             self.matched_sigs.iter_mut().for_each(|s| s.clear());
         }
+    }
+
+    /// `l` without metric name, type and unit (Go `DropReserved(schema.IsMetadataLabel)`), cached across steps.
+    #[inline]
+    pub(crate) fn drop_metadata_cached(&mut self, l: &Labels) -> Labels {
+        let d = l.data();
+        let key = (d.as_ptr() as usize, d.len());
+        if let Some((_, out)) = self.drop_cache.get(&key) {
+            return out.clone();
+        }
+        let out = drop_metadata(l);
+        self.drop_cache.insert(key, (l.clone(), out.clone()));
+        out
     }
 
     /// Go `resetBuilder`: the label builder, reset to `lbls`.
