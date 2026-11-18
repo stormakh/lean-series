@@ -122,7 +122,10 @@ pub struct EvalNodeHelper {
     pub enable_delayed_name_removal: bool,
 
     // Caches of histogram_quantile, histogram_fraction and histogram_quantiles.
-    pub(crate) signature_to_metric_with_buckets: HashMap<Vec<u8>, MetricWithBuckets>,
+    pub(crate) signature_to_metric_with_buckets: FxMap<Vec<u8>, MetricWithBuckets>,
+    /// The parsed `le` label and the signature without it, by the address of the input label buffer (the input
+    /// labels are kept in the value).
+    pub(crate) bucket_cache: FxMap<(usize, usize), (Labels, Option<f64>, Vec<u8>)>,
     pub(crate) native_histogram_samples: Vec<Sample>,
     pub(crate) quantile_strs: HashMap<u64, String>,
     pub(crate) signature_to_labels_with_quantile: HashMap<Vec<u8>, HashMap<u64, Labels>>,

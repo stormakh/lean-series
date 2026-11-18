@@ -2534,26 +2534,38 @@ impl EvalNodeHelper {
                 self.native_histogram_samples.push(sample.clone());
                 continue;
             }
-            let bucket_label = sample.metric.get(BUCKET_LABEL);
-            let upper_bound = match parse_bucket_bound(bucket_label) {
-                Some(u) if !u.is_nan() => u,
-                _ => {
+            // The same input series gives the same label buffer at every step: parse `le` and build the
+            // signature once.
+            let d = sample.metric.data();
+            let key = (d.as_ptr() as usize, d.len());
+            if !self.bucket_cache.contains_key(&key) {
+                let ub = parse_bucket_bound(sample.metric.get(BUCKET_LABEL)).filter(|u| !u.is_nan());
+                let mut sig = Vec::new();
+                if ub.is_some() {
+                    sample.metric.bytes_without_labels(&mut sig, &EXCLUDED_LABELS);
+                }
+                self.bucket_cache.insert(key, (sample.metric.clone(), ub, sig));
+            }
+            let (_, ub, sig) = &self.bucket_cache[&key];
+            let upper_bound = match ub {
+                Some(u) => *u,
+                None => {
+                    let bucket_label = sample.metric.get(BUCKET_LABEL);
                     let name = if self.enable_delayed_name_removal { sample.metric.get(METRIC_NAME) } else { "" };
                     annos.add(annos::new_bad_bucket_label_warning(name, bucket_label, pos));
                     continue;
                 }
             };
-            sample.metric.bytes_without_labels(&mut self.lbl_buf, &EXCLUDED_LABELS);
             let bucket = Bucket { upper_bound, count: sample.f };
-            if let Some(mb) = self.signature_to_metric_with_buckets.get_mut(self.lbl_buf.as_slice()) {
+            if let Some(mb) = self.signature_to_metric_with_buckets.get_mut(sig.as_slice()) {
                 mb.buckets.push(bucket);
                 continue;
             }
+            let sig = sig.clone();
             let mut b = Builder::new(sample.metric.clone());
             b.del_many(&EXCLUDED_LABELS);
             let metric = b.labels();
-            self.signature_to_metric_with_buckets
-                .insert(self.lbl_buf.clone(), MetricWithBuckets { metric, buckets: vec![bucket] });
+            self.signature_to_metric_with_buckets.insert(sig, MetricWithBuckets { metric, buckets: vec![bucket] });
         }
 
         for idx in 0..self.native_histogram_samples.len() {
