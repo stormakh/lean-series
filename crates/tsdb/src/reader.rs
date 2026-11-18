@@ -116,6 +116,19 @@ pub trait ChunkReader: Send + Sync {
     fn chunk_or_iterable(&self, meta: &Meta) -> Result<ChunkOrIterable, Error>;
     /// Releases the resources of the reader.
     fn close(&self) -> Result<(), Error>;
+
+    /// Go `ChunkReaderWithCopy.ChunkOrIterableWithCopy`: like [`ChunkReader::chunk_or_iterable`], but an open
+    /// head chunk is copied, and the real max time of the chunk is returned with it (the head index gives
+    /// `i64::MAX` for the open chunk). `None` when the reader does not implement it (Go: the type assertion
+    /// fails); the caller then uses `chunk_or_iterable`.
+    fn chunk_or_iterable_with_copy(&self, meta: &Meta) -> Option<Result<(ChunkOrIterable, i64), Error>> {
+        let _ = meta;
+        None
+    }
+
+    /// Go `chunkCacheEnabler.EnableChunkCache`: enables an in-memory head-chunk cache when the reader has one
+    /// (the queriers call it for range queries and compaction). No effect by default.
+    fn enable_chunk_cache(&self) {}
 }
 
 /// Go `BlockReader`: read access to a data block (a persisted block, the head, a range of the head, ...).

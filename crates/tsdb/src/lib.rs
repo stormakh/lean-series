@@ -13,11 +13,20 @@
 //! - Logging goes through [`Logger`] (Go `*slog.Logger`); the default discards everything.
 //! - Self-instrumentation values are plain atomics ([`metrics`]) with upstream metric names in comments.
 
+pub mod block;
+// Needs the head; enable with `--cfg head` (RUSTFLAGS) until the head is merged, then drop the cfg.
+#[cfg(head)]
+pub mod blockwriter;
+pub mod compact;
 pub mod exemplar;
 pub mod meta;
 pub mod metrics;
 pub mod querier;
+pub mod query_cost;
 pub mod reader;
+pub mod repair;
+#[cfg(head)]
+pub mod tsdbblockutil;
 pub mod tsdbutil;
 
 pub use meta::*;
@@ -25,6 +34,56 @@ pub use reader::*;
 
 /// The logger of the TSDB (Go `*slog.Logger`).
 pub use tsdb_format::record::Logger;
+
+/// Converts an index error to a storage error with the same text. Context errors keep `errors.Is` semantics
+/// (they wrap `storage::ERR_CANCELED` or `storage::ERR_DEADLINE_EXCEEDED`).
+pub(crate) fn index_err(e: tsdb_format::index::Error) -> storage::Error {
+    if e.is_context() {
+        let target = if e.to_string().ends_with("context deadline exceeded") {
+            storage::ERR_DEADLINE_EXCEEDED
+        } else {
+            storage::ERR_CANCELED
+        };
+        if e.to_string() == target.to_string() {
+            return target;
+        }
+        return storage::Error::wrapped(e.to_string(), target);
+    }
+    storage::Error::other(e)
+}
+
+/// Converts a storage error to an index error with the same text (for postings that carry an index error).
+pub(crate) fn to_index_err(e: &storage::Error) -> tsdb_format::index::Error {
+    use tsdb_format::index::Error as IErr;
+    if let Some(ie) = e.downcast_ref::<IErr>() {
+        if ie.to_string() == e.to_string() {
+            return ie.clone();
+        }
+        return IErr::with_cause(e.to_string(), ie.clone());
+    }
+    let ctx = if e.is(&storage::ERR_CANCELED) {
+        Some("context canceled")
+    } else if e.is(&storage::ERR_DEADLINE_EXCEEDED) {
+        Some("context deadline exceeded")
+    } else {
+        None
+    };
+    match ctx {
+        Some(c) if e.to_string() == c => IErr::context(c),
+        Some(c) => IErr::with_cause(e.to_string(), IErr::context(c)),
+        None => IErr::new(e.to_string()),
+    }
+}
+
+/// Converts a tombstones error to a storage error with the same text.
+pub(crate) fn tomb_err(e: tsdb_format::tombstones::Error) -> storage::Error {
+    storage::Error::other(e)
+}
+
+/// Converts a chunks error to a storage error with the same text.
+pub(crate) fn chunks_err(e: tsdb_format::chunks::Error) -> storage::Error {
+    storage::Error::other(e)
+}
 
 /// The OS part of an I/O error, as Go prints it (for example "no such file or directory").
 pub(crate) fn io_err_text(e: &std::io::Error) -> String {
