@@ -9,6 +9,9 @@ yaml = { path = "../yaml" }
 json = { path = "../json" }
 model = { path = "../model" }
 net = { path = "../net" }
+crypto = { path = "../crypto" }
+regex = "1.13"
 
 [dev-dependencies]
 http = { path = "../http" }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }

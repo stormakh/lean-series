@@ -11,12 +11,14 @@ pub mod chan;
 pub mod file;
 pub mod glob;
 pub mod http;
+pub mod kubernetes;
 pub mod log;
 pub mod manager;
 pub mod metrics;
 pub mod refresh;
 pub mod registry;
 pub mod targetgroup;
+pub mod xds;
 
 use std::any::Any;
 use std::collections::HashMap;
@@ -240,4 +242,9 @@ impl Discoverer for StaticDiscoverer {
         // sends once (or stops when cancelled), then closes the channel as upstream does
         up.send(self.0.clone());
     }
+}
+
+/// Go `strutil.SanitizeLabelName`: every character outside `[a-zA-Z0-9_]` becomes `_`.
+pub fn sanitize_label_name(name: &str) -> String {
+    name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }).collect()
 }
