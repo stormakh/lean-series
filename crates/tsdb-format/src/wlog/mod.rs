@@ -10,6 +10,7 @@ pub mod compression;
 mod live_reader;
 mod reader;
 mod segment;
+mod watcher;
 mod wl;
 
 pub use checkpoint::{
@@ -25,6 +26,7 @@ pub use segment::{
     new_segments_range_reader, new_segments_reader, open_read_segment, open_write_segment,
     segment_name, segments,
 };
+pub use watcher::{READ_TIMEOUT, SegmentReadFn, Watcher, WatcherMetrics, WriteTo};
 pub use wl::{WL, WlMetrics};
 
 use std::fmt;
@@ -131,6 +133,8 @@ pub enum Error {
     Corruption(Box<CorruptionErr>),
     /// Go `record.ErrNotFound` ("not found"), returned by `last_checkpoint`.
     NotFound,
+    /// Go `ErrIgnorable` ("ignore me"), used inside the watcher.
+    Ignorable,
 }
 
 impl Error {
@@ -192,6 +196,7 @@ impl fmt::Display for Error {
             Error::Wrap(ctx, e) => write!(f, "{ctx}: {e}"),
             Error::Corruption(c) => write!(f, "{c}"),
             Error::NotFound => f.write_str(crate::record::ERR_NOT_FOUND),
+            Error::Ignorable => f.write_str("ignore me"),
         }
     }
 }
