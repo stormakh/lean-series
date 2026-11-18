@@ -208,11 +208,10 @@ fn sign_jwt(cfg: &OAuth2, key_pem: &str) -> Result<String, Error> {
 impl TokenSource {
     pub fn token(&self) -> Result<Token, Error> {
         let mut g = self.token.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(t) = g.as_ref() {
-            if t.valid() {
+        if let Some(t) = g.as_ref()
+            && t.valid() {
                 return Ok(t.clone());
             }
-        }
         let t = if self.config.grant_type == GRANT_TYPE_JWT_BEARER { self.fetch_jwt()? } else { self.fetch_client_credentials()? };
         *g = Some(t.clone());
         Ok(t)

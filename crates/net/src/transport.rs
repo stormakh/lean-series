@@ -230,7 +230,7 @@ impl Transport {
         let tcp = match proxy {
             None => self.dial(&target, deadline)?,
             Some(p) => {
-                if p.scheme != "http" && p.scheme != "" {
+                if p.scheme != "http" && !p.scheme.is_empty() {
                     return Err(Error::other(format!("proxyconnect tcp: unsupported proxy scheme {}", yaml::go_quote(&p.scheme))));
                 }
                 let paddr = host_port(p);
@@ -320,14 +320,12 @@ impl Transport {
         if !req.body.is_empty() || matches!(req.method.as_str(), "POST" | "PUT" | "PATCH") {
             h.push_str(&format!("Content-Length: {}\r\n", req.body.len()));
         }
-        if let (Some(p), "http") = (proxy, u.scheme.as_str()) {
-            if let Some(ui) = &p.user {
-                if !req.header.has("Proxy-Authorization") {
+        if let (Some(p), "http") = (proxy, u.scheme.as_str())
+            && let Some(ui) = &p.user
+                && !req.header.has("Proxy-Authorization") {
                     let v = crypto::base64(format!("{}:{}", ui.username, ui.password).as_bytes());
                     h.push_str(&format!("Proxy-Authorization: Basic {v}\r\n"));
                 }
-            }
-        }
         for (k, v) in req.header.iter() {
             if k.eq_ignore_ascii_case("host") || k.eq_ignore_ascii_case("user-agent") || k.eq_ignore_ascii_case("content-length") || k.eq_ignore_ascii_case("connection") || k.eq_ignore_ascii_case("transfer-encoding") {
                 continue;
@@ -533,11 +531,10 @@ impl RoundTripper for Transport {
         }
         let fresh = |e: Error| -> Error {
             // a client certificate that failed to load during the handshake explains the TLS failure
-            if let Some(src) = &self.tls.client_cert {
-                if let Some(ce) = src.take_error() {
+            if let Some(src) = &self.tls.client_cert
+                && let Some(ce) = src.take_error() {
                     return Error::other(ce);
                 }
-            }
             e
         };
         let conn = self.connect(u, proxy.as_ref(), deadline).map_err(fresh)?;

@@ -362,10 +362,9 @@ pub fn tls_error_text(e: &rustls::Error) -> String {
 
 /// Go's text for an I/O error that may carry a TLS error.
 pub fn io_error_text(e: &std::io::Error) -> String {
-    if let Some(inner) = e.get_ref() {
-        if let Some(t) = inner.downcast_ref::<rustls::Error>() {
+    if let Some(inner) = e.get_ref()
+        && let Some(t) = inner.downcast_ref::<rustls::Error>() {
             return tls_error_text(t);
         }
-    }
     crate::types::go_io_error(e)
 }

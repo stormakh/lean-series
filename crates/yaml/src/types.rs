@@ -201,12 +201,11 @@ fn parse_unit(s: &str, new_style: bool) -> std::result::Result<i64, String> {
     let mut s = s;
     let mut f = 0f64;
     let mut neg = false;
-    if let Some(c) = s.as_bytes().first() {
-        if *c == b'-' || *c == b'+' {
+    if let Some(c) = s.as_bytes().first()
+        && (*c == b'-' || *c == b'+') {
             neg = *c == b'-';
             s = &s[1..];
         }
-    }
     if s == "0" {
         return Ok(0);
     }

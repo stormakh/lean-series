@@ -254,7 +254,7 @@ impl Decoder {
             }
             if out.has_field(&name) {
                 if self.strict {
-                    if done.iter().any(|d| *d == name) {
+                    if done.contains(&name) {
                         self.terrors.push(format!("line {}: field {} already set in type {}", k.line, name, out.type_name()));
                         continue;
                     }

@@ -131,12 +131,11 @@ fn analyze_scalar(value: &[u8]) -> ScalarData {
                         block_indicators = true;
                     }
                 }
-                b'-' => {
-                    if followed_by_whitespace {
+                b'-'
+                    if followed_by_whitespace => {
                         flow_indicators = true;
                         block_indicators = true;
                     }
-                }
                 _ => {}
             }
         } else {
@@ -148,12 +147,11 @@ fn analyze_scalar(value: &[u8]) -> ScalarData {
                         block_indicators = true;
                     }
                 }
-                b'#' => {
-                    if preceded_by_whitespace {
+                b'#'
+                    if preceded_by_whitespace => {
                         flow_indicators = true;
                         block_indicators = true;
                     }
-                }
                 _ => {}
             }
         }

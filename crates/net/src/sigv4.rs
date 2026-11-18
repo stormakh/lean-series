@@ -147,11 +147,10 @@ fn resolve_credentials(cfg: &SigV4Config, env: &EnvFn) -> Result<(Credentials, S
     if !cfg.access_key.is_empty() && !cfg.secret_key.is_empty() {
         return Ok((Credentials { access_key_id: cfg.access_key.clone(), secret_access_key: cfg.secret_key.0.clone(), session_token: String::new() }, region));
     }
-    if cfg.profile.is_empty() {
-        if let (Some(a), Some(s)) = (env("AWS_ACCESS_KEY_ID").or_else(|| env("AWS_ACCESS_KEY")), env("AWS_SECRET_ACCESS_KEY").or_else(|| env("AWS_SECRET_KEY"))) {
+    if cfg.profile.is_empty()
+        && let (Some(a), Some(s)) = (env("AWS_ACCESS_KEY_ID").or_else(|| env("AWS_ACCESS_KEY")), env("AWS_SECRET_ACCESS_KEY").or_else(|| env("AWS_SECRET_KEY"))) {
             return Ok((Credentials { access_key_id: a, secret_access_key: s, session_token: env("AWS_SESSION_TOKEN").unwrap_or_default() }, region));
         }
-    }
     for sec in [cred_ini.get(&profile), cfg_section].into_iter().flatten() {
         if let (Some(a), Some(s)) = (sec.get("aws_access_key_id"), sec.get("aws_secret_access_key")) {
             return Ok((Credentials { access_key_id: a.clone(), secret_access_key: s.clone(), session_token: sec.get("aws_session_token").cloned().unwrap_or_default() }, region));
@@ -354,11 +353,10 @@ impl SigV4RoundTripper {
     pub fn credentials(&self) -> Result<Credentials, Error> {
         let Some(role) = &self.role else { return Ok(self.base.clone()) };
         let mut g = self.cache.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(c) = g.as_ref() {
-            if c.expires.is_none_or(|e| Instant::now() + Duration::from_secs(30) < e) {
+        if let Some(c) = g.as_ref()
+            && c.expires.is_none_or(|e| Instant::now() + Duration::from_secs(30) < e) {
                 return Ok(c.creds.clone());
             }
-        }
         let (creds, expires) = self.assume_role(role)?;
         *g = Some(Cached { creds: creds.clone(), expires });
         Ok(creds)
@@ -408,11 +406,10 @@ impl RoundTripper for SigV4RoundTripper {
         let creds = self.credentials().map_err(|e| if e.msg.starts_with("error retrieving credentials") { e } else { e.wrap("error retrieving credentials") })?;
         let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         sign_request(&mut sreq, &creds, &self.service_name, &self.region, now);
-        if let Some(t) = trace {
-            if !t.is_empty() {
+        if let Some(t) = trace
+            && !t.is_empty() {
                 sreq.header.set("Uber-Trace-Id", &t);
             }
-        }
         self.next.round_trip(sreq)
     }
     fn close_idle_connections(&self) {

@@ -206,7 +206,7 @@ pub fn is_timestamp(s: &str) -> bool {
         None => return false,
     };
     let year: u32 = s[..4].parse().unwrap_or(0);
-    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let leap = year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400));
     let mdays = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
     if day < 1 || day > mdays[month as usize - 1] {
         return false;
@@ -266,11 +266,10 @@ pub fn resolve(tag: &str, input: &str) -> Result<(String, Resolved), String> {
         "" | STR_TAG | BINARY_TAG => return Ok((rtag.to_string(), out)),
         t if t == rtag => return Ok((rtag.to_string(), out)),
         FLOAT_TAG => {
-            if rtag == INT_TAG {
-                if let Resolved::Int(v) = out {
+            if rtag == INT_TAG
+                && let Resolved::Int(v) = out {
                     return Ok((FLOAT_TAG.to_string(), Resolved::Float(v as f64)));
                 }
-            }
         }
         _ => {}
     }
@@ -309,11 +308,10 @@ fn resolve_inner(tag: &str, input: &str) -> (&'static str, Resolved) {
                 if let Some(u) = parse_uint_base0(&plain) {
                     return (INT_TAG, Resolved::Uint(u));
                 }
-                if yaml_style_float(&plain) {
-                    if let Some(f) = parse_go_float(&plain) {
+                if yaml_style_float(&plain)
+                    && let Some(f) = parse_go_float(&plain) {
                         return (FLOAT_TAG, Resolved::Float(f));
                     }
-                }
                 if let Some(rest) = plain.strip_prefix("0b") {
                     if let Some(u) = parse_bin(rest) {
                         if u <= i64::MAX as u64 {
@@ -321,13 +319,11 @@ fn resolve_inner(tag: &str, input: &str) -> (&'static str, Resolved) {
                         }
                         return (INT_TAG, Resolved::Uint(u));
                     }
-                } else if let Some(rest) = plain.strip_prefix("-0b") {
-                    if let Some(u) = parse_bin(rest) {
-                        if u <= (i64::MAX as u64) + 1 {
+                } else if let Some(rest) = plain.strip_prefix("-0b")
+                    && let Some(u) = parse_bin(rest)
+                        && u <= (i64::MAX as u64) + 1 {
                             return (INT_TAG, Resolved::Int((u as i128).wrapping_neg() as i64));
                         }
-                    }
-                }
             }
             _ => {}
         }

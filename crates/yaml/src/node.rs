@@ -156,11 +156,10 @@ pub fn parse(text: &str) -> Result<Option<Rc<Node>>, String> {
 /// line for parser errors.
 fn scan_error(e: &yaml_rust2::ScanError, text: &str) -> String {
     let mut info = e.info().to_string();
-    if info.starts_with("while ") {
-        if let Some(i) = info.find(", ") {
+    if info.starts_with("while ")
+        && let Some(i) = info.find(", ") {
             info = info[i + 2..].to_string();
         }
-    }
     let mut l0 = e.marker().line().saturating_sub(1);
     let mut parser_error = false;
     match info.as_str() {

@@ -109,11 +109,10 @@ fn parse_proxy(p: &str) -> Option<GoUrl> {
 
 fn env_any(names: &[&str]) -> String {
     for n in names {
-        if let Ok(v) = std::env::var(n) {
-            if !v.is_empty() {
+        if let Ok(v) = std::env::var(n)
+            && !v.is_empty() {
                 return v;
             }
-        }
     }
     String::new()
 }
@@ -208,11 +207,10 @@ impl Config {
             return false;
         }
         let ip: Option<IpAddr> = host.parse().ok();
-        if let Some(ip) = ip {
-            if ip.is_loopback() || matches!(ip, IpAddr::V6(v) if v.to_ipv4_mapped().is_some_and(|m| m.is_loopback())) {
+        if let Some(ip) = ip
+            && (ip.is_loopback() || matches!(ip, IpAddr::V6(v) if v.to_ipv4_mapped().is_some_and(|m| m.is_loopback()))) {
                 return false;
             }
-        }
         let addr = host.trim().to_lowercase();
         if let Some(ip) = ip {
             for m in &self.ip_matchers {

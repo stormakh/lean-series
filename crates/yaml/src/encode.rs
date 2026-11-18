@@ -37,7 +37,7 @@ pub fn format_float_g(f: f64) -> String {
         s.push('-');
     }
     // shortest 'g': %e when the exponent is < -4 or >= 6 (strconv uses eprec = 6 for the shortest form)
-    if exp < -4 || exp >= 6 {
+    if !(-4..6).contains(&exp) {
         exp_form(&mut s, &digits, exp);
         return s;
     }

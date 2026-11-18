@@ -142,11 +142,10 @@ fn url_error(method: &str, u: &yaml::url::GoUrl, e: Error) -> Error {
         }
     };
     let mut su = u.clone();
-    if let Some(ui) = su.user.as_mut() {
-        if ui.password_set {
+    if let Some(ui) = su.user.as_mut()
+        && ui.password_set {
             ui.password = "***".to_string();
         }
-    }
     Error { kind: e.kind, msg: format!("{} {}: {}", op, yaml::go_quote(&su.to_url_string()), e.msg) }
 }
 
@@ -212,13 +211,11 @@ impl Client {
                 header.set("Referer", &r.to_url_string());
             }
             let mut host = String::new();
-            if !req.host.is_empty() && req.host != req.url.host {
-                if let Ok(u) = yaml::url::parse(&loc) {
-                    if !u.is_abs() {
+            if !req.host.is_empty() && req.host != req.url.host
+                && let Ok(u) = yaml::url::parse(&loc)
+                    && !u.is_abs() {
                         host = req.host.clone();
                     }
-                }
-            }
             let mut redirect_hosts = std::mem::take(&mut req.redirect_hosts);
             redirect_hosts.push(url.hostname().to_string());
             let body = if include_body { std::mem::take(&mut req.body) } else { Vec::new() };

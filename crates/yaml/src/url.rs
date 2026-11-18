@@ -13,11 +13,10 @@ fn should_escape(c: u8, mode: u8) -> bool {
     if c.is_ascii_alphanumeric() {
         return false;
     }
-    if mode == ENC_HOST || mode == ENC_ZONE {
-        if matches!(c, b'!' | b'$' | b'&' | b'\'' | b'(' | b')' | b'*' | b'+' | b',' | b';' | b'=' | b':' | b'[' | b']' | b'<' | b'>' | b'"') {
+    if (mode == ENC_HOST || mode == ENC_ZONE)
+        && matches!(c, b'!' | b'$' | b'&' | b'\'' | b'(' | b')' | b'*' | b'+' | b',' | b';' | b'=' | b':' | b'[' | b']' | b'<' | b'>' | b'"') {
             return false;
         }
-    }
     match c {
         b'-' | b'_' | b'.' | b'~' => return false,
         b'$' | b'&' | b'+' | b',' | b'/' | b':' | b';' | b'=' | b'?' | b'@' => match mode {
@@ -325,11 +324,10 @@ pub fn parse(raw: &str) -> Result<GoUrl, String> {
         None => (raw, None),
     };
     let mut url = parse_inner(u, false).map_err(|e| format!("parse {}: {}", quote(u), e))?;
-    if let Some(f) = frag {
-        if !f.is_empty() {
+    if let Some(f) = frag
+        && !f.is_empty() {
             url.set_fragment(f).map_err(|e| format!("parse {}: {}", quote(raw), e))?;
         }
-    }
     Ok(url)
 }
 
@@ -345,12 +343,11 @@ fn valid_encoded(s: &str, mode: u8) -> bool {
 fn split_host_port(host_port: &str) -> (&str, &str) {
     let mut host = host_port;
     let mut port = "";
-    if let Some(colon) = host.rfind(':') {
-        if valid_optional_port(&host[colon..]) {
+    if let Some(colon) = host.rfind(':')
+        && valid_optional_port(&host[colon..]) {
             port = &host_port[colon + 1..];
             host = &host_port[..colon];
         }
-    }
     if host.starts_with('[') && host.ends_with(']') && host.len() >= 2 {
         host = &host[1..host.len() - 1];
     }
@@ -373,8 +370,8 @@ fn resolve_path(base: &str, r: &str) -> String {
     let mut dst: Vec<u8> = vec![b'/'];
     let mut first = true;
     let mut elem = "";
-    let mut parts = full.split('/').peekable();
-    while let Some(e) = parts.next() {
+    let parts = full.split('/').peekable();
+    for e in parts {
         elem = e;
         match e {
             "." => {
@@ -418,26 +415,22 @@ impl GoUrl {
         Ok(())
     }
     pub fn escaped_path(&self) -> String {
-        if !self.raw_path.is_empty() && valid_encoded(&self.raw_path, ENC_PATH) {
-            if let Ok(p) = unescape(&self.raw_path, ENC_PATH) {
-                if p == self.path {
+        if !self.raw_path.is_empty() && valid_encoded(&self.raw_path, ENC_PATH)
+            && let Ok(p) = unescape(&self.raw_path, ENC_PATH)
+                && p == self.path {
                     return self.raw_path.clone();
                 }
-            }
-        }
         if self.path == "*" {
             return "*".to_string();
         }
         escape(&self.path, ENC_PATH)
     }
     pub fn escaped_fragment(&self) -> String {
-        if !self.raw_fragment.is_empty() && valid_encoded(&self.raw_fragment, ENC_FRAGMENT) {
-            if let Ok(f) = unescape(&self.raw_fragment, ENC_FRAGMENT) {
-                if f == self.fragment {
+        if !self.raw_fragment.is_empty() && valid_encoded(&self.raw_fragment, ENC_FRAGMENT)
+            && let Ok(f) = unescape(&self.raw_fragment, ENC_FRAGMENT)
+                && f == self.fragment {
                     return self.raw_fragment.clone();
                 }
-            }
-        }
         escape(&self.fragment, ENC_FRAGMENT)
     }
 
@@ -489,11 +482,10 @@ impl GoUrl {
     /// Go `URL.Redacted`: the password replaced by "xxxxx".
     pub fn redacted(&self) -> String {
         let mut ru = self.clone();
-        if let Some(u) = ru.user.as_mut() {
-            if u.password_set {
+        if let Some(u) = ru.user.as_mut()
+            && u.password_set {
                 u.password = "xxxxx".to_string();
             }
-        }
         ru.to_url_string()
     }
 
