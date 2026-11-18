@@ -10,3 +10,6 @@ model = { path = "../model" }
 net = { path = "../net" }
 discovery = { path = "../discovery" }
 crypto = { path = "../crypto" }
+
+[dev-dependencies]
+json = { path = "../json" }
