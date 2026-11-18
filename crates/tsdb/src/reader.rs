@@ -114,6 +114,14 @@ pub trait ChunkReader: Send + Sync {
     /// The data for `meta`: a chunk when the meta maps to an existing chunk that needs no change, else an
     /// iterable (for example a subset of the samples of a head chunk, or the merge of out-of-order chunks).
     fn chunk_or_iterable(&self, meta: &Meta) -> Result<ChunkOrIterable, Error>;
+    /// Go `ChunkReaderWithCopy.ChunkOrIterableWithCopy`: `Some` for readers that support it, with a copy of an
+    /// open head chunk (or an iterable) and the real max time of the chunk.
+    fn chunk_or_iterable_with_copy(&self, meta: &Meta) -> Option<Result<(ChunkOrIterable, i64), Error>> {
+        let _ = meta;
+        None
+    }
+    /// Go `chunkCacheEnabler.EnableChunkCache`.
+    fn enable_chunk_cache(&self) {}
     /// Releases the resources of the reader.
     fn close(&self) -> Result<(), Error>;
 }

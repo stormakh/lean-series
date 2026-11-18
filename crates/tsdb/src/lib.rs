@@ -14,8 +14,17 @@
 //! - Self-instrumentation values are plain atomics ([`metrics`]) with upstream metric names in comments.
 
 pub mod exemplar;
+pub mod head;
+pub mod head_append;
+pub mod head_append_v2;
+pub mod head_read;
+pub mod head_wal;
+pub mod isolation;
 pub mod meta;
 pub mod metrics;
+pub mod ooo_head;
+pub mod ooo_head_read;
+pub mod ooo_isolation;
 pub mod querier;
 pub mod reader;
 
