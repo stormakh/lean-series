@@ -2953,6 +2953,11 @@ fn func_changes(_: &[Vector], matrix: &[Series], _: &[Expr], enh: &mut EvalNodeH
     Ok(Annotations::new())
 }
 
+/// Whether a string argument is not valid UTF-8 in Go (part of `IsValidLabelName`).
+fn invalid_utf8_arg(e: &Expr) -> bool {
+    matches!(e, Expr::StringLiteral(s) if s.invalid_utf8.is_some())
+}
+
 /// Go `model.UTF8Validation.IsValidLabelName`.
 #[inline]
 fn is_valid_label_name(name: &str) -> bool {
@@ -2970,7 +2975,7 @@ pub(crate) fn eval_label_replace(ev: &mut Evaluator<'_>, args: &[Expr]) -> Resul
         Ok(r) => r,
         Err(_) => return Err(Error::msg(format!("invalid regular expression in label_replace(): {}", regex_str))),
     };
-    if !is_valid_label_name(dst) {
+    if !is_valid_label_name(dst) || invalid_utf8_arg(&args[1]) {
         return Err(Error::msg(format!("invalid destination label name in label_replace(): {}", dst)));
     }
 
@@ -3008,12 +3013,12 @@ pub(crate) fn eval_label_join(ev: &mut Evaluator<'_>, args: &[Expr]) -> Result<(
     let mut src_labels: Vec<&str> = Vec::with_capacity(args.len().saturating_sub(3));
     for a in &args[3..] {
         let src = string_from_arg(a)?;
-        if !is_valid_label_name(src) {
+        if !is_valid_label_name(src) || invalid_utf8_arg(a) {
             return Err(Error::msg(format!("invalid source label name in label_join(): {}", src)));
         }
         src_labels.push(src);
     }
-    if !is_valid_label_name(dst) {
+    if !is_valid_label_name(dst) || invalid_utf8_arg(&args[1]) {
         return Err(Error::msg(format!("invalid destination label name in label_join(): {}", dst)));
     }
 

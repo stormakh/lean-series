@@ -744,10 +744,13 @@ impl<'a> Evaluator<'a> {
         let inner = e.expr.as_ref().expect("aggregation without expression");
         if e.op == COUNT_VALUES {
             let param = e.param.as_ref().expect("count_values without parameter");
-            let value_label = match param {
-                Expr::StringLiteral(s) => s.val.clone(),
+            let (value_label, invalid_utf8) = match param {
+                Expr::StringLiteral(s) => (s.val.clone(), s.invalid_utf8.clone()),
                 _ => return Err(errorf("count_values parameter must be a string")),
             };
+            if let Some(b) = invalid_utf8 {
+                return Err(errorf(format!("invalid label name {}", parser::quote::go_quote_bytes(&b))));
+            }
             if !ValidationScheme::Utf8.is_valid_label_name(&value_label) {
                 return Err(errorf(format!("invalid label name {}", param)));
             }
