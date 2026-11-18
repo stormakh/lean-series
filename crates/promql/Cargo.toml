@@ -1,0 +1,11 @@
+[package]
+name = "promql"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+model = { path = "../model" }
+
+[dev-dependencies]
+json = { path = "../json" }
