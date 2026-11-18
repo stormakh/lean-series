@@ -223,6 +223,14 @@ fn build(labels: Labels, samples: impl Iterator<Item = (i64, f64)>) -> ChunkSeri
     ChunkSeries { labels, chunks }
 }
 
+/// The CPU time of this thread in nanoseconds (the first field of /proc/thread-self/schedstat).
+fn thread_cpu_ns() -> u64 {
+    std::fs::read_to_string("/proc/thread-self/schedstat")
+        .ok()
+        .and_then(|s| s.split_whitespace().next().and_then(|v| v.parse().ok()))
+        .unwrap_or(0)
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let filter = args.get(1).cloned().unwrap_or_default();
@@ -273,6 +281,7 @@ fn main() {
         let mut best = Duration::MAX;
         let mut total = Duration::ZERO;
         let mut err = None;
+        let cpu0 = thread_cpu_ns();
         for _ in 0..iters {
             let t = Instant::now();
             let mut q = engine
@@ -287,14 +296,16 @@ fn main() {
             best = best.min(d);
             total += d;
         }
+        let cpu = (thread_cpu_ns() - cpu0) as f64 / iters as f64;
         match err {
             Some(e) => println!("expr={},steps={}\terror: {}", expr, steps, e),
             None => println!(
-                "expr={},steps={}\t{:.0} ns/op (best {:.0})",
+                "expr={},steps={}\t{:.0} ns/op (best {:.0})\tcpu {:.2} ms/op",
                 expr,
                 steps,
                 total.as_nanos() as f64 / iters as f64,
-                best.as_nanos() as f64
+                best.as_nanos() as f64,
+                cpu / 1e6
             ),
         }
     }
