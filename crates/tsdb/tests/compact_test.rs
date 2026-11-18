@@ -6,7 +6,13 @@ mod common;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use chunkenc::{ChunkIterator, ValueType};
 use common::*;
+use model::labels::Labels;
+use storage::tsdbutil as tu;
+use storage::{Meta, Sample};
+use tsdb::compact::BlockPopulator;
+use tsdb_format::index;
 use storage::{Context, Error};
 use tsdb::compact::{
     DefaultBlockPopulator, DirMeta, LeveledCompactorOptions, compact_block_metas, new_leveled_compactor,
@@ -362,6 +368,728 @@ fn test_compaction_fail_will_clean_up_temp_dir() {
     assert!(compactor.write_block(tmpdir.path(), &mut BlockMeta::default(), &DefaultBlockPopulator, &[&ErringBReader]).is_err());
     let p = format!("{}{}", tmpdir.path().join(Ulid::default().to_string()).display(), TMP_FOR_CREATION_BLOCK_DIR_SUFFIX);
     assert!(!std::path::Path::new(&p).exists(), "directory is not cleaned up");
+}
+
+/// Go `mockBReader`.
+struct MockBReader {
+    ir: Arc<dyn IndexReader>,
+    cr: Arc<dyn ChunkReader>,
+    mint: i64,
+    maxt: i64,
+}
+
+impl BlockReader for MockBReader {
+    fn index(&self) -> Result<Box<dyn IndexReader>, Error> {
+        Ok(Box::new(SharedIndex(self.ir.clone())))
+    }
+    fn chunks(&self) -> Result<Box<dyn ChunkReader>, Error> {
+        Ok(Box::new(SharedChunks(self.cr.clone())))
+    }
+    fn tombstones(&self) -> Result<Arc<dyn tombstones::Reader>, Error> {
+        Ok(Arc::new(tombstones::MemTombstones::new()))
+    }
+    fn meta(&self) -> BlockMeta {
+        BlockMeta { min_time: self.mint, max_time: self.maxt, ..BlockMeta::default() }
+    }
+    fn size(&self) -> i64 {
+        0
+    }
+}
+
+/// Go `mockIndexWriter`: records the series and copies of their chunks.
+#[derive(Default)]
+struct MockIndexWriter {
+    series_chunks: Vec<(Labels, Vec<Meta>)>,
+}
+
+impl tsdb::IndexWriter for MockIndexWriter {
+    fn add_symbol(&mut self, _: &str) -> Result<(), Error> {
+        Ok(())
+    }
+    fn add_series(&mut self, _: u64, l: &Labels, chks: &[Meta]) -> Result<(), Error> {
+        // Copy chunks as their bytes may be reused.
+        let mut new = Vec::with_capacity(chks.len());
+        for c in chks {
+            let chk = c.chunk();
+            let copy = chunkenc::from_data(chk.encoding(), chk.bytes().to_vec())
+                .map_err(|e| Error::wrap("mockIndexWriter: copy chunk", Error::Chunk(e)))?;
+            new.push(Meta { chunk_ref: 0, chunk: Some(Arc::from(copy)), min_time: c.min_time, max_time: c.max_time });
+        }
+        // We don't combine multiple same series together, by design as `AddSeries` requires full series to be saved.
+        self.series_chunks.push((l.clone(), new));
+        Ok(())
+    }
+    fn close(&mut self) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+/// Go `nopChunkWriter`.
+struct NopChunkWriter;
+
+impl tsdb::ChunkWriter for NopChunkWriter {
+    fn write_chunks(&mut self, _: &mut [Meta]) -> Result<(), Error> {
+        Ok(())
+    }
+    fn close(&mut self) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+/// Go `sample{t: t}`.
+fn st(t: i64) -> Sample {
+    Sample::float(0, t, 0.0)
+}
+
+fn sf(s: i64, t: i64, f: f64) -> Sample {
+    Sample::float(s, t, f)
+}
+
+/// Go `samplesForRange`.
+fn samples_for_range(min_time: i64, max_time: i64, max_samples_per_chunk: usize) -> Vec<Vec<Sample>> {
+    let mut ret = Vec::new();
+    let mut curr = Vec::new();
+    for i in min_time..=max_time {
+        curr.push(st(i));
+        if curr.len() >= max_samples_per_chunk {
+            ret.push(std::mem::take(&mut curr));
+        }
+    }
+    if !curr.is_empty() {
+        ret.push(curr);
+    }
+    ret
+}
+
+fn postings_a_c<'a>(ctx: &Context, reader: &'a dyn IndexReader) -> index::BoxPostings<'a> {
+    match reader.postings(ctx, "a", &["c"]) {
+        Ok(p) => reader.sorted_postings(p),
+        Err(_) => index::empty_postings(),
+    }
+}
+
+fn postings_a_cd<'a>(ctx: &Context, reader: &'a dyn IndexReader) -> index::BoxPostings<'a> {
+    match reader.postings(ctx, "a", &["c", "d"]) {
+        Ok(p) => reader.sorted_postings(p),
+        Err(_) => index::empty_postings(),
+    }
+}
+
+#[derive(Default)]
+struct PCase {
+    title: &'static str,
+    input_series_samples: Vec<Vec<SeriesSamples>>,
+    compact_min_time: i64,
+    // When not defined the test runner sets a default of i64::MAX.
+    compact_max_time: i64,
+    ir_postings_func: Option<tsdb::compact::IndexReaderPostingsFunc>,
+    exp_series_samples: Vec<SeriesSamples>,
+    exp_err: Option<&'static str>,
+}
+
+#[test]
+fn test_compaction_populate_block() {
+    let cases: Vec<PCase> = vec![
+		PCase {
+			title:              "Populate block from empty input should return error.",
+			input_series_samples: vec![],
+			exp_err:             Some("cannot populate block from no readers"),
+		..Default::default() },
+		PCase {
+			// Populate from single block without chunks. We expect these kind of series being ignored.
+			input_series_samples: vec![
+				vec![SeriesSamples {lset: lset(&[("a", "b")]), ..Default::default() }],
+			],
+		..Default::default() },
+		PCase {
+			title: "Populate from single block. We expect the same samples at the output.",
+			input_series_samples: vec![
+				vec![
+					SeriesSamples {
+						lset:   lset(&[("a", "b")]),
+						chunks: vec![vec![st(0), st(10)], vec![st(11), st(20)]],
+					..Default::default() },
+				],
+			],
+			exp_series_samples: vec![
+				SeriesSamples {
+					lset:   lset(&[("a", "b")]),
+					chunks: vec![vec![st(0), st(10)], vec![st(11), st(20)]],
+				..Default::default() },
+			],
+		..Default::default() },
+		PCase {
+			title: "Populate from two blocks.",
+			input_series_samples: vec![
+				vec![
+					SeriesSamples {
+						lset:   lset(&[("a", "b")]),
+						chunks: vec![vec![st(0), st(10)], vec![st(11), st(20)]],
+					..Default::default() },
+					SeriesSamples {
+						lset:   lset(&[("a", "c")]),
+						chunks: vec![vec![st(1), st(9)], vec![st(10), st(19)]],
+					..Default::default() },
+					SeriesSamples {
+						// no-chunk series should be dropped.
+						lset: lset(&[("a", "empty")]),
+					..Default::default() },
+				],
+				vec![
+					SeriesSamples {
+						lset:   lset(&[("a", "b")]),
+						chunks: vec![vec![st(21), st(30)]],
+					..Default::default() },
+					SeriesSamples {
+						lset:   lset(&[("a", "c")]),
+						chunks: vec![vec![st(40), st(45)]],
+					..Default::default() },
+				],
+			],
+			exp_series_samples: vec![
+				SeriesSamples {
+					lset:   lset(&[("a", "b")]),
+					chunks: vec![vec![st(0), st(10)], vec![st(11), st(20)], vec![st(21), st(30)]],
+				..Default::default() },
+				SeriesSamples {
+					lset:   lset(&[("a", "c")]),
+					chunks: vec![vec![st(1), st(9)], vec![st(10), st(19)], vec![st(40), st(45)]],
+				..Default::default() },
+			],
+		..Default::default() },
+		PCase {
+			title: "Populate from two blocks; chunks with negative time.",
+			input_series_samples: vec![
+				vec![
+					SeriesSamples {
+						lset:   lset(&[("a", "b")]),
+						chunks: vec![vec![st(0), st(10)], vec![st(11), st(20)]],
+					..Default::default() },
+					SeriesSamples {
+						lset:   lset(&[("a", "c")]),
+						chunks: vec![vec![st(-11), st(-9)], vec![st(10), st(19)]],
+					..Default::default() },
+					SeriesSamples {
+						// no-chunk series should be dropped.
+						lset: lset(&[("a", "empty")]),
+					..Default::default() },
+				],
+				vec![
+					SeriesSamples {
+						lset:   lset(&[("a", "b")]),
+						chunks: vec![vec![st(21), st(30)]],
+					..Default::default() },
+					SeriesSamples {
+						lset:   lset(&[("a", "c")]),
+						chunks: vec![vec![st(40), st(45)]],
+					..Default::default() },
+				],
+			],
+			compact_min_time: -11,
+			exp_series_samples: vec![
+				SeriesSamples {
+					lset:   lset(&[("a", "b")]),
+					chunks: vec![vec![st(0), st(10)], vec![st(11), st(20)], vec![st(21), st(30)]],
+				..Default::default() },
+				SeriesSamples {
+					lset:   lset(&[("a", "c")]),
+					chunks: vec![vec![st(-11), st(-9)], vec![st(10), st(19)], vec![st(40), st(45)]],
+				..Default::default() },
+			],
+		..Default::default() },
+		PCase {
+			title: "Populate from two blocks showing that order is maintained.",
+			input_series_samples: vec![
+				vec![
+					SeriesSamples {
+						lset:   lset(&[("a", "b")]),
+						chunks: vec![vec![st(0), st(10)], vec![st(11), st(20)]],
+					..Default::default() },
+					SeriesSamples {
+						lset:   lset(&[("a", "c")]),
+						chunks: vec![vec![st(1), st(9)], vec![st(10), st(19)]],
+					..Default::default() },
+				],
+				vec![
+					SeriesSamples {
+						lset:   lset(&[("a", "b")]),
+						chunks: vec![vec![st(21), st(30)]],
+					..Default::default() },
+					SeriesSamples {
+						lset:   lset(&[("a", "c")]),
+						chunks: vec![vec![st(40), st(45)]],
+					..Default::default() },
+				],
+			],
+			exp_series_samples: vec![
+				SeriesSamples {
+					lset:   lset(&[("a", "b")]),
+					chunks: vec![vec![st(0), st(10)], vec![st(11), st(20)], vec![st(21), st(30)]],
+				..Default::default() },
+				SeriesSamples {
+					lset:   lset(&[("a", "c")]),
+					chunks: vec![vec![st(1), st(9)], vec![st(10), st(19)], vec![st(40), st(45)]],
+				..Default::default() },
+			],
+		..Default::default() },
+		PCase {
+			title: "Populate from two blocks showing that order of series is sorted.",
+			input_series_samples: vec![
+				vec![
+					SeriesSamples {
+						lset:   lset(&[("a", "4")]),
+						chunks: vec![vec![st(5), st(7)]],
+					..Default::default() },
+					SeriesSamples {
+						lset:   lset(&[("a", "3")]),
+						chunks: vec![vec![st(5), st(6)]],
+					..Default::default() },
+					SeriesSamples {
+						lset:   lset(&[("a", "same")]),
+						chunks: vec![vec![st(1), st(4)]],
+					..Default::default() },
+				],
+				vec![
+					SeriesSamples {
+						lset:   lset(&[("a", "2")]),
+						chunks: vec![vec![st(1), st(3)]],
+					..Default::default() },
+					SeriesSamples {
+						lset:   lset(&[("a", "1")]),
+						chunks: vec![vec![st(1), st(2)]],
+					..Default::default() },
+					SeriesSamples {
+						lset:   lset(&[("a", "same")]),
+						chunks: vec![vec![st(5), st(8)]],
+					..Default::default() },
+				],
+			],
+			exp_series_samples: vec![
+				SeriesSamples {
+					lset:   lset(&[("a", "1")]),
+					chunks: vec![vec![st(1), st(2)]],
+				..Default::default() },
+				SeriesSamples {
+					lset:   lset(&[("a", "2")]),
+					chunks: vec![vec![st(1), st(3)]],
+				..Default::default() },
+				SeriesSamples {
+					lset:   lset(&[("a", "3")]),
+					chunks: vec![vec![st(5), st(6)]],
+				..Default::default() },
+				SeriesSamples {
+					lset:   lset(&[("a", "4")]),
+					chunks: vec![vec![st(5), st(7)]],
+				..Default::default() },
+				SeriesSamples {
+					lset:   lset(&[("a", "same")]),
+					chunks: vec![vec![st(1), st(4)], vec![st(5), st(8)]],
+				..Default::default() },
+			],
+		..Default::default() },
+		PCase {
+			title: "Populate from two blocks 1:1 duplicated chunks; with negative timestamps.",
+			input_series_samples: vec![
+				vec![
+					SeriesSamples {
+						lset:   lset(&[("a", "1")]),
+						chunks: vec![vec![st(1), st(2)], vec![st(3), st(4)]],
+					..Default::default() },
+					SeriesSamples {
+						lset:   lset(&[("a", "2")]),
+						chunks: vec![vec![st(-3), st(-2)], vec![st(1), st(3), st(4)], vec![st(5), st(6)]],
+					..Default::default() },
+				],
+				vec![
+					SeriesSamples {
+						lset:   lset(&[("a", "1")]),
+						chunks: vec![vec![st(3), st(4)]],
+					..Default::default() },
+					SeriesSamples {
+						lset:   lset(&[("a", "2")]),
+						chunks: vec![vec![st(1), st(3), st(4)], vec![st(7), st(8)]],
+					..Default::default() },
+				],
+			],
+			compact_min_time: -3,
+			exp_series_samples: vec![
+				SeriesSamples {
+					lset:   lset(&[("a", "1")]),
+					chunks: vec![vec![st(1), st(2)], vec![st(3), st(4)]],
+				..Default::default() },
+				SeriesSamples {
+					lset:   lset(&[("a", "2")]),
+					chunks: vec![vec![st(-3), st(-2)], vec![st(1), st(3), st(4)], vec![st(5), st(6)], vec![st(7), st(8)]],
+				..Default::default() },
+			],
+		..Default::default() },
+		PCase {
+			// This should not happened because head block is making sure the chunks are not crossing block boundaries.
+			// We used to return error, but now chunk is trimmed.
+			title: "Populate from single block containing chunk outside of compact meta time range.",
+			input_series_samples: vec![
+				vec![
+					SeriesSamples {
+						lset:   lset(&[("a", "b")]),
+						chunks: vec![vec![st(1), st(2)], vec![st(10), st(30)]],
+					..Default::default() },
+				],
+			],
+			compact_min_time: 0,
+			compact_max_time: 20,
+			exp_series_samples: vec![
+				SeriesSamples {
+					lset:   lset(&[("a", "b")]),
+					chunks: vec![vec![st(1), st(2)], vec![st(10)]],
+				..Default::default() },
+			],
+		..Default::default() },
+		PCase {
+			// Introduced by https://github.com/prometheus/tsdb/issues/347. We used to return error, but now chunk is trimmed.
+			title: "Populate from single block containing extra chunk",
+			input_series_samples: vec![
+				vec![
+					SeriesSamples {
+						lset:   lset(&[("a", "issue347")]),
+						chunks: vec![vec![st(1), st(2)], vec![st(10), st(20)]],
+					..Default::default() },
+				],
+			],
+			compact_min_time: 0,
+			compact_max_time: 10,
+			exp_series_samples: vec![
+				SeriesSamples {
+					lset:   lset(&[("a", "issue347")]),
+					chunks: vec![vec![st(1), st(2)]],
+				..Default::default() },
+			],
+		..Default::default() },
+		PCase {
+			// Deduplication expected.
+			// Introduced by pull/370 and pull/539.
+			title: "Populate from two blocks containing duplicated chunk.",
+			input_series_samples: vec![
+				vec![
+					SeriesSamples {
+						lset:   lset(&[("a", "b")]),
+						chunks: vec![vec![st(1), st(2)], vec![st(10), st(20)]],
+					..Default::default() },
+				],
+				vec![
+					SeriesSamples {
+						lset:   lset(&[("a", "b")]),
+						chunks: vec![vec![st(10), st(20)]],
+					..Default::default() },
+				],
+			],
+			exp_series_samples: vec![
+				SeriesSamples {
+					lset:   lset(&[("a", "b")]),
+					chunks: vec![vec![st(1), st(2)], vec![st(10), st(20)]],
+				..Default::default() },
+			],
+		..Default::default() },
+		PCase {
+			// Introduced by https://github.com/prometheus/tsdb/pull/539.
+			title: "Populate from three overlapping blocks.",
+			input_series_samples: vec![
+				vec![
+					SeriesSamples {
+						lset:   lset(&[("a", "overlap-all")]),
+						chunks: vec![vec![st(19), st(30)]],
+					..Default::default() },
+					SeriesSamples {
+						lset:   lset(&[("a", "overlap-beginning")]),
+						chunks: vec![vec![st(0), st(5)]],
+					..Default::default() },
+					SeriesSamples {
+						lset:   lset(&[("a", "overlap-ending")]),
+						chunks: vec![vec![st(21), st(30)]],
+					..Default::default() },
+				],
+				vec![
+					SeriesSamples {
+						lset:   lset(&[("a", "overlap-all")]),
+						chunks: vec![vec![st(0), st(10), st(11), st(20)]],
+					..Default::default() },
+					SeriesSamples {
+						lset:   lset(&[("a", "overlap-beginning")]),
+						chunks: vec![vec![st(0), st(10), st(12), st(20)]],
+					..Default::default() },
+					SeriesSamples {
+						lset:   lset(&[("a", "overlap-ending")]),
+						chunks: vec![vec![st(0), st(10), st(13), st(20)]],
+					..Default::default() },
+				],
+				vec![
+					SeriesSamples {
+						lset:   lset(&[("a", "overlap-all")]),
+						chunks: vec![vec![st(27), st(35)]],
+					..Default::default() },
+					SeriesSamples {
+						lset:   lset(&[("a", "overlap-ending")]),
+						chunks: vec![vec![st(27), st(35)]],
+					..Default::default() },
+				],
+			],
+			exp_series_samples: vec![
+				SeriesSamples {
+					lset:   lset(&[("a", "overlap-all")]),
+					chunks: vec![vec![st(0), st(10), st(11), st(19), st(20), st(27), st(30), st(35)]],
+				..Default::default() },
+				SeriesSamples {
+					lset:   lset(&[("a", "overlap-beginning")]),
+					chunks: vec![vec![st(0), st(5), st(10), st(12), st(20)]],
+				..Default::default() },
+				SeriesSamples {
+					lset:   lset(&[("a", "overlap-ending")]),
+					chunks: vec![vec![st(0), st(10), st(13), st(20)], vec![st(21), st(27), st(30), st(35)]],
+				..Default::default() },
+			],
+		..Default::default() },
+		PCase {
+			title: "Populate from three partially overlapping blocks with few full chunks.",
+			input_series_samples: vec![
+				vec![
+					SeriesSamples {
+						lset:   lset(&[("a", "1"), ("b", "1")]),
+						chunks: samples_for_range(0, 659, 120), // 5 chunks and half.
+					..Default::default() },
+					SeriesSamples {
+						lset:   lset(&[("a", "1"), ("b", "2")]),
+						chunks: samples_for_range(0, 659, 120),
+					..Default::default() },
+				],
+				vec![
+					SeriesSamples {
+						lset:   lset(&[("a", "1"), ("b", "2")]),
+						chunks: samples_for_range(480, 1199, 120), // two chunks overlapping with previous, two non overlapping and two overlapping with next block.
+					..Default::default() },
+					SeriesSamples {
+						lset:   lset(&[("a", "1"), ("b", "3")]),
+						chunks: samples_for_range(480, 1199, 120),
+					..Default::default() },
+				],
+				vec![
+					SeriesSamples {
+						lset:   lset(&[("a", "1"), ("b", "2")]),
+						chunks: samples_for_range(960, 1499, 120), // 5 chunks and half.
+					..Default::default() },
+					SeriesSamples {
+						lset:   lset(&[("a", "1"), ("b", "4")]),
+						chunks: samples_for_range(960, 1499, 120),
+					..Default::default() },
+				],
+			],
+			exp_series_samples: vec![
+				SeriesSamples {
+					lset:   lset(&[("a", "1"), ("b", "1")]),
+					chunks: samples_for_range(0, 659, 120),
+				..Default::default() },
+				SeriesSamples {
+					lset:   lset(&[("a", "1"), ("b", "2")]),
+					chunks: samples_for_range(0, 1499, 120),
+				..Default::default() },
+				SeriesSamples {
+					lset:   lset(&[("a", "1"), ("b", "3")]),
+					chunks: samples_for_range(480, 1199, 120),
+				..Default::default() },
+				SeriesSamples {
+					lset:   lset(&[("a", "1"), ("b", "4")]),
+					chunks: samples_for_range(960, 1499, 120),
+				..Default::default() },
+			],
+		..Default::default() },
+		PCase {
+			title: "Populate from three partially overlapping blocks with chunks that are expected to merge into single big chunks.",
+			input_series_samples: vec![
+				vec![
+					SeriesSamples {
+						lset:   lset(&[("a", "1"), ("b", "2")]),
+						chunks: vec![vec![st(0), st(6902464)], vec![st(6961968), st(7080976)]],
+					..Default::default() },
+				],
+				vec![
+					SeriesSamples {
+						lset:   lset(&[("a", "1"), ("b", "2")]),
+						chunks: vec![vec![st(3600000), st(13953696)], vec![st(14042952), st(14221464)]],
+					..Default::default() },
+				],
+				vec![
+					SeriesSamples {
+						lset:   lset(&[("a", "1"), ("b", "2")]),
+						chunks: vec![vec![st(10800000), st(14251232)], vec![st(14280984), st(14340488)]],
+					..Default::default() },
+				],
+			],
+			exp_series_samples: vec![
+				SeriesSamples {
+					lset:   lset(&[("a", "1"), ("b", "2")]),
+					chunks: vec![vec![st(0), st(3600000), st(6902464), st(6961968), st(7080976), st(10800000), st(13953696), st(14042952), st(14221464), st(14251232)], vec![st(14280984), st(14340488)]],
+				..Default::default() },
+			],
+		..Default::default() },
+		PCase {
+			// Regression test for populateWithDelChunkSeriesIterator failing to set minTime on chunks.
+			title:          "Populate from mixed type series and expect sample inside the interval only.",
+			compact_min_time: 1,
+			compact_max_time: 11,
+			input_series_samples: vec![
+				vec![
+					SeriesSamples {
+						lset: lset(&[("a", "1")]),
+						chunks: vec![
+							vec![Sample::histogram(0, 0, tu::generate_test_histogram(0)), Sample::histogram(0, 1, tu::generate_test_histogram(1))],
+							vec![sf(0, 10, 1.0), sf(0, 11, 2.0)],
+						],
+					..Default::default() },
+				],
+			],
+			exp_series_samples: vec![
+				SeriesSamples {
+					lset: lset(&[("a", "1")]),
+					chunks: vec![
+						vec![Sample::histogram(0, 1, tu::generate_test_histogram(1))],
+						vec![sf(0, 10, 1.0)],
+					],
+				..Default::default() },
+			],
+		..Default::default() },
+		PCase {
+			title: "Populate from single block with index reader postings function selecting different series. Expect empty block.",
+			input_series_samples: vec![
+				vec![
+					SeriesSamples {
+						lset:   lset(&[("a", "b")]),
+						chunks: vec![vec![st(0), st(10)], vec![st(11), st(20)]],
+					..Default::default() },
+				],
+			],
+			ir_postings_func: Some(postings_a_c as tsdb::compact::IndexReaderPostingsFunc),
+		..Default::default() },
+		PCase {
+			title: "Populate from single block with index reader postings function selecting one series. Expect partial block.",
+			input_series_samples: vec![
+				vec![
+					SeriesSamples {
+						lset:   lset(&[("a", "b")]),
+						chunks: vec![vec![st(0), st(10)], vec![st(11), st(20)]],
+					..Default::default() },
+					SeriesSamples {
+						lset:   lset(&[("a", "c")]),
+						chunks: vec![vec![st(0), st(10)], vec![st(11), st(20)]],
+					..Default::default() },
+					SeriesSamples {
+						lset:   lset(&[("a", "d")]),
+						chunks: vec![vec![st(0), st(10)], vec![st(11), st(20)]],
+					..Default::default() },
+				],
+			],
+			ir_postings_func: Some(postings_a_cd as tsdb::compact::IndexReaderPostingsFunc),
+			exp_series_samples: vec![
+				SeriesSamples {
+					lset:   lset(&[("a", "c")]),
+					chunks: vec![vec![st(0), st(10)], vec![st(11), st(20)]],
+				..Default::default() },
+				SeriesSamples {
+					lset:   lset(&[("a", "d")]),
+					chunks: vec![vec![st(0), st(10)], vec![st(11), st(20)]],
+				..Default::default() },
+			],
+		..Default::default() },
+
+    ];
+    for tc in cases {
+        let mut blocks: Vec<MockBReader> = Vec::new();
+        for b in &tc.input_series_samples {
+            let (ir, cr, mint, maxt) = create_idx_chk_readers(b);
+            blocks.push(MockBReader { ir, cr, mint, maxt });
+        }
+        let block_refs: Vec<&dyn BlockReader> = blocks.iter().map(|b| b as &dyn BlockReader).collect();
+        let c = new_leveled_compactor(&bg(), None, vec![0], None, None).unwrap();
+        let mut meta = BlockMeta { min_time: tc.compact_min_time, max_time: tc.compact_max_time, ..BlockMeta::default() };
+        if meta.max_time == 0 {
+            meta.max_time = i64::MAX;
+        }
+        let mut iw = MockIndexWriter::default();
+        let ir_postings_func = tc.ir_postings_func.unwrap_or(tsdb::compact::all_sorted_postings);
+        let merge_func = storage::new_compacting_chunk_series_merger(Arc::new(storage::chained_series_merge));
+        let res = DefaultBlockPopulator.populate_block(
+            &bg(),
+            c.metrics(),
+            &tsdb::Logger::nop(),
+            c.chunk_pool(),
+            &merge_func,
+            &block_refs,
+            &mut meta,
+            &mut iw,
+            &mut NopChunkWriter,
+            ir_postings_func,
+        );
+        if let Some(e) = tc.exp_err {
+            assert_eq!(e, res.unwrap_err().to_string(), "{}", tc.title);
+            continue;
+        }
+        res.unwrap();
+
+        // Check if response is expected and chunk is valid.
+        let mut raw = Vec::new();
+        for (l, chunks) in &iw.series_chunks {
+            let mut ss = SeriesSamples { lset: l.map().into_iter().collect(), chunks: vec![] };
+            for chk in chunks {
+                let mut samples = Vec::new();
+                let mut iter = chk.chunk().iterator(None);
+                let mut first_ts = i64::MAX;
+                let mut last_t = 0;
+                loop {
+                    let s = match iter.next() {
+                        ValueType::None => break,
+                        ValueType::Float => {
+                            let (t, f) = iter.at();
+                            Sample::float(0, t, f)
+                        }
+                        ValueType::Histogram => {
+                            let (t, h) = iter.at_histogram(None);
+                            Sample::histogram(0, t, h)
+                        }
+                        ValueType::FloatHistogram => {
+                            let (t, fh) = iter.at_float_histogram(None);
+                            Sample::float_histogram(0, t, fh)
+                        }
+                    };
+                    if first_ts == i64::MAX {
+                        first_ts = s.t;
+                    }
+                    last_t = s.t;
+                    samples.push(s);
+                }
+                // Check if chunk has correct min, max times.
+                assert_eq!(first_ts, chk.min_time, "chunk Meta does not match the first encoded sample timestamp: {}", tc.title);
+                assert_eq!(last_t, chk.max_time, "chunk Meta does not match the last encoded sample timestamp: {}", tc.title);
+                assert!(iter.err().is_none());
+                ss.chunks.push(samples);
+            }
+            raw.push(ss);
+        }
+        assert_eq!(tc.exp_series_samples, raw, "{}", tc.title);
+
+        // Check if stats are calculated properly.
+        let mut s = BlockStats { num_series: tc.exp_series_samples.len() as u64, ..Default::default() };
+        for series in &tc.exp_series_samples {
+            s.num_chunks += series.chunks.len() as u64;
+            for chk in &series.chunks {
+                s.num_samples += chk.len() as u64;
+                for smpl in chk {
+                    if smpl.h.is_some() || smpl.fh.is_some() {
+                        s.num_histogram_samples += 1;
+                    } else {
+                        s.num_float_samples += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(s, meta.stats, "{}", tc.title);
+    }
 }
 
 //REST//

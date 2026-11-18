@@ -79,68 +79,6 @@ type ExpSeries = Vec<(Labels, Vec<Sample>)>;
 /// Expected chunk series as labels and the samples of each chunk (Go `NewListChunkSeriesFromSamples`).
 type ExpChunkSeries = Vec<(Labels, Vec<Vec<Sample>>)>;
 
-struct SeriesSamples {
-    lset: BTreeMap<String, String>,
-    chunks: Vec<Vec<Sample>>,
-}
-
-fn lset(kv: &[(&str, &str)]) -> BTreeMap<String, String> {
-    kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
-}
-
-/// Go `createIdxChkReaders`: index: labels -> postings -> chunk metas -> chunk ref; chunk reader: ref -> values.
-fn create_idx_chk_readers(tc: &[SeriesSamples]) -> (Arc<MockIndex>, Arc<MockChunkReader>, i64, i64) {
-    let mut chk_reader = MockChunkReader::default();
-    let mut mi = new_mock_index();
-    let mut postings: BTreeMap<(String, String), Vec<u64>> = BTreeMap::new();
-    let (mut block_mint, mut block_maxt) = (i64::MAX, i64::MIN);
-    let mut chunk_ref = 0u64;
-    for (i, s) in tc.iter().enumerate() {
-        let i = i as u64 + 1; // 0 is not a valid posting.
-        let mut metas = Vec::with_capacity(s.chunks.len());
-        for chk in &s.chunks {
-            block_mint = block_mint.min(chk[0].t);
-            block_maxt = block_maxt.max(chk[chk.len() - 1].t);
-            metas.push(Meta { min_time: chk[0].t, max_time: chk[chk.len() - 1].t, chunk_ref, chunk: None });
-            let chunk: Box<dyn Chunk> = if chk[0].fh.is_some() {
-                let mut c = chunkenc::new_empty_chunk(chunkenc::ENC_FLOAT_HISTOGRAM).unwrap();
-                let mut app = c.appender().unwrap();
-                for smpl in chk {
-                    let mut fh = smpl.fh.as_deref().expect("chunk can only contain one type of sample").clone();
-                    app.append_float_histogram(&mut *c, None, 0, smpl.t, &mut fh, true).expect("chunk should be appendable");
-                }
-                c
-            } else if chk[0].h.is_some() {
-                let mut c = chunkenc::new_empty_chunk(chunkenc::ENC_HISTOGRAM).unwrap();
-                let mut app = c.appender().unwrap();
-                for smpl in chk {
-                    let mut h = smpl.h.as_deref().expect("chunk can only contain one type of sample").clone();
-                    app.append_histogram(&mut *c, None, 0, smpl.t, &mut h, true).expect("chunk should be appendable");
-                }
-                c
-            } else {
-                let mut c = chunkenc::new_empty_chunk(chunkenc::ENC_XOR).unwrap();
-                let mut app = c.appender().unwrap();
-                for smpl in chk {
-                    assert!(smpl.h.is_none() && smpl.fh.is_none(), "chunk can only contain one type of sample");
-                    app.append(&mut *c, 0, smpl.t, smpl.f);
-                }
-                c
-            };
-            chk_reader.0.insert(chunk_ref, Arc::from(chunk));
-            chunk_ref += 1;
-        }
-        let l = labels::from_map(s.lset.clone());
-        mi.add_series(i, l.clone(), &metas).unwrap();
-        l.range(|n, v| postings.entry((n.to_string(), v.to_string())).or_default().push(i));
-        postings.entry((String::new(), String::new())).or_default().push(i);
-    }
-    for ((n, v), refs) in postings {
-        mi.write_postings(&n, &v, &mut index::new_list_postings(refs)).unwrap();
-    }
-    (Arc::new(mi), Arc::new(chk_reader), block_mint, block_maxt)
-}
-
 struct BlockQuerierTestCase {
     mint: i64,
     maxt: i64,
