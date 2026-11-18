@@ -33,6 +33,7 @@ use crate::log::Logger;
 use crate::metrics::Registry;
 use crate::refresh::{self, Refresher};
 use crate::targetgroup::Group;
+use crate::util::{join_host_port, sanitize_label_name};
 use crate::{Config, Discoverer, DiscovererMetrics, DiscovererOptions, RefreshMetricsInstantiator, SdConfigType};
 
 pub const OCI_LABEL_INSTANCE_ID: &str = "__meta_oci_instance_id";
@@ -300,16 +301,6 @@ pub fn primary_vnic_info(v: &Vnic) -> VnicInfo {
         ipv6_addresses: ipv6,
         hostname_label: v.hostname_label.clone().unwrap_or_default(),
     }
-}
-
-/// Go `strutil.SanitizeLabelName`: every character outside `[a-zA-Z0-9_]` becomes `_`.
-pub fn sanitize_label_name(s: &str) -> String {
-    s.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }).collect()
-}
-
-/// Go `net.JoinHostPort`.
-fn join_host_port(host: &str, port: &str) -> String {
-    if host.contains(':') { format!("[{host}]:{port}") } else { format!("{host}:{port}") }
 }
 
 /// Go `instanceLabels`: the label set of one instance.

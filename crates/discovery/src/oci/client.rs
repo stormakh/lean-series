@@ -381,7 +381,7 @@ fn service_failure(resp: &net::Response, method: &str, url: &str) -> ServiceErro
 /// The error of one API call.
 #[derive(Clone, Debug, PartialEq)]
 pub enum CallError {
-    Service(ServiceError),
+    Service(Box<ServiceError>),
     /// A transport or decoding error, or "context canceled".
     Other(String),
 }
@@ -644,6 +644,13 @@ pub struct Client {
     pub limiter: Arc<Limiter>,
 }
 
+/// An operation: the service and operation names and the API reference link of its errors.
+struct Op {
+    service: &'static str,
+    name: &'static str,
+    reference: &'static str,
+}
+
 /// One successful call: the parsed body and the `opc-next-page` header.
 struct Page {
     body: Vec<u8>,
@@ -666,7 +673,7 @@ fn escape_path_segment(s: &str) -> String {
 impl Client {
     /// One attempt of an operation (Go `client.<op>`: `MakeDefaultHTTPRequestWithTaggedStructAndExtraHeaders`,
     /// `prepareRequest`, `Sign`, `httpDo`, `checkForSuccessfulResponse`).
-    fn attempt(&self, host: &str, path: &str, query: &[(String, String)], service: &str, op: &str, reference: &str) -> Result<Page, (CallError, bool)> {
+    fn attempt(&self, host: &str, path: &str, query: &[(String, String)], op: &Op) -> Result<Page, (CallError, bool)> {
         let raw_query = yaml::url::encode_query(query);
         let url = if raw_query.is_empty() { format!("{host}/{BASE_PATH}{path}") } else { format!("{host}/{BASE_PATH}{path}?{raw_query}") };
         let mut req = net::Request::get(&url).map_err(|e| (CallError::Other(format!("host is invalid. {}", e.msg)), false))?;
@@ -687,11 +694,11 @@ impl Client {
         };
         if resp.status / 100 == 4 || resp.status / 100 == 5 {
             let mut se = service_failure(&resp, "GET", &url);
-            se.operation_name = op.to_string();
-            se.target_service = service.to_string();
+            se.operation_name = op.name.to_string();
+            se.target_service = op.service.to_string();
             se.error_troubleshooting_link = format!("https://docs.oracle.com/iaas/Content/API/References/apierrors.htm#apierrors_{0}__{0}_{1}", se.status_code, se.code.to_lowercase());
-            se.operation_reference_link = reference.to_string();
-            return Err((CallError::Service(se), false));
+            se.operation_reference_link = op.reference.to_string();
+            return Err((CallError::Service(Box::new(se)), false));
         }
         let next = resp.header.get("opc-next-page").filter(|s| !s.is_empty()).map(|s| s.to_string());
         Ok(Page { body: resp.body, next })
@@ -699,13 +706,13 @@ impl Client {
 
     /// Go `common.Retry` with `common.DefaultRetryPolicy()` (no eventual-consistency window: up to 8 attempts,
     /// exponential backoff of min(2^(n-1), 30) seconds plus up to 1 second of jitter).
-    fn call(&self, ctx: &CancelToken, host: &str, path: &str, query: &[(String, String)], service: &str, op: &str, reference: &str) -> Result<Page, CallError> {
+    fn call(&self, ctx: &CancelToken, host: &str, path: &str, query: &[(String, String)], op: &Op) -> Result<Page, CallError> {
         let mut attempt = 1u32;
         loop {
             if ctx.is_cancelled() {
                 return Err(CallError::Other(CONTEXT_CANCELED.to_string()));
             }
-            let (err, timeout) = match self.attempt(host, path, query, service, op, reference) {
+            let (err, timeout) = match self.attempt(host, path, query, op) {
                 Ok(p) => return Ok(p),
                 Err(e) => e,
             };
@@ -736,7 +743,7 @@ impl Client {
             q.push(("page".to_string(), p.to_string()));
         }
         let p = self
-            .call(ctx, &self.endpoints.identity, "/compartments", &q, "Identity", "ListCompartments", "https://docs.oracle.com/iaas/api/#/en/identity/20160918/Compartment/ListCompartments")
+            .call(ctx, &self.endpoints.identity, "/compartments", &q, &Op { service: "Identity", name: "ListCompartments", reference: "https://docs.oracle.com/iaas/api/#/en/identity/20160918/Compartment/ListCompartments" })
             .map_err(|e| e.to_string())?;
         let items = parse_list(&p.body, "identity.Compartment", Compartment::from_json)?;
         Ok((items, p.next))
@@ -753,7 +760,7 @@ impl Client {
                 q.push(("page".to_string(), p.clone()));
             }
             let p = self
-                .call(ctx, &self.endpoints.iaas, "/instances", &q, "Compute", "ListInstances", "https://docs.oracle.com/iaas/api/#/en/iaas/20160918/Instance/ListInstances")
+                .call(ctx, &self.endpoints.iaas, "/instances", &q, &Op { service: "Compute", name: "ListInstances", reference: "https://docs.oracle.com/iaas/api/#/en/iaas/20160918/Instance/ListInstances" })
                 .map_err(|e| e.to_string())?;
             out.extend(parse_list(&p.body, "core.Instance", Instance::from_json)?);
             match p.next {
@@ -774,7 +781,7 @@ impl Client {
                 q.push(("page".to_string(), p.clone()));
             }
             let p = self
-                .call(ctx, &self.endpoints.iaas, "/vnicAttachments", &q, "Compute", "ListVnicAttachments", "https://docs.oracle.com/iaas/api/#/en/iaas/20160918/VnicAttachment/ListVnicAttachments")
+                .call(ctx, &self.endpoints.iaas, "/vnicAttachments", &q, &Op { service: "Compute", name: "ListVnicAttachments", reference: "https://docs.oracle.com/iaas/api/#/en/iaas/20160918/VnicAttachment/ListVnicAttachments" })
                 .map_err(|e| e.to_string())?;
             out.extend(parse_list(&p.body, "core.VnicAttachment", VnicAttachment::from_json)?);
             match p.next {
@@ -789,7 +796,7 @@ impl Client {
         self.limiter.wait(ctx)?;
         let path = format!("/vnics/{}", escape_path_segment(vnic_id));
         let p = self
-            .call(ctx, &self.endpoints.iaas, &path, &[], "VirtualNetwork", "GetVnic", "https://docs.oracle.com/iaas/api/#/en/iaas/20160918/Vnic/GetVnic")
+            .call(ctx, &self.endpoints.iaas, &path, &[], &Op { service: "VirtualNetwork", name: "GetVnic", reference: "https://docs.oracle.com/iaas/api/#/en/iaas/20160918/Vnic/GetVnic" })
             .map_err(|e| e.to_string())?;
         let v = Json::parse_bytes(&p.body).map_err(|e| format!("{} at offset {}", e.msg, e.offset))?;
         Vnic::from_json(&v)

@@ -20,7 +20,7 @@ pub fn pem_decode(data: &[u8]) -> Option<PemBlock> {
     let mut rest: &str = &text;
     while let Some(i) = rest.find("-----BEGIN ") {
         let after = &rest[i + 11..];
-        let Some(j) = after.find("-----") else { return None };
+        let j = after.find("-----")?;
         let type_ = after[..j].to_string();
         let body = &after[j + 5..];
         let end_marker = format!("-----END {type_}-----");
@@ -284,7 +284,7 @@ fn decrypt_pem_block(b: &PemBlock, password: &[u8]) -> Result<Vec<u8>, String> {
         key.extend_from_slice(&prev);
     }
     key.truncate(key_size);
-    if b.bytes.len() % 16 != 0 {
+    if !b.bytes.len().is_multiple_of(16) {
         return Err("x509: encrypted PEM data is not a multiple of the block size".to_string());
     }
     let plain = aes_cbc_decrypt(&key, &iv, &b.bytes).ok_or("x509: invalid padding")?;
@@ -332,6 +332,7 @@ fn gmul(mut a: u8, mut b: u8) -> u8 {
 fn sboxes() -> ([u8; 256], [u8; 256]) {
     let mut s = [0u8; 256];
     let mut inv = [0u8; 256];
+    #[allow(clippy::needless_range_loop)]
     for x in 0..256usize {
         // multiplicative inverse in GF(2^8), then the affine map
         let mut y = 0u8;
@@ -353,7 +354,7 @@ fn sboxes() -> ([u8; 256], [u8; 256]) {
 /// AES-CBC decryption without unpadding; `None` for a bad key, IV or length.
 fn aes_cbc_decrypt(key: &[u8], iv: &[u8], data: &[u8]) -> Option<Vec<u8>> {
     let nk = key.len() / 4;
-    if !matches!(key.len(), 16 | 24 | 32) || iv.len() != 16 || data.is_empty() || data.len() % 16 != 0 {
+    if !matches!(key.len(), 16 | 24 | 32) || iv.len() != 16 || data.is_empty() || !data.len().is_multiple_of(16) {
         return None;
     }
     let (s, inv) = sboxes();
