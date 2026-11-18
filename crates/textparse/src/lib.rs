@@ -320,13 +320,12 @@ pub(crate) fn normalize_floats_in_label_values<'s>(
     v: &'s str,
     scratch: &'s mut String,
 ) -> &'s str {
-    if (t == MetricType::Summary && l == "quantile") || (t == MetricType::Histogram && l == "le") {
-        if let Ok(f) = strconv::parse_float(v.as_bytes()) {
+    if ((t == MetricType::Summary && l == "quantile") || (t == MetricType::Histogram && l == "le"))
+        && let Ok(f) = strconv::parse_float(v.as_bytes()) {
             scratch.clear();
             model::labels::append_open_metrics_float(scratch, f);
             return scratch.as_str();
         }
-    }
     v
 }
 

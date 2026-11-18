@@ -65,19 +65,23 @@ pub(crate) fn find(b: &[u8], i: usize, c: u8) -> usize {
 
 /// `\"(\\.|[^\\"])*\"` (or with `[^\\"\n]` when `!allow_nl`) starting at the opening quote `b[open]`. With
 /// `skip_nulls` null bytes are skipped as `next()` does in label values. Returns the index of the closing quote,
-/// or the abort position (the offending byte, or `b.len()` at the end).
+/// or the abort position (the offending byte, or `b.len()` at the end). ORs every scanned byte into `hi`, so
+/// `hi < 0x80` means the string was ASCII.
 #[inline]
-pub(crate) fn scan_quoted(b: &[u8], open: usize, skip_nulls: bool, allow_nl: bool) -> Result<usize, usize> {
+pub(crate) fn scan_quoted(b: &[u8], open: usize, skip_nulls: bool, allow_nl: bool, hi: &mut u8) -> Result<usize, usize> {
     let n = b.len();
     let mut i = open + 1;
+    let mut acc = 0u8;
     loop {
         while i < n {
             let c = b[i];
+            acc |= c;
             if c == b'"' || c == b'\\' || c == 0 || (c == b'\n' && !allow_nl) {
                 break;
             }
             i += 1;
         }
+        *hi |= acc;
         if i >= n {
             return Err(n);
         }
@@ -96,6 +100,7 @@ pub(crate) fn scan_quoted(b: &[u8], open: usize, skip_nulls: bool, allow_nl: boo
                 if b[i] == 0 || b[i] == b'\n' {
                     return Err(i);
                 }
+                *hi |= b[i];
                 i += 1;
             }
             0 if skip_nulls => i += 1,

@@ -152,14 +152,13 @@ impl<'a> NHCBParser<'a> {
                 if !lset.has("le") {
                     return false;
                 }
-                if let Ok(le) = crate::strconv::parse_float(lset.get("le").as_bytes()) {
-                    if !le.is_nan() {
+                if let Ok(le) = crate::strconv::parse_float(lset.get("le").as_bytes())
+                    && !le.is_nan() {
                         self.process_classic_histogram_series(&lset, name);
                         let v = self.value;
                         let _ = self.temp_nhcb.set_bucket_count(le, v);
                         return true;
                     }
-                }
             }
             SuffixType::Count => {
                 self.process_classic_histogram_series(&lset, name);

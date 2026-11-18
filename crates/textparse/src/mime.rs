@@ -172,11 +172,10 @@ pub fn parse_media_type(v: &str) -> Result<(String, HashMap<String, String>), (S
         } else {
             &mut params
         };
-        if let Some(old) = pmap.get(&key) {
-            if *old != value {
+        if let Some(old) = pmap.get(&key)
+            && *old != value {
                 return Err((String::new(), ERR_DUPLICATE_PARAM_NAME));
             }
-        }
         pmap.insert(key, value);
         v = rest;
     }

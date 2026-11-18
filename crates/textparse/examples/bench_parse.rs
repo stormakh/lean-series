@@ -113,17 +113,23 @@ fn bench(name: &str, kind: &str, data: &[u8]) {
         parse_once(kind, data, &mut res, &mut e);
         iters += 1;
     }
-    let target = (iters * 5).max(1);
-    let a0 = ALLOCS.load(Ordering::Relaxed);
-    let b0 = BYTES.load(Ordering::Relaxed);
-    let t0 = Instant::now();
-    for _ in 0..target {
-        parse_once(kind, data, &mut res, &mut e);
+    // Best of 5 rounds of about 0.2 s each (other processes on the machine add noise).
+    let target = iters.max(1);
+    let mut ns = f64::MAX;
+    let mut allocs = 0.0;
+    let mut bytes = 0.0;
+    for _ in 0..5 {
+        let a0 = ALLOCS.load(Ordering::Relaxed);
+        let b0 = BYTES.load(Ordering::Relaxed);
+        let t0 = Instant::now();
+        for _ in 0..target {
+            parse_once(kind, data, &mut res, &mut e);
+        }
+        let el = t0.elapsed();
+        ns = ns.min(el.as_nanos() as f64 / target as f64);
+        allocs = (ALLOCS.load(Ordering::Relaxed) - a0) as f64 / target as f64;
+        bytes = (BYTES.load(Ordering::Relaxed) - b0) as f64 / target as f64;
     }
-    let el = t0.elapsed();
-    let ns = el.as_nanos() as f64 / target as f64;
-    let allocs = (ALLOCS.load(Ordering::Relaxed) - a0) as f64 / target as f64;
-    let bytes = (BYTES.load(Ordering::Relaxed) - b0) as f64 / target as f64;
     println!(
         "{name:<58} {target:>8} {ns:>12.0} ns/op {:>9.2} MB/s {bytes:>9.0} B/op {allocs:>7.1} allocs/op  ({samples} samples)",
         data.len() as f64 / ns * 1e3,

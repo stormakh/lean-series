@@ -35,6 +35,8 @@ pub(crate) struct PromLexer {
     pub(crate) i: usize,
     pub(crate) start: usize,
     pub(crate) state: u8,
+    /// OR of the bytes of the quoted strings scanned since it was reset (>= 0x80: maybe not ASCII).
+    pub(crate) hi: u8,
 }
 
 impl PromLexer {
@@ -103,7 +105,7 @@ impl PromLexer {
     /// `\"(\\.|[^\\"])*\"` after the opening quote. Returns false on abort.
     #[inline]
     fn quoted(&mut self, b: &[u8]) -> bool {
-        match lexutil::scan_quoted(b, self.i, self.state == S_LVALUE, true) {
+        match lexutil::scan_quoted(b, self.i, self.state == S_LVALUE, true, &mut self.hi) {
             Ok(close) => {
                 self.i = close;
                 self.next(b);
@@ -362,13 +364,11 @@ pub(crate) fn lossy<'s>(b: &'s [u8], scratch: &'s mut String) -> &'s str {
 /// else a lossy UTF-8 copy.
 #[inline]
 fn part<'s>(b: &'s [u8], whole: Option<&'s str>, s0: usize, a: usize, z: usize, scratch: &'s mut String) -> &'s str {
-    if let Some(w) = whole {
-        if a >= s0 {
-            if let Some(t) = w.get(a - s0..z - s0) {
+    if let Some(w) = whole
+        && a >= s0
+            && let Some(t) = w.get(a - s0..z - s0) {
                 return t;
             }
-        }
-    }
     lossy(&b[a..z], scratch)
 }
 
@@ -573,8 +573,9 @@ impl<'a> PromParser<'a> {
     /// set when it is valid); an invalid value gives Go's error and lexer position as if checked on reading it.
     fn parse_lvals(&mut self) -> Result<(), Error> {
         let from = self.offsets.len();
+        self.l.hi = 0;
         let r = self.parse_lvals_tokens();
-        if r.is_ok() && std::str::from_utf8(&self.b[self.start..self.l.i]).is_ok() {
+        if r.is_ok() && (self.l.hi < 0x80 || std::str::from_utf8(&self.b[self.start..self.l.i]).is_ok()) {
             return r;
         }
         if let Some((e, start, end)) = check_label_values(&self.b, &self.offsets, from, true) {

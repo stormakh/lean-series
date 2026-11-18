@@ -444,11 +444,10 @@ impl Parser for ProtobufParser<'_> {
                             break;
                         }
                     }
-                    if let Some(ExRef::Hist(i)) = ex_ref {
-                        if exs[i].timestamp.is_none() {
+                    if let Some(ExRef::Hist(i)) = ex_ref
+                        && exs[i].timestamp.is_none() {
                             return false;
                         }
-                    }
                 } else {
                     let bb = &h.bucket;
                     if self.field_pos < 0 {
@@ -464,11 +463,10 @@ impl Parser for ProtobufParser<'_> {
                             break;
                         }
                         self.field_pos += 1;
-                        if let Some(e) = &bb[p].exemplar {
-                            if e.timestamp.is_some() {
+                        if let Some(e) = &bb[p].exemplar
+                            && e.timestamp.is_some() {
                                 break;
                             }
-                        }
                     }
                     if !is_classic {
                         let has_ts = match ex_ref {
