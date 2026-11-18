@@ -715,3 +715,120 @@ fn max_samples_cases() -> Vec<(&'static str, usize, i64, i64, i64)> {
         ("max_over_time(metricWith1HistogramEvery10Seconds[61s])[20s:5s]", 91, 201000, 0, 0),
     ]
 }
+
+// -----------------------------------------------------------------------------------------------------------------
+// Select hints.
+
+struct HintRecordingQuerier {
+    hints: Arc<Mutex<Vec<SelectHints>>>,
+}
+
+impl LabelQuerier for HintRecordingQuerier {
+    fn label_values(&self, _: &Context, _: &str, _: Option<&LabelHints>, _: &[Matcher]) -> LabelResult {
+        (Vec::new(), Annotations::new(), None)
+    }
+    fn label_names(&self, _: &Context, _: Option<&LabelHints>, _: &[Matcher]) -> LabelResult {
+        (Vec::new(), Annotations::new(), None)
+    }
+    fn close(&mut self) -> Option<Error> {
+        None
+    }
+}
+
+impl Querier for HintRecordingQuerier {
+    fn select(&self, _: &Context, _: bool, hints: Option<&SelectHints>, _: &[Matcher]) -> BoxSeriesSet {
+        self.hints.lock().unwrap().push(hints.cloned().unwrap_or_default());
+        storage::empty_series_set()
+    }
+}
+
+#[test]
+fn test_select_hints_set_correctly() {
+    let opts = EngineOpts {
+        max_samples: 10,
+        timeout: Duration::from_secs(10),
+        lookback_delta: Duration::from_secs(5),
+        enable_at_modifier: true,
+        ..Default::default()
+    };
+    let mut failures = Vec::new();
+    for (query, start, end, expected) in select_hints_cases() {
+        let engine = Engine::new(opts.clone());
+        let hints = Arc::new(Mutex::new(Vec::new()));
+        let h = hints.clone();
+        let q = Arc::new(QueryableFunc(move |_, _| -> Result<BoxQuerier, Error> {
+            Ok(Box::new(HintRecordingQuerier { hints: h.clone() }))
+        }));
+        let ctx = Context::background();
+        let mut qry = if end == 0 {
+            engine.new_instant_query(&ctx, q, None, query, start).unwrap()
+        } else {
+            engine.new_range_query(&ctx, q, None, query, start, end, 1000).unwrap()
+        };
+        let res = qry.exec(&ctx);
+        if let Some(e) = res.err {
+            failures.push(format!("{}: error {}", query, e));
+            continue;
+        }
+        let got = hints.lock().unwrap().clone();
+        if got != expected {
+            failures.push(format!("{}:\n  want {:?}\n  got  {:?}", query, expected, got));
+        }
+    }
+    assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.join("\n"));
+}
+
+fn select_hints_cases() -> Vec<(&'static str, i64, i64, Vec<SelectHints>)> {
+    vec![
+        ("foo", 10000, 0, vec![SelectHints { start: 5001, end: 10000, ..Default::default() }]),
+        ("foo @ 15", 10000, 0, vec![SelectHints { start: 10001, end: 15000, ..Default::default() }]),
+        ("foo @ 1", 10000, 0, vec![SelectHints { start: -3999, end: 1000, ..Default::default() }]),
+        ("foo[2m]", 200000, 0, vec![SelectHints { start: 80001, end: 200000, range: 120000, ..Default::default() }]),
+        ("foo[2m] @ 180", 200000, 0, vec![SelectHints { start: 60001, end: 180000, range: 120000, ..Default::default() }]),
+        ("foo[2m] @ 300", 200000, 0, vec![SelectHints { start: 180001, end: 300000, range: 120000, ..Default::default() }]),
+        ("foo[2m] @ 60", 200000, 0, vec![SelectHints { start: -59999, end: 60000, range: 120000, ..Default::default() }]),
+        ("foo[2m] offset 2m", 300000, 0, vec![SelectHints { start: 60001, end: 180000, range: 120000, ..Default::default() }]),
+        ("foo[2m] @ 200 offset 2m", 300000, 0, vec![SelectHints { start: -39999, end: 80000, range: 120000, ..Default::default() }]),
+        ("foo[2m:1s]", 300000, 0, vec![SelectHints { start: 175001, end: 300000, step: 1000, ..Default::default() }]),
+        ("count_over_time(foo[2m:1s])", 300000, 0, vec![SelectHints { start: 175001, end: 300000, func: "count_over_time".to_string(), step: 1000, ..Default::default() }]),
+        ("count_over_time(foo[2m:1s] @ 300)", 200000, 0, vec![SelectHints { start: 175001, end: 300000, func: "count_over_time".to_string(), step: 1000, ..Default::default() }]),
+        ("count_over_time(foo[2m:1s] @ 200)", 200000, 0, vec![SelectHints { start: 75001, end: 200000, func: "count_over_time".to_string(), step: 1000, ..Default::default() }]),
+        ("count_over_time(foo[2m:1s] @ 100)", 200000, 0, vec![SelectHints { start: -24999, end: 100000, func: "count_over_time".to_string(), step: 1000, ..Default::default() }]),
+        ("count_over_time(foo[2m:1s] offset 10s)", 300000, 0, vec![SelectHints { start: 165001, end: 290000, func: "count_over_time".to_string(), step: 1000, ..Default::default() }]),
+        ("count_over_time((foo offset 10s)[2m:1s] offset 10s)", 300000, 0, vec![SelectHints { start: 155001, end: 280000, func: "count_over_time".to_string(), step: 1000, ..Default::default() }]),
+        ("count_over_time((foo @ 200 offset 10s)[2m:1s] offset 10s)", 300000, 0, vec![SelectHints { start: 185001, end: 190000, func: "count_over_time".to_string(), step: 1000, ..Default::default() }]),
+        ("count_over_time((foo @ 200 offset 10s)[2m:1s] @ 100 offset 10s)", 300000, 0, vec![SelectHints { start: 185001, end: 190000, func: "count_over_time".to_string(), step: 1000, ..Default::default() }]),
+        ("count_over_time((foo offset 10s)[2m:1s] @ 100 offset 10s)", 300000, 0, vec![SelectHints { start: -44999, end: 80000, func: "count_over_time".to_string(), step: 1000, ..Default::default() }]),
+        ("foo", 10000, 20000, vec![SelectHints { start: 5001, end: 20000, step: 1000, ..Default::default() }]),
+        ("foo @ 15", 10000, 20000, vec![SelectHints { start: 10001, end: 15000, step: 1000, ..Default::default() }]),
+        ("foo @ 1", 10000, 20000, vec![SelectHints { start: -3999, end: 1000, step: 1000, ..Default::default() }]),
+        ("rate(foo[2m] @ 180)", 200000, 500000, vec![SelectHints { start: 60001, end: 180000, range: 120000, func: "rate".to_string(), step: 1000, ..Default::default() }]),
+        ("rate(foo[2m] @ 300)", 200000, 500000, vec![SelectHints { start: 180001, end: 300000, range: 120000, func: "rate".to_string(), step: 1000, ..Default::default() }]),
+        ("rate(foo[2m] @ 60)", 200000, 500000, vec![SelectHints { start: -59999, end: 60000, range: 120000, func: "rate".to_string(), step: 1000, ..Default::default() }]),
+        ("rate(foo[2m])", 200000, 500000, vec![SelectHints { start: 80001, end: 500000, range: 120000, func: "rate".to_string(), step: 1000, ..Default::default() }]),
+        ("rate(foo[2m] offset 2m)", 300000, 500000, vec![SelectHints { start: 60001, end: 380000, range: 120000, func: "rate".to_string(), step: 1000, ..Default::default() }]),
+        ("rate(foo[2m:1s])", 300000, 500000, vec![SelectHints { start: 175001, end: 500000, func: "rate".to_string(), step: 1000, ..Default::default() }]),
+        ("count_over_time(foo[2m:1s])", 300000, 500000, vec![SelectHints { start: 175001, end: 500000, func: "count_over_time".to_string(), step: 1000, ..Default::default() }]),
+        ("count_over_time(foo[2m:1s] offset 10s)", 300000, 500000, vec![SelectHints { start: 165001, end: 490000, func: "count_over_time".to_string(), step: 1000, ..Default::default() }]),
+        ("count_over_time(foo[2m:1s] @ 300)", 200000, 500000, vec![SelectHints { start: 175001, end: 300000, func: "count_over_time".to_string(), step: 1000, ..Default::default() }]),
+        ("count_over_time(foo[2m:1s] @ 200)", 200000, 500000, vec![SelectHints { start: 75001, end: 200000, func: "count_over_time".to_string(), step: 1000, ..Default::default() }]),
+        ("count_over_time(foo[2m:1s] @ 100)", 200000, 500000, vec![SelectHints { start: -24999, end: 100000, func: "count_over_time".to_string(), step: 1000, ..Default::default() }]),
+        ("count_over_time((foo offset 10s)[2m:1s] offset 10s)", 300000, 500000, vec![SelectHints { start: 155001, end: 480000, func: "count_over_time".to_string(), step: 1000, ..Default::default() }]),
+        ("count_over_time((foo @ 200 offset 10s)[2m:1s] offset 10s)", 300000, 500000, vec![SelectHints { start: 185001, end: 190000, func: "count_over_time".to_string(), step: 1000, ..Default::default() }]),
+        ("count_over_time((foo @ 200 offset 10s)[2m:1s] @ 100 offset 10s)", 300000, 500000, vec![SelectHints { start: 185001, end: 190000, func: "count_over_time".to_string(), step: 1000, ..Default::default() }]),
+        ("count_over_time((foo offset 10s)[2m:1s] @ 100 offset 10s)", 300000, 500000, vec![SelectHints { start: -44999, end: 80000, func: "count_over_time".to_string(), step: 1000, ..Default::default() }]),
+        ("sum by (dim1) (foo)", 10000, 0, vec![SelectHints { start: 5001, end: 10000, func: "sum".to_string(), by: true, grouping: vec!["dim1".to_string()], ..Default::default() }]),
+        ("sum without (dim1) (foo)", 10000, 0, vec![SelectHints { start: 5001, end: 10000, func: "sum".to_string(), grouping: vec!["dim1".to_string()], ..Default::default() }]),
+        ("sum by (dim1) (avg_over_time(foo[1s]))", 10000, 0, vec![SelectHints { start: 9001, end: 10000, func: "avg_over_time".to_string(), range: 1000, ..Default::default() }]),
+        ("sum by (dim1) (max by (dim2) (foo))", 10000, 0, vec![SelectHints { start: 5001, end: 10000, func: "max".to_string(), by: true, grouping: vec!["dim2".to_string()], ..Default::default() }]),
+        ("(max by (dim1) (foo))[5s:1s]", 10000, 0, vec![SelectHints { start: 1, end: 10000, func: "max".to_string(), by: true, grouping: vec!["dim1".to_string()], step: 1000, ..Default::default() }]),
+        ("(sum(http_requests{group=~\"p.*\"})+max(http_requests{group=~\"c.*\"}))[20s:5s]", 120000, 0, vec![SelectHints { start: 95001, end: 120000, func: "sum".to_string(), by: true, step: 5000, ..Default::default() }, SelectHints { start: 95001, end: 120000, func: "max".to_string(), by: true, step: 5000, ..Default::default() }]),
+        ("foo @ 50 + bar @ 250 + baz @ 900", 100000, 500000, vec![SelectHints { start: 45001, end: 50000, step: 1000, ..Default::default() }, SelectHints { start: 245001, end: 250000, step: 1000, ..Default::default() }, SelectHints { start: 895001, end: 900000, step: 1000, ..Default::default() }]),
+        ("foo @ 50 + bar + baz @ 900", 100000, 500000, vec![SelectHints { start: 45001, end: 50000, step: 1000, ..Default::default() }, SelectHints { start: 95001, end: 500000, step: 1000, ..Default::default() }, SelectHints { start: 895001, end: 900000, step: 1000, ..Default::default() }]),
+        ("rate(foo[2s] @ 50) + bar @ 250 + baz @ 900", 100000, 500000, vec![SelectHints { start: 48001, end: 50000, step: 1000, func: "rate".to_string(), range: 2000, ..Default::default() }, SelectHints { start: 245001, end: 250000, step: 1000, ..Default::default() }, SelectHints { start: 895001, end: 900000, step: 1000, ..Default::default() }]),
+        ("rate(foo[2s:1s] @ 50) + bar + baz", 100000, 500000, vec![SelectHints { start: 43001, end: 50000, step: 1000, func: "rate".to_string(), ..Default::default() }, SelectHints { start: 95001, end: 500000, step: 1000, ..Default::default() }, SelectHints { start: 95001, end: 500000, step: 1000, ..Default::default() }]),
+        ("rate(foo[2s:1s] @ 50) + bar + rate(baz[2m:1s] @ 900 offset 2m) ", 100000, 500000, vec![SelectHints { start: 43001, end: 50000, step: 1000, func: "rate".to_string(), ..Default::default() }, SelectHints { start: 95001, end: 500000, step: 1000, ..Default::default() }, SelectHints { start: 655001, end: 780000, step: 1000, func: "rate".to_string(), ..Default::default() }]),
+        (r#"sum_over_time(sum_over_time(metric{job="1"}[100s])[100s:25s] @ 50)[3s:1s] @ 3000"#, 100000, 0, vec![SelectHints { start: -149999, end: 50000, range: 100000, func: "sum_over_time".to_string(), step: 25000, ..Default::default() }]),
+        (r#"sum_over_time(sum_over_time(metric{job="1"}[100s])[100s:25s] @ 3000)[3s:1s] @ 50"#, 0, 0, vec![SelectHints { start: 2800001, end: 3000000, range: 100000, func: "sum_over_time".to_string(), step: 25000, ..Default::default() }]),
+    ]
+}
