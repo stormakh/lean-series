@@ -21,11 +21,13 @@ pub struct HttpClientOptions {
     pub user_agent: String,
     pub host: String,
     pub secret_manager: Option<Arc<dyn SecretManager>>,
+    /// Dial this unix socket instead of the request host.
+    pub unix_socket: Option<String>,
 }
 
 impl Default for HttpClientOptions {
     fn default() -> Self {
-        HttpClientOptions { dial: None, keep_alives: true, http2: true, idle_conn_timeout: Duration::from_secs(300), user_agent: String::new(), host: String::new(), secret_manager: None }
+        HttpClientOptions { dial: None, keep_alives: true, http2: true, idle_conn_timeout: Duration::from_secs(300), user_agent: String::new(), host: String::new(), secret_manager: None, unix_socket: None }
     }
 }
 
@@ -54,6 +56,10 @@ impl HttpClientOptions {
         self.host = host.to_string();
         self
     }
+    pub fn with_unix_socket(mut self, path: &str) -> Self {
+        self.unix_socket = Some(path.to_string());
+        self
+    }
     pub fn with_secret_manager(mut self, m: Arc<dyn SecretManager>) -> Self {
         self.secret_manager = Some(m);
         self
@@ -69,7 +75,7 @@ pub fn new_round_tripper_from_config(cfg: &HttpClientConfig, opts: &HttpClientOp
         let cfg = &cfg2;
         let opts = &opts2;
         let mgr = opts.secret_manager.as_ref();
-        let topts = TransportOptions { keep_alives: opts.keep_alives, idle_conn_timeout: opts.idle_conn_timeout, max_idle_per_host: 1000, dial: opts.dial.clone() };
+        let topts = TransportOptions { keep_alives: opts.keep_alives, idle_conn_timeout: opts.idle_conn_timeout, max_idle_per_host: 1000, dial: opts.dial.clone(), unix_socket: opts.unix_socket.clone() };
         let mut rt: Arc<dyn RoundTripper> = Arc::new(Transport::new(tls, cfg.proxy_config.proxy(), cfg.proxy_config.get_proxy_connect_header(), topts).map_err(Error::other)?);
         if let Some(a) = &cfg.authorization {
             let s = to_secret(mgr, &a.credentials, &a.credentials_file, &a.credentials_ref).map_err(|e| Error::other(format!("unable to use credentials: {e}")))?;
@@ -242,7 +248,7 @@ impl Client {
             let mut redirect_hosts = std::mem::take(&mut req.redirect_hosts);
             redirect_hosts.push(url.hostname().to_string());
             let body = if include_body { initial.body.clone() } else { Vec::new() };
-            req = Request { method: redirect_method, url: next_url, header, host, body, timeout: req.timeout, max_body_bytes: req.max_body_bytes, decompress: req.decompress, redirect_hosts };
+            req = Request { method: redirect_method, url: next_url, header, host, body, timeout: req.timeout, max_body_bytes: req.max_body_bytes, decompress: req.decompress, redirect_hosts, truncate_body: req.truncate_body, cancel: req.cancel.clone() };
         }
     }
 }

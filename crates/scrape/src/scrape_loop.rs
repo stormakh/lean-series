@@ -703,12 +703,6 @@ impl ScrapeLoop {
         }
         s.errc = errc;
         s.phase = Phase::Offset;
-        let me = Arc::downgrade(self);
-        s.ctx_waker = Some(self.ctx.add_waker(Arc::new(move || {
-            if let Some(sl) = me.upgrade() {
-                sl.wake();
-            }
-        })));
         let offset = self.get_scrape_offset();
         s.generation += 1;
         let due = self.runtime.now() + offset;
@@ -718,6 +712,21 @@ impl ScrapeLoop {
             self.runtime.spawn(self.clone(), generation);
         } else {
             self.runtime.schedule_at(due, self.clone(), generation);
+        }
+        // Registered without the sched lock: on an already cancelled context (stop before run) the waker runs at
+        // once and takes the lock.
+        let me = Arc::downgrade(self);
+        let id = self.ctx.add_waker(Arc::new(move || {
+            if let Some(sl) = me.upgrade() {
+                sl.wake();
+            }
+        }));
+        let mut s = self.sched.lock().unwrap();
+        if s.phase == Phase::Done {
+            drop(s);
+            self.ctx.remove_waker(id);
+        } else {
+            s.ctx_waker = Some(id);
         }
     }
 

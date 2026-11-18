@@ -299,6 +299,18 @@ impl Runtime {
         }
     }
 
+    /// Runs `f` on a worker at the monotonic time `due` (a one-shot timer on the runtime clock).
+    pub fn schedule_fn_at(self: &Arc<Self>, due: Duration, f: Box<dyn FnOnce() + Send>) {
+        self.schedule_at(due, Arc::new(FnTask(Mutex::new(Some(f)))), 0);
+    }
+
+    /// Marks the runtime busy while the guard lives, for work outside the workers that [`Runtime::wait_idle`]
+    /// must wait for (Go synctest: a goroutine that is not durably blocked).
+    pub fn busy_guard(self: &Arc<Self>) -> BusyGuard {
+        self.work.lock().unwrap().running += 1;
+        BusyGuard(self.clone())
+    }
+
     /// Number of worker threads now (for tests and metrics).
     pub fn workers(&self) -> usize {
         self.work.lock().unwrap().total
@@ -363,5 +375,29 @@ impl Runtime {
         }
         let _g = self.sched.lock().unwrap();
         self.sched_cv.notify_all();
+    }
+}
+
+struct FnTask(Mutex<Option<Box<dyn FnOnce() + Send>>>);
+
+impl Task for FnTask {
+    fn run_task(self: Arc<Self>, _rt: &Arc<Runtime>, _generation: u64) {
+        let f = self.0.lock().unwrap().take();
+        if let Some(f) = f {
+            f();
+        }
+    }
+}
+
+/// See [`Runtime::busy_guard`].
+pub struct BusyGuard(Arc<Runtime>);
+
+impl Drop for BusyGuard {
+    fn drop(&mut self) {
+        let mut w = self.0.work.lock().unwrap();
+        w.running -= 1;
+        if w.running == 0 && w.queue.is_empty() {
+            self.0.idle_cv.notify_all();
+        }
     }
 }

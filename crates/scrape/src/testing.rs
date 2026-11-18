@@ -232,3 +232,5 @@ impl FailureLogger for RecordingFailureLogger {
         Ok(())
     }
 }
+
+pub mod dto;

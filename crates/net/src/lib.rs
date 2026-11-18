@@ -26,5 +26,5 @@ pub use config::{Authorization, BasicAuth, Headers, HttpClientConfig, OAuth2, Pr
 pub use roundtrip::RoundTripper;
 pub use secret::{SecretManager, SecretReader};
 pub use sigv4::{SigV4Config, SigV4RoundTripper};
-pub use transport::{Transport, TransportOptions};
-pub use types::{Error, ErrorKind, Header, Request, Response};
+pub use transport::{Sock, Transport, TransportOptions};
+pub use types::{Cancel, Error, ErrorKind, Header, Request, Response};

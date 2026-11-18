@@ -17,5 +17,7 @@ flate2 = "=1.1.10"
 zstd = { version = "0.13", default-features = false }
 
 [dev-dependencies]
+crypto = { path = "../crypto" }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 util = { path = "../util" }
 http = { path = "../http" }

@@ -134,9 +134,8 @@ pub fn new_unix_socket_scrape_client(
     cfg: &net::HttpClientConfig,
     opts: &net::HttpClientOptions,
 ) -> Result<net::Client, Error> {
-    // TODO(unix): the net transport dials TCP only.
-    let _ = (cfg, opts);
-    Err(Error::msg(format!("dial unix {socket_path}: unix sockets are not supported")))
+    let opts = opts.clone().with_unix_socket(socket_path);
+    new_scrape_client(cfg, &opts)
 }
 
 /// Go `reusableCache`: whether two scrape configs differ only in fields that do not change the scraped series.

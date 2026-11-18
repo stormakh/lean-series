@@ -390,12 +390,14 @@ name = "scrape"
 version = "0.1.0"
 dependencies = [
  "config",
+ "crypto",
  "discovery",
  "flate2",
  "http",
  "json",
  "model",
  "net",
+ "rustls",
  "storage",
  "textparse",
  "util",

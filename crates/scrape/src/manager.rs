@@ -15,7 +15,7 @@ use storage::{Appendable, AppendableV2, Error};
 use crate::failure_log::FailureLogger;
 use crate::metrics::{ScrapeMetrics, TargetsGatherer};
 use crate::pool::{ScrapePool, stop_loops};
-use crate::runtime::Runtime;
+use crate::runtime::{BusyGuard, Runtime};
 use crate::scrape_loop::Signal;
 use crate::target::Target;
 use crate::util::{BufPool, fnv64a};
@@ -109,6 +109,20 @@ pub struct ManagerState {
     pub target_sets: TargetSets,
 }
 
+/// The reload trigger and ticker state, guarded by `Manager::trigger`.
+#[derive(Default)]
+struct ReloadState {
+    /// Go `triggerReload` (a channel with a buffer of one).
+    trigger: bool,
+    /// The reloader blocks waiting for `trigger`.
+    waiting_trigger: bool,
+    /// The current tick of the reload ticker fired.
+    ticked: bool,
+    tick_seq: u64,
+    /// Busy marks of the runtime handed to the reloader with a tick or trigger (virtual time waits for them).
+    guards: Vec<BusyGuard>,
+}
+
 /// The scrape manager (Go `Manager`).
 pub struct Manager {
     pub opts: Arc<Options>,
@@ -120,7 +134,7 @@ pub struct Manager {
     pub mtx_scrape: Mutex<ManagerState>,
     new_scrape_failure_logger: Option<NewFailureLogger>,
     pub buffers: Arc<BufPool>,
-    trigger: Mutex<(bool, bool)>,
+    trigger: Mutex<ReloadState>,
     trigger_cv: Condvar,
     pub metrics: Arc<ScrapeMetrics>,
 }
@@ -166,7 +180,7 @@ impl Manager {
             mtx_scrape: Mutex::new(ManagerState::default()),
             new_scrape_failure_logger,
             buffers: Arc::new(BufPool::new(1000, 100_000_000, 3)),
-            trigger: Mutex::new((false, false)),
+            trigger: Mutex::new(ReloadState::default()),
             trigger_cv: Condvar::new(),
             metrics: sm,
         });
@@ -189,7 +203,13 @@ impl Manager {
     /// the manager stops.
     pub fn run<S: TargetSetsSource>(self: &Arc<Self>, tsets: S) -> Result<(), String> {
         let me = self.clone();
-        std::thread::Builder::new().name("scrape-reloader".into()).spawn(move || me.reloader()).map_err(|e| e.to_string())?;
+        // The reloader holds the runtime busy until it first blocks (virtual time must not move before it set up
+        // its ticker).
+        let g = self.runtime().busy_guard();
+        std::thread::Builder::new()
+            .name("scrape-reloader".into())
+            .spawn(move || me.reloader(g))
+            .map_err(|e| e.to_string())?;
         let done = Arc::new(Signal::default());
         let me = self.clone();
         let d2 = done.clone();
@@ -202,9 +222,14 @@ impl Manager {
                     }
                     match tsets.recv() {
                         Some(ts) => {
+                            let g = me.runtime().busy_guard();
                             me.update_tsets(ts);
                             let mut t = lock(&me.trigger);
-                            t.0 = true;
+                            t.trigger = true;
+                            if t.waiting_trigger && !me.grace_shut.is_set() {
+                                // Hand the busy mark to the reloader, which reloads now.
+                                t.guards.push(g);
+                            }
                             me.trigger_cv.notify_all();
                         }
                         None => break,
@@ -222,47 +247,108 @@ impl Manager {
         Ok(())
     }
 
+    /// Takes a pending reload trigger (Go `<-m.triggerReload` in a `select` with `default`); for tests.
+    pub fn take_trigger_reload(&self) -> bool {
+        std::mem::take(&mut lock(&self.trigger).trigger)
+    }
+
     /// Go `UnregisterMetrics`.
     pub fn unregister_metrics(&self) {
         self.metrics.unregister();
     }
 
-    /// Waits up to `d` or until shutdown; true on shutdown.
-    fn sleep_or_shutdown(&self, d: Duration) -> bool {
-        self.grace_shut.wait_timeout(d)
-    }
-
-    /// Waits for a reload trigger; false on shutdown.
-    fn wait_trigger(&self) -> bool {
+    /// Waits for a reload trigger; false on shutdown. `guards` (busy marks) are dropped when it blocks and the
+    /// marks handed over with the trigger are added.
+    fn wait_trigger(&self, guards: &mut Vec<BusyGuard>) -> bool {
         let mut t = lock(&self.trigger);
         loop {
             if self.grace_shut.is_set() {
                 return false;
             }
-            if t.0 {
-                t.0 = false;
+            if t.trigger {
+                t.trigger = false;
+                t.waiting_trigger = false;
+                guards.append(&mut t.guards);
                 return true;
             }
+            t.waiting_trigger = true;
+            guards.clear();
             t = self.trigger_cv.wait(t).unwrap_or_else(|e| e.into_inner());
         }
     }
 
-    fn reloader(self: Arc<Self>) {
+    /// Waits for the next tick of the reload ticker (Go `<-ticker.C`, on the runtime clock): `next` is the time
+    /// of the next tick; a tick missed while busy is delivered at once, further missed ones are dropped. False on
+    /// shutdown.
+    fn wait_tick(self: &Arc<Self>, rt: &Arc<Runtime>, next: &mut Duration, interval: Duration, guards: &mut Vec<BusyGuard>) -> bool {
+        if *next > rt.now() {
+            {
+                let mut t = lock(&self.trigger);
+                t.ticked = false;
+                t.tick_seq += 1;
+            }
+            let seq = lock(&self.trigger).tick_seq;
+            let w = Arc::downgrade(self);
+            let rt2 = rt.clone();
+            rt.schedule_fn_at(
+                *next,
+                Box::new(move || {
+                    if let Some(m) = w.upgrade() {
+                        let g = rt2.busy_guard();
+                        let mut t = lock(&m.trigger);
+                        if t.tick_seq == seq && !m.grace_shut.is_set() {
+                            t.ticked = true;
+                            t.guards.push(g);
+                            m.trigger_cv.notify_all();
+                        }
+                    }
+                }),
+            );
+            let mut t = lock(&self.trigger);
+            guards.clear();
+            loop {
+                if self.grace_shut.is_set() {
+                    return false;
+                }
+                if t.ticked {
+                    t.ticked = false;
+                    guards.append(&mut t.guards);
+                    break;
+                }
+                t = self.trigger_cv.wait(t).unwrap_or_else(|e| e.into_inner());
+            }
+        } else if self.grace_shut.is_set() {
+            return false;
+        }
+        let now = rt.now();
+        *next += interval;
+        while *next <= now {
+            *next += interval;
+        }
+        true
+    }
+
+    fn reloader(self: Arc<Self>, g: BusyGuard) {
+        let rt = self.runtime();
+        let mut guards = vec![g];
         let mut interval = self.opts.discovery_reload_interval;
         if interval.is_zero() {
             interval = Duration::from_secs(5);
         }
+        let mut next = rt.now() + interval;
         if self.opts.discovery_reload_on_startup {
-            if !self.wait_trigger() {
+            if !self.wait_trigger(&mut guards) {
                 return;
             }
             self.reload();
+            // Go `ticker.Reset`.
+            next = rt.now() + interval;
         }
         loop {
-            if self.sleep_or_shutdown(interval) {
+            if !self.wait_tick(&rt, &mut next, interval, &mut guards) {
                 return;
             }
-            if !self.wait_trigger() {
+            if !self.wait_trigger(&mut guards) {
                 return;
             }
             self.reload();
@@ -340,7 +426,8 @@ impl Manager {
         }
         drop(st);
         self.grace_shut.set();
-        let _g = lock(&self.trigger);
+        let mut t = lock(&self.trigger);
+        t.guards.clear();
         self.trigger_cv.notify_all();
     }
 

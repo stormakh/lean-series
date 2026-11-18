@@ -82,14 +82,6 @@ impl Limits {
     /// The max schema and bucket limit steps for a histogram (modified in place).
     fn histogram_limits(&self, h: Option<&mut Histogram>, fh: Option<&mut FloatHistogram>) -> Result<(), Error> {
         let reserved = is_exponential_schema_reserved;
-        if self.max_schema < EXPONENTIAL_SCHEMA_MAX {
-            if let Some(h) = h.as_deref()
-                && reserved(h.schema)
-                && h.schema > self.max_schema
-            {
-                // handled below with mutable access
-            }
-        }
         let (mut h, mut fh) = (h, fh);
         if self.max_schema < EXPONENTIAL_SCHEMA_MAX {
             if let Some(h) = h.as_deref_mut()

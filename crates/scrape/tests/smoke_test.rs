@@ -71,3 +71,39 @@ fn smoke_run_loop() {
     let ups = got.iter().filter(|s| s.l.get("__name__") == "up").count();
     assert_eq!(n, ups);
 }
+
+#[test]
+fn smoke_dto_proto_append() {
+    let mut b = Vec::new();
+    scrape::testing::dto::text_to_proto(
+        r#"name: "test_float_hist"
+help: "test help"
+type: HISTOGRAM
+metric: <
+  label: < name: "foo" value: "1" >
+  histogram: <
+    schema: 3
+    sample_count_float: 3.0
+    sample_sum: 5.0
+    positive_span: < offset: 0 length: 2 >
+    positive_count: 1.0
+    positive_count: 2.0
+  >
+>
+"#,
+        &mut b,
+    )
+    .unwrap();
+    let app = Appendable::new();
+    let (sl, _) = new_test_scrape_loop(|sl| {
+        sl.appendable_v2 = Some(Arc::new(app.clone()));
+        sl.enable_native_histogram_scraping = true;
+    });
+    let mut a = sl.appender();
+    let (stats, err) = a.append(&b, "application/vnd.google.protobuf", SystemTime::now());
+    assert!(err.is_none(), "{err:?}");
+    assert!(a.commit().is_none());
+    assert_eq!(stats.total, 1);
+    let got = app.result_samples();
+    assert!(got[0].fh.is_some(), "{got:?}");
+}

@@ -89,13 +89,64 @@ pub struct Request {
     pub decompress: bool,
     /// Hostnames of the earlier requests in a redirect chain, original first (Go's `req.Response` chain).
     pub redirect_hosts: Vec<String>,
+    /// With `max_body_bytes`: cut longer bodies to `max_body_bytes + 1` bytes instead of failing, so the caller
+    /// keeps the first bytes and sees that the limit was exceeded (Go `io.LimitReader` on the body).
+    pub truncate_body: bool,
+    /// Cancels the request from another thread (Go request context cancellation).
+    pub cancel: Option<Cancel>,
+}
+
+/// A cancellation handle for requests: `cancel()` aborts a running exchange by shutting its socket down, and
+/// later exchanges fail at once with "context canceled".
+#[derive(Clone, Default)]
+pub struct Cancel(std::sync::Arc<CancelInner>);
+
+#[derive(Default)]
+pub struct CancelInner {
+    cancelled: std::sync::atomic::AtomicBool,
+    socks: std::sync::Mutex<Vec<crate::transport::Sock>>,
+}
+
+impl std::fmt::Debug for Cancel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Cancel({})", self.is_cancelled())
+    }
+}
+
+impl Cancel {
+    pub fn new() -> Cancel {
+        Cancel::default()
+    }
+    pub fn is_cancelled(&self) -> bool {
+        self.0.cancelled.load(std::sync::atomic::Ordering::SeqCst)
+    }
+    /// Cancels: running exchanges fail with "context canceled".
+    pub fn cancel(&self) {
+        self.0.cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
+        for s in self.0.socks.lock().unwrap_or_else(|e| e.into_inner()).drain(..) {
+            s.shutdown();
+        }
+    }
+    /// Registers the socket of a running exchange (shut down at once when already cancelled).
+    pub(crate) fn register(&self, s: crate::transport::Sock) {
+        let mut g = self.0.socks.lock().unwrap_or_else(|e| e.into_inner());
+        if self.is_cancelled() {
+            s.shutdown();
+            return;
+        }
+        g.push(s);
+    }
+    /// Drops the registered sockets after an exchange.
+    pub(crate) fn clear(&self) {
+        self.0.socks.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
 }
 
 impl Request {
     /// Go `http.NewRequest`.
     pub fn new(method: &str, url: &str, body: Vec<u8>) -> Result<Request, Error> {
         let u = yaml::url::parse(url).map_err(Error::other)?;
-        Ok(Request { method: method.to_string(), url: u, header: Header::new(), host: String::new(), body, timeout: None, max_body_bytes: None, decompress: false, redirect_hosts: Vec::new() })
+        Ok(Request { method: method.to_string(), url: u, header: Header::new(), host: String::new(), body, timeout: None, max_body_bytes: None, decompress: false, redirect_hosts: Vec::new(), truncate_body: false, cancel: None })
     }
     pub fn get(url: &str) -> Result<Request, Error> {
         Request::new("GET", url, Vec::new())
@@ -140,6 +191,8 @@ pub enum ErrorKind {
     Timeout,
     /// The body is bigger than `max_body_bytes`.
     BodyTooLarge,
+    /// The request was cancelled (Go "context canceled").
+    Canceled,
     Other,
 }
 
@@ -156,6 +209,9 @@ impl Error {
     }
     pub fn timeout() -> Error {
         Error { kind: ErrorKind::Timeout, msg: "context deadline exceeded".to_string() }
+    }
+    pub fn canceled() -> Error {
+        Error { kind: ErrorKind::Canceled, msg: "context canceled".to_string() }
     }
     pub fn too_large() -> Error {
         Error { kind: ErrorKind::BodyTooLarge, msg: "body size limit exceeded".to_string() }

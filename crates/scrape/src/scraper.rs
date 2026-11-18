@@ -89,6 +89,7 @@ pub fn net_error(e: net::Error) -> Error {
     match e.kind {
         net::ErrorKind::Timeout => Error::wrapped(e.msg, ERR_DEADLINE_EXCEEDED),
         net::ErrorKind::BodyTooLarge => ERR_BODY_SIZE_LIMIT,
+        net::ErrorKind::Canceled => Error::wrapped(e.msg, ERR_CANCELED),
         _ => Error::msg(e.msg),
     }
 }
@@ -208,12 +209,25 @@ impl Scraper for TargetScraper {
             let now = std::time::Instant::now();
             req.timeout = Some(d.saturating_duration_since(now));
         }
-        // The raw body may not exceed the limit either (it is at most the decoded size for identity bodies).
+        // The raw body is cut after the limit (Go reads the body through io.LimitReader); read_response reports
+        // the limit.
         if self.body_size_limit > 0 {
-            req.max_body_bytes = Some(self.limit());
+            // A compressed body may be larger than its decoded prefix of `limit` bytes; gzip and zstd expand
+            // incompressible data by far less than 1/16 plus 64 KiB.
+            let limit = self.limit();
+            let raw = if self.accept_encoding_header == "identity" { limit } else { limit.saturating_add(limit / 16 + (64 << 10)) };
+            req.max_body_bytes = Some(raw);
+            req.truncate_body = true;
         }
+        // Cancelling the context aborts the request (Go request context).
+        let cancel = net::Cancel::new();
+        req.cancel = Some(cancel.clone());
+        let c2 = cancel.clone();
+        let waker = ctx.add_waker(std::sync::Arc::new(move || c2.cancel()));
         let url = req.url.to_url_string();
-        match self.client.do_request(req) {
+        let res = self.client.do_request(req);
+        ctx.remove_waker(waker);
+        match res {
             Ok(r) => Ok(Some(r)),
             Err(e) => {
                 if e.kind == net::ErrorKind::BodyTooLarge {
@@ -242,7 +256,12 @@ impl Scraper for TargetScraper {
         let n = match resp.header.get_str("Content-Encoding") {
             "gzip" => {
                 let mut d = flate2::read::GzDecoder::new(&resp.body[..]);
-                copy_limited(&mut d, w, limit).map_err(|e| gzip_error(&e))?
+                match copy_limited(&mut d, w, limit) {
+                    Ok(n) => n,
+                    // A raw body cut at the limit decodes to at least as many bytes as Go would have read.
+                    Err(_) if resp.body.len() > limit => limit,
+                    Err(e) => return Err(gzip_error(&e)),
+                }
             }
             "zstd" => {
                 if !self.enable_zstd {
@@ -294,8 +313,9 @@ impl Scraper for TargetScraper {
 fn zstd_error_text(e: &std::io::Error) -> String {
     let s = e.to_string();
     if s.contains("Frame requires too much memory") || s.contains("window") {
-        // Go klauspost/compress: "window size exceeded".
-        return "zstd: window size exceeded".to_string();
+        // Go klauspost/compress: the stream decoder returns ErrDecoderSizeExceeded when the frame window is larger
+        // than WithDecoderMaxWindow (decoder.go startStreamDecoder/nextBlock).
+        return "decompressed size exceeds configured limit".to_string();
     }
     s
 }
