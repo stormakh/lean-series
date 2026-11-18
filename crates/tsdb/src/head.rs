@@ -645,6 +645,16 @@ impl MemSeries {
         lock(&self.inner)
     }
 
+    /// Go `TryLock` (tests): whether the lock is free; a lock poisoned by a panic counts as free.
+    #[doc(hidden)]
+    pub fn test_try_lock(&self) -> bool {
+        match self.inner.try_lock() {
+            Ok(_) => true,
+            Err(std::sync::TryLockError::Poisoned(_)) => true,
+            Err(std::sync::TryLockError::WouldBlock) => false,
+        }
+    }
+
     /// Go `labels()`.
     #[inline]
     pub fn labels(&self) -> &Labels {
