@@ -8,16 +8,19 @@
 //! See README.md for how to add a provider.
 pub mod cancel;
 pub mod chan;
+pub mod eureka;
 pub mod file;
 pub mod glob;
 pub mod http;
 pub mod log;
 pub mod manager;
+pub mod marathon;
 pub mod metrics;
 pub mod refresh;
 pub mod registry;
 pub mod sdutil;
 pub mod targetgroup;
+pub mod zookeeper;
 
 use std::any::Any;
 use std::collections::HashMap;
