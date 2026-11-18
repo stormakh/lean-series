@@ -707,9 +707,9 @@ pub fn new_test_head(name: &str, chunk_range: i64, compress_wal: compression::Ty
         enable_exemplar_storage: true,
         ..HeadOptions::default()
     };
-    opts.max_exemplars.store(10, Ordering::Relaxed);
+    opts.max_exemplars.store(100_000, Ordering::Relaxed); // Go config.DefaultExemplarsConfig.MaxExemplars.
     if ooo_enabled {
-        opts.out_of_order_time_window.store(10 * 60 * 60 * 1000, Ordering::Relaxed);
+        opts.out_of_order_time_window.store(10 * 60 * 1000, Ordering::Relaxed); // 10 minutes.
     }
     new_test_head_with_options(name, compress_wal, opts)
 }
