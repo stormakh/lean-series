@@ -680,7 +680,8 @@ impl std::ops::Deref for TestHead {
 
 impl Drop for TestHead {
     fn drop(&mut self) {
-        if !self.head.is_closed() {
+        // Not while panicking: a second panic in close (for example a failing snapshot) would abort the test binary.
+        if !self.head.is_closed() && !std::thread::panicking() {
             self.head.close().expect("close head");
         }
     }
