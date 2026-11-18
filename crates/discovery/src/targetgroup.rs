@@ -77,6 +77,12 @@ impl Group {
         Ok(Group { targets: targets.into_iter().map(|t| LabelSet::from_pairs(&[(ADDRESS_LABEL, &t)])).collect(), labels, source: String::new() })
     }
 
+    /// Go `UnmarshalJSON` of JSON text.
+    pub fn unmarshal_json(b: &str) -> Result<Group, String> {
+        let v = json::Json::parse(b).map_err(|e| e.to_string())?;
+        Group::from_json(&v)
+    }
+
     /// Go `json.Unmarshal(b, &[]*targetgroup.Group)`; a null item is None.
     pub fn list_from_json(b: &[u8]) -> Result<Vec<Option<Group>>, String> {
         let v = json::Json::parse_bytes(b).map_err(|e| e.to_string())?;
