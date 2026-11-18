@@ -816,7 +816,8 @@ pub fn get_bound(idx: i32, schema: i32, custom_values: &[f64]) -> f64 {
 
 /// Go `math.Ldexp` (ported literally, including the rounding of denormal results).
 #[inline]
-pub(crate) fn ldexp(frac: f64, exp: i64) -> f64 {
+#[doc(hidden)]
+pub fn ldexp(frac: f64, exp: i64) -> f64 {
     if frac == 0.0 || frac.is_infinite() || frac.is_nan() {
         return frac;
     }
