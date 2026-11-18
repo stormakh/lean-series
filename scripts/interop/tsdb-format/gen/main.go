@@ -122,6 +122,10 @@ func seriesLabels() []labels.Labels {
 // makeChunk builds one chunk of the encoding kind k (0..5) for series i, chunk j.
 func makeChunk(i, j, k int) chunks.Meta {
 	base := int64(j)*10_000_000 + int64(i)
+	if i%10 == 0 {
+		// Negative times (before 1970) for some series.
+		base = int64(j)*10_000_000 - 50_000_000 - int64(i)
+	}
 	var c chunkenc.Chunk
 	switch k {
 	case 0:

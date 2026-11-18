@@ -14,7 +14,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use chunkenc::{Chunk, Encoding};
-use tsdb_format::chunks::{ChunkDiskMapper, ChunkDiskMapperRef, DEFAULT_WRITE_BUFFER_SIZE};
+use model::labels::{Labels, ScratchBuilder};
+use tsdb_format::chunks::{self, ChunkDiskMapper, ChunkDiskMapperRef, DEFAULT_WRITE_BUFFER_SIZE, Meta};
+use tsdb_format::context::Context;
+use tsdb_format::index::{self, Postings as _, StringIter as _};
 use tsdb_format::record::{Decoder, Encoder, Type};
 use tsdb_format::tombstones::{self, Interval};
 use tsdb_format::wlog::{self, Reader, WL, compression};
@@ -292,39 +295,115 @@ fn rewrite_head_chunks(go: &Path, out: &Path) {
     cdm.close().unwrap();
 }
 
-fn dump(_dir: &Path) -> String {
-    unimplemented!()
+const CHUNK_SEGMENT_SIZE: i64 = 64 * 1024;
+
+fn lstr(ls: &Labels) -> String {
+    let mut s = String::new();
+    ls.range(|n, v| {
+        if !s.is_empty() {
+            s.push(';');
+        }
+        s.push_str(n);
+        s.push('=');
+        s.push_str(v);
+    });
+    s
 }
 
-fn rewrite(_go: &Path, _out: &Path) {
-    unimplemented!()
+/// One series of a block: its ref in the index, labels and chunks (ref, mint, maxt, encoding, bytes).
+struct BlockSeries {
+    r: u64,
+    labels: Labels,
+    chunks: Vec<(u64, i64, i64, u8, Vec<u8>)>,
 }
 
-#[test]
-fn tmp_wal_only() {
-    let root = root();
-    let go = root.join("go");
-    let want: String = fs::read_to_string(root.join("go.dump.txt"))
-        .unwrap()
-        .lines()
-        .filter(|l| ["headchunk ", "wal ", "rec ", "checkpoint ", "cprec ", "cpmeta ", "tombstone "].iter().any(|p| l.starts_with(p)))
-        .map(|l| format!("{l}\n"))
-        .collect();
-    let mut got = String::new();
-    dump_head_chunks(&go, &mut got);
-    dump_wals(&go, &mut got);
-    dump_tombstones(&go, &mut got);
-    compare_dumps("wal go", &want, &got);
-    let out = root.join("rust");
-    let _ = fs::remove_dir_all(&out);
-    fs::create_dir_all(&out).unwrap();
-    rewrite_head_chunks(&go, &out);
-    rewrite_wals(&go, &out);
-    let (tr, _) = tombstones::read_tombstones(&go).unwrap();
-    tombstones::write_file(&Default::default(), &out, &tr).unwrap();
-    let mut got = String::new();
-    dump_head_chunks(&out, &mut got);
-    dump_wals(&out, &mut got);
-    dump_tombstones(&out, &mut got);
-    compare_dumps("wal rust", &want, &got);
+/// Reads the index and the block chunks of `dir`, writing the index part of the dump to `out`.
+fn read_block(dir: &Path, out: &mut String) -> (Vec<String>, Vec<BlockSeries>) {
+    let ctx = index::background();
+    let ir = index::Reader::open(&dir.join("index"), index::decode_postings_raw).unwrap();
+    let _ = writeln!(out, "index version {}", ir.version());
+    let mut symbols = Vec::new();
+    let mut it = ir.symbols();
+    while it.next() {
+        symbols.push(it.at().to_string());
+        let _ = writeln!(out, "symbol {}", it.at());
+    }
+    assert!(it.err().is_none());
+    let names = ir.label_names(ctx, &[]).unwrap();
+    let _ = writeln!(out, "labelnames {}", names.join(" "));
+    for n in &names {
+        for v in ir.sorted_label_values(ctx, n, None, &[]).unwrap() {
+            let mut p = ir.postings(ctx, n, &[v.as_str()]).unwrap();
+            let refs: Vec<String> = index::expand_postings(&mut *p).unwrap().iter().map(|r| r.to_string()).collect();
+            let _ = writeln!(out, "postings {n}\t{v}\t{}", refs.join(" "));
+        }
+    }
+    let cr = chunks::new_dir_reader(&dir.join("chunks"), None).unwrap();
+    let (k, v) = index::all_postings_key();
+    let mut all = ir.postings(ctx, k, &[v]).unwrap();
+    let mut b = ScratchBuilder::new(0);
+    let mut metas = Vec::new();
+    let mut series = Vec::new();
+    while all.next() {
+        metas.clear();
+        ir.series(all.at(), &mut b, Some(&mut metas)).unwrap();
+        let labels = b.labels();
+        let cs: Vec<String> = metas.iter().map(|m| format!("{}:{}:{}", m.r#ref, m.min_time, m.max_time)).collect();
+        let _ = writeln!(out, "series {}\t{}\t{}", all.at(), lstr(&labels), cs.join(" "));
+        let mut s = BlockSeries { r: all.at(), labels, chunks: Vec::new() };
+        for m in &metas {
+            let (enc, bytes) = cr.chunk_bytes(m.r#ref).unwrap();
+            let _ = writeln!(out, "chunk {} {} {}", m.r#ref, enc.0, hex(bytes));
+            s.chunks.push((m.r#ref, m.min_time, m.max_time, enc.0, bytes.to_vec()));
+        }
+        series.push(s);
+    }
+    assert!(all.err().is_none());
+    (symbols, series)
+}
+
+/// Writes the Go block (chunks and index) with the Rust writers.
+fn rewrite_block(go: &Path, out: &Path) {
+    let (symbols, series) = read_block(go, &mut String::new());
+    let mut cw = chunks::new_writer(&out.join("chunks"), &[chunks::with_segment_size(CHUNK_SEGMENT_SIZE)]).unwrap();
+    let mut iw = index::Writer::new(&Context::background(), &out.join("index")).unwrap();
+    for s in &symbols {
+        iw.add_symbol(s).unwrap();
+    }
+    for s in series {
+        let mut metas: Vec<Meta> = s
+            .chunks
+            .iter()
+            .map(|(_, mint, maxt, enc, b)| Meta {
+                r#ref: 0,
+                chunk: Some(chunkenc::from_data(Encoding(*enc), b.clone()).unwrap()),
+                min_time: *mint,
+                max_time: *maxt,
+            })
+            .collect();
+        cw.write_chunks(&mut metas).unwrap();
+        for (m, c) in metas.iter().zip(&s.chunks) {
+            assert_eq!(m.r#ref, c.0, "block chunk ref differs from Go's");
+        }
+        iw.add_series(s.r, &s.labels, &metas).unwrap();
+    }
+    cw.close().unwrap();
+    iw.close().unwrap();
+}
+
+fn dump(dir: &Path) -> String {
+    let mut out = String::new();
+    read_block(dir, &mut out);
+    dump_head_chunks(dir, &mut out);
+    dump_wals(dir, &mut out);
+    dump_tombstones(dir, &mut out);
+    out
+}
+
+fn rewrite(go: &Path, out: &Path) {
+    rewrite_block(go, out);
+    rewrite_head_chunks(go, out);
+    rewrite_wals(go, out);
+    let (tr, _) = tombstones::read_tombstones(go).unwrap();
+    tombstones::write_file(&Default::default(), out, &tr).unwrap();
 }
