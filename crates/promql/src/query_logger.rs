@@ -269,3 +269,83 @@ impl QueryTracker for ActiveQueryTracker {
         Ok(())
     }
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// JSON file logger (Go util/logging JSONFileLogger with the promslog JSON format).
+
+/// Logs queries as JSON lines to a file (Go `logging.JSONFileLogger`).
+pub struct JsonFileLogger {
+    file: Mutex<Option<File>>,
+    path: String,
+}
+
+impl JsonFileLogger {
+    /// Go `NewJSONFileLogger`: opens `path` for appending.
+    pub fn new(path: &str) -> Result<JsonFileLogger, Error> {
+        match OpenOptions::new().append(true).create(true).open(path) {
+            Ok(f) => Ok(JsonFileLogger { file: Mutex::new(Some(f)), path: path.to_string() }),
+            Err(e) => Err(Error::msg(format!("can't create json log file: {}", e))),
+        }
+    }
+}
+
+fn write_log_value(v: &crate::engine::LogValue, out: &mut String) {
+    use crate::engine::LogValue;
+    match v {
+        LogValue::Str(s) => json::write_str(s, out),
+        LogValue::Int(i) => json::write_i64(*i, out),
+        LogValue::Float(f) => json::write_f64(*f, out),
+        LogValue::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+    }
+}
+
+/// The JSON line of a logged query.
+pub fn query_log_line(entry: &crate::engine::QueryLogEntry) -> String {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let ms = now.as_millis() as i64;
+    let mut out = String::from("{\"time\":");
+    json::write_str(&crate::engine::format_date(ms), &mut out);
+    out.push_str(",\"level\":\"INFO\",\"source\":\"engine.go:1125\",\"msg\":\"promql query logged\",\"params\":{");
+    // Go marshals the params map with sorted keys.
+    let mut params: Vec<&(String, crate::engine::LogValue)> = entry.params.iter().collect();
+    params.sort_by(|a, b| a.0.cmp(&b.0));
+    for (i, (k, v)) in params.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        json::write_str(k, &mut out);
+        out.push(':');
+        write_log_value(v, &mut out);
+    }
+    out.push('}');
+    if let Some(e) = &entry.error {
+        out.push_str(",\"error\":");
+        json::write_str(&e.to_string(), &mut out);
+    }
+    out.push_str(",\"stats\":");
+    entry.stats.write_json(&mut out);
+    for (k, v) in &entry.origin {
+        out.push(',');
+        json::write_str(k, &mut out);
+        out.push(':');
+        write_log_value(v, &mut out);
+    }
+    out.push_str("}\n");
+    out
+}
+
+impl crate::engine::QueryLogger for JsonFileLogger {
+    fn log(&self, entry: &crate::engine::QueryLogEntry) {
+        let line = query_log_line(entry);
+        if let Some(f) = self.file.lock().unwrap().as_mut() {
+            let _ = f.write_all(line.as_bytes());
+        }
+    }
+
+    fn close(&self) -> Result<(), Error> {
+        match self.file.lock().unwrap().take() {
+            Some(_) => Ok(()),
+            None => Err(Error::msg(format!("close {}: file already closed", self.path))),
+        }
+    }
+}

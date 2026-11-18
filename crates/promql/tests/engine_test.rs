@@ -375,3 +375,98 @@ fn test_engine_close() {
     });
     assert!(ng.close().is_ok());
 }
+
+fn get_log_lines(name: &std::path::Path) -> Vec<String> {
+    let content = std::fs::read_to_string(name).unwrap();
+    content.split('\n').filter(|l| !l.is_empty()).map(|s| s.to_string()).collect()
+}
+
+fn logger_engine() -> Engine {
+    engine_with(EngineOpts { max_samples: 10, timeout: Duration::from_secs(10), ..Default::default() })
+}
+
+#[test]
+fn test_query_logger_basic() {
+    use promql::QueryLogger;
+    use promql::query_logger::JsonFileLogger;
+    let engine = logger_engine();
+    let query_exec = || {
+        let (ctx, cancel) = Context::background().with_cancel();
+        let mut q = engine.new_test_query(|ctx| context_done(ctx, "test statement execution"));
+        let res = q.exec(&ctx);
+        cancel.cancel();
+        assert!(res.err.is_none());
+    };
+    // promql.Query works without query log initialized.
+    query_exec();
+    let dir = temp_dir("qlbasic");
+    let ql1 = dir.join("query1.log");
+    let f1 = Arc::new(JsonFileLogger::new(ql1.to_str().unwrap()).unwrap());
+    engine.set_query_logger(Some(f1.clone()));
+    query_exec();
+    let lines = get_log_lines(&ql1);
+    assert!(lines[0].contains("\"params\":{\"query\":\"test statement\"}"), "{}", lines[0]);
+    assert_eq!(1, lines.len());
+    let l = lines.len();
+    query_exec();
+    assert_eq!(2 * l, get_log_lines(&ql1).len());
+
+    // Unsetting the logger closes it.
+    engine.set_query_logger(None);
+    let err = f1.close().unwrap_err();
+    assert!(err.to_string().contains("file already closed"), "expected f1 to be closed, got open");
+    query_exec();
+
+    // Swapping closes the old logger.
+    let f2 = Arc::new(JsonFileLogger::new(dir.join("query2.log").to_str().unwrap()).unwrap());
+    let f3 = Arc::new(JsonFileLogger::new(dir.join("query3.log").to_str().unwrap()).unwrap());
+    engine.set_query_logger(Some(f2.clone()));
+    query_exec();
+    engine.set_query_logger(Some(f3.clone()));
+    let err = f2.close().unwrap_err();
+    assert!(err.to_string().contains("file already closed"), "expected f2 to be closed, got open");
+    query_exec();
+    assert!(f3.close().is_ok());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_query_logger_fields() {
+    use promql::query_logger::JsonFileLogger;
+    use promql::{LogValue, QueryLogger};
+    let engine = logger_engine();
+    let dir = temp_dir("qlfields");
+    let ql1 = dir.join("query1.log");
+    let f1 = Arc::new(JsonFileLogger::new(ql1.to_str().unwrap()).unwrap());
+    engine.set_query_logger(Some(f1.clone()));
+    let (ctx, cancel) = Context::background().with_cancel();
+    let mut q = engine.new_test_query(|ctx| context_done(ctx, "test statement execution"));
+    q.set_origin(vec![("foo".to_string(), LogValue::Str("bar".to_string()))]);
+    let res = q.exec(&ctx);
+    cancel.cancel();
+    assert!(res.err.is_none());
+    let lines = get_log_lines(&ql1);
+    assert!(lines[0].contains("\"foo\":\"bar\""), "{}", lines[0]);
+    assert!(f1.close().is_ok());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_query_logger_error() {
+    use promql::query_logger::JsonFileLogger;
+    use promql::{LogValue, QueryLogger};
+    let engine = logger_engine();
+    let dir = temp_dir("qlerror");
+    let ql1 = dir.join("query1.log");
+    let f1 = Arc::new(JsonFileLogger::new(ql1.to_str().unwrap()).unwrap());
+    engine.set_query_logger(Some(f1.clone()));
+    let mut q = engine.new_test_query(|_| Err(Error::msg("failure")));
+    q.set_origin(vec![("foo".to_string(), LogValue::Str("bar".to_string()))]);
+    let res = q.exec(&Context::background());
+    assert!(res.err.is_some(), "query should have failed");
+    let lines = get_log_lines(&ql1);
+    assert!(lines[0].contains("\"error\":\"failure\""), "{}", lines[0]);
+    assert!(lines[0].contains("\"params\":{\"query\":\"test statement\"}"), "{}", lines[0]);
+    assert!(f1.close().is_ok());
+    let _ = std::fs::remove_dir_all(&dir);
+}
