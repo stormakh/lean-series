@@ -23,9 +23,9 @@ def main():
     for c in crates:
         want = {(e['file'], e['rust']) for e in ledger if e['crate'] == c}
         cmd = [CARGO, 'test', '-p', c, '--no-fail-fast'] + (['--release'] if release else [])
-        p = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
+        p = subprocess.run(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)  # one pipe keeps order
         cur, ok = None, set()
-        for line in (p.stdout + '\n' + p.stderr).splitlines():
+        for line in p.stdout.splitlines():
             m = re.search(r'Running tests/([\w\-]+)\.rs', line)
             if m:
                 cur = m.group(1)
