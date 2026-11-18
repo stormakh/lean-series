@@ -9,6 +9,8 @@ type Hook = Box<dyn FnOnce() + Send>;
 struct State {
     cancelled: bool,
     hooks: Vec<Hook>,
+    /// Child tokens, held weakly; dropped children are pruned when a new child is added.
+    children: Vec<Weak<Inner>>,
 }
 
 struct Inner {
@@ -35,34 +37,42 @@ impl std::fmt::Debug for CancelToken {
 impl CancelToken {
     /// A token that is never cancelled unless `cancel` is called (Go `context.Background()` + `WithCancel`).
     pub fn new() -> CancelToken {
-        CancelToken(Arc::new(Inner { state: Mutex::new(State { cancelled: false, hooks: Vec::new() }), cv: Condvar::new() }))
+        CancelToken(Arc::new(Inner { state: Mutex::new(State { cancelled: false, hooks: Vec::new(), children: Vec::new() }), cv: Condvar::new() }))
     }
 
     /// A new token that is cancelled with this one (Go `context.WithCancel(ctx)`).
     pub fn child(&self) -> CancelToken {
         let c = CancelToken::new();
-        let weak: Weak<Inner> = Arc::downgrade(&c.0);
-        self.on_cancel(Box::new(move || {
-            if let Some(i) = weak.upgrade() {
-                CancelToken(i).cancel();
-            }
-        }));
+        let mut s = self.0.state.lock().unwrap_or_else(|e| e.into_inner());
+        if s.cancelled {
+            drop(s);
+            c.cancel();
+            return c;
+        }
+        // children that are gone need no cancel; pruning keeps a long-lived parent from growing
+        s.children.retain(|w| w.strong_count() > 0);
+        s.children.push(Arc::downgrade(&c.0));
         c
     }
 
     /// Cancels the token. Idempotent.
     pub fn cancel(&self) {
-        let hooks = {
+        let (hooks, children) = {
             let mut s = self.0.state.lock().unwrap_or_else(|e| e.into_inner());
             if s.cancelled {
                 return;
             }
             s.cancelled = true;
-            std::mem::take(&mut s.hooks)
+            (std::mem::take(&mut s.hooks), std::mem::take(&mut s.children))
         };
         self.0.cv.notify_all();
         for h in hooks {
             h();
+        }
+        for c in children {
+            if let Some(i) = c.upgrade() {
+                CancelToken(i).cancel();
+            }
         }
     }
 

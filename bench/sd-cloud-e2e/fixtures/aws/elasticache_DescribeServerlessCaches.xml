@@ -1,0 +1,27 @@
+<DescribeServerlessCachesResponse xmlns="http://elasticache.amazonaws.com/doc/2015-02-02/">
+  <DescribeServerlessCachesResult>
+    <ServerlessCaches>
+      <member>
+        <ARN>arn:aws:elasticache:us-east-1:123456789012:serverlesscache:my-cache</ARN>
+        <ServerlessCacheName>my-cache</ServerlessCacheName>
+        <Status>available</Status>
+        <Engine>valkey</Engine>
+        <FullEngineVersion>8.0</FullEngineVersion>
+        <MajorEngineVersion>8</MajorEngineVersion>
+        <Description>e2e cache</Description>
+        <CreateTime>2024-01-01T00:00:00Z</CreateTime>
+        <DailySnapshotTime>04:00</DailySnapshotTime>
+        <SnapshotRetentionLimit>3</SnapshotRetentionLimit>
+        <Endpoint><Address>my-cache.serverless.use1.cache.amazonaws.com</Address><Port>6379</Port></Endpoint>
+        <ReaderEndpoint><Address>my-cache-ro.serverless.use1.cache.amazonaws.com</Address><Port>6380</Port></ReaderEndpoint>
+        <SecurityGroupIds><SecurityGroupId>sg-1</SecurityGroupId><SecurityGroupId>sg-2</SecurityGroupId></SecurityGroupIds>
+        <SubnetIds><SubnetId>subnet-a</SubnetId></SubnetIds>
+        <CacheUsageLimits>
+          <DataStorage><Maximum>10</Maximum><Minimum>1</Minimum><Unit>GB</Unit></DataStorage>
+          <ECPUPerSecond><Maximum>5000</Maximum><Minimum>1000</Minimum></ECPUPerSecond>
+        </CacheUsageLimits>
+      </member>
+    </ServerlessCaches>
+  </DescribeServerlessCachesResult>
+  <ResponseMetadata><RequestId>req-3</RequestId></ResponseMetadata>
+</DescribeServerlessCachesResponse>

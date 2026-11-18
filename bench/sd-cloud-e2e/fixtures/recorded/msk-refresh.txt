@@ -1,0 +1,9 @@
+### GET /api/v2/clusters?
+<<< {"clusterInfoList":[{"clusterArn":"arn:aws:kafka:region-full:123456789012:cluster/cluster-full/abc-123","clusterName":"cluster-full","state":"ACTIVE","clusterType":"PROVISIONED","currentVersion":"1.2.3","provisioned":{"currentBrokerSoftwareInfo":{"configurationArn":"arn:aws:kafka:region-full:123456789012:configuration/config-full/def-456","configurationRevision":1,"kafkaVersion":"3.4.0"},"openMonitoring":{"prometheus":{"jmxExporter":{"enabledInBroker":true},"nodeExporter":{"enabledInBroker":true}}}}}]}
+
+### GET /api/v2/clusters/arn%3Aaws%3Akafka%3Aregion-full%3A123456789012%3Acluster%2Fcluster-full%2Fabc-123?
+<<< {"clusterInfo":{"clusterArn":"arn:aws:kafka:region-full:123456789012:cluster/cluster-full/abc-123","clusterName":"cluster-full","state":"ACTIVE","clusterType":"PROVISIONED","currentVersion":"1.2.3","provisioned":{"currentBrokerSoftwareInfo":{"configurationArn":"arn:aws:kafka:region-full:123456789012:configuration/config-full/def-456","configurationRevision":1,"kafkaVersion":"3.4.0"},"openMonitoring":{"prometheus":{"jmxExporter":{"enabledInBroker":true},"nodeExporter":{"enabledInBroker":true}}}}}}
+
+### GET /v1/clusters/arn%3Aaws%3Akafka%3Aregion-full%3A123456789012%3Acluster%2Fcluster-full%2Fabc-123/nodes?maxResults=100
+<<< {"nodeInfoList":[{"nodeARN":"arn:aws:kafka:region-full:123456789012:node/broker-full","addedToClusterTime":"2023-01-01T00:00:00Z","instanceType":"kafka.m5.large","brokerNodeInfo":{"attachedENIId":"eni-full","brokerId":1,"clientSubnet":"subnet-full","clientVpcIpAddress":"10.0.0.1","endpoints":["b-1.cluster-full.kafka.region-full.amazonaws.com"]},"nodeType":"BROKER"}]}
+

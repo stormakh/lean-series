@@ -9,6 +9,9 @@ yaml = { path = "../yaml" }
 json = { path = "../json" }
 model = { path = "../model" }
 net = { path = "../net" }
+crypto = { path = "../crypto" }
+# RSA signing for the GCE service account JWT and the OCI HTTP signature (already in the tree via rustls/net)
+ring = "0.17"
 
 [dev-dependencies]
 http = { path = "../http" }

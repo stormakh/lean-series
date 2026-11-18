@@ -1,0 +1,229 @@
+{
+  "notes": "All requests of one refresh with authentication_method OAuth, in order (ManagedIdentity: the IMDS entry replaces the two login.microsoftonline.com entries). Responses are application/json. Token POST body (form): claims={\"access_token\":{\"xms_cc\":{\"values\":[\"CP1\"]}}}, client_id, client_secret, grant_type=client_credentials, scope='https://management.core.windows.net//.default openid offline_access profile'. The credential is rebuilt every refresh, so openid-configuration + token are fetched every refresh. nic2 answers 404, so vm2 is skipped (warn log). Expected targets: vm1 10.0.0.4:9100 (public ip 20.1.2.3, tag env=prod; the null tag cost-center is skipped), ss1_0 10.0.1.5:9100 (scale_set ss1, os Windows, tag role=web).",
+  "requests": [
+    {
+      "method": "GET",
+      "url": "https://login.microsoftonline.com/00000000-0000-0000-0000-0000000000aa/v2.0/.well-known/openid-configuration",
+      "status": 200,
+      "body": {
+        "token_endpoint": "https://login.microsoftonline.com/00000000-0000-0000-0000-0000000000aa/oauth2/v2.0/token",
+        "authorization_endpoint": "https://login.microsoftonline.com/00000000-0000-0000-0000-0000000000aa/oauth2/v2.0/authorize",
+        "issuer": "https://login.microsoftonline.com/00000000-0000-0000-0000-0000000000aa/v2.0"
+      }
+    },
+    {
+      "method": "POST",
+      "url": "https://login.microsoftonline.com/00000000-0000-0000-0000-0000000000aa/oauth2/v2.0/token",
+      "status": 200,
+      "body": {
+        "token_type": "Bearer",
+        "expires_in": 3599,
+        "ext_expires_in": 3599,
+        "access_token": "recorded-token"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https%3A%2F%2Fmanagement.core.windows.net%2F",
+      "status": 200,
+      "body": {
+        "access_token": "recorded-token",
+        "expires_in": "86399",
+        "expires_on": "1999999999",
+        "resource": "https://management.core.windows.net/",
+        "token_type": "Bearer"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "https://management.azure.com/subscriptions/11111111-1111-1111-1111-111111111111/providers/Microsoft.Compute/virtualMachines?api-version=2026-04-01",
+      "status": 200,
+      "body": {
+        "value": [
+          {
+            "id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg1/providers/Microsoft.Compute/virtualMachines/vm1",
+            "name": "vm1",
+            "type": "Microsoft.Compute/virtualMachines",
+            "location": "westeurope",
+            "tags": {
+              "env": "prod",
+              "cost-center": null
+            },
+            "properties": {
+              "hardwareProfile": {
+                "vmSize": "Standard_B1s"
+              },
+              "osProfile": {
+                "computerName": "vm1-host"
+              },
+              "storageProfile": {
+                "osDisk": {
+                  "osType": "Linux"
+                }
+              },
+              "networkProfile": {
+                "networkInterfaces": [
+                  {
+                    "id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg1/providers/Microsoft.Network/networkInterfaces/nic1",
+                    "properties": {
+                      "primary": true
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "nextLink": "https://management.azure.com/subscriptions/11111111-1111-1111-1111-111111111111/providers/Microsoft.Compute/virtualMachines?api-version=2026-04-01&$skiptoken=page2"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "https://management.azure.com/subscriptions/11111111-1111-1111-1111-111111111111/providers/Microsoft.Compute/virtualMachines?%24skiptoken=page2&api-version=2026-04-01",
+      "status": 200,
+      "body": {
+        "value": [
+          {
+            "id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg1/providers/Microsoft.Compute/virtualMachines/vm2",
+            "name": "vm2",
+            "type": "Microsoft.Compute/virtualMachines",
+            "location": "westeurope",
+            "tags": {},
+            "properties": {
+              "hardwareProfile": {
+                "vmSize": "Standard_B1s"
+              },
+              "osProfile": {
+                "computerName": "vm2-host"
+              },
+              "storageProfile": {
+                "osDisk": {
+                  "osType": "Linux"
+                }
+              },
+              "networkProfile": {
+                "networkInterfaces": [
+                  {
+                    "id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg1/providers/Microsoft.Network/networkInterfaces/nic2",
+                    "properties": {
+                      "primary": true
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "method": "GET",
+      "url": "https://management.azure.com/subscriptions/11111111-1111-1111-1111-111111111111/providers/Microsoft.Compute/virtualMachineScaleSets?api-version=2026-04-01",
+      "status": 200,
+      "body": {
+        "value": [
+          {
+            "id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg1/providers/Microsoft.Compute/virtualMachineScaleSets/ss1",
+            "name": "ss1",
+            "location": "westeurope",
+            "type": "Microsoft.Compute/virtualMachineScaleSets"
+          }
+        ]
+      }
+    },
+    {
+      "method": "GET",
+      "url": "https://management.azure.com/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg1/providers/Microsoft.Compute/virtualMachineScaleSets/ss1/virtualMachines?api-version=2026-04-01",
+      "status": 200,
+      "body": {
+        "value": [
+          {
+            "id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg1/providers/Microsoft.Compute/virtualMachineScaleSets/ss1/virtualMachines/0",
+            "name": "ss1_0",
+            "instanceId": "0",
+            "type": "Microsoft.Compute/virtualMachineScaleSets/virtualMachines",
+            "location": "westeurope",
+            "tags": {
+              "role": "web"
+            },
+            "properties": {
+              "hardwareProfile": {
+                "vmSize": "Standard_B2s"
+              },
+              "osProfile": {
+                "computerName": "ss1000000"
+              },
+              "storageProfile": {
+                "osDisk": {
+                  "osType": "Windows"
+                }
+              },
+              "networkProfile": {
+                "networkInterfaces": [
+                  {
+                    "id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg1/providers/Microsoft.Compute/virtualMachineScaleSets/ss1/virtualMachines/0/networkInterfaces/ssnic"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "method": "GET",
+      "url": "https://management.azure.com/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg1/providers/Microsoft.Network/networkInterfaces/nic1?%24expand=IPConfigurations%2FPublicIPAddress&api-version=2025-03-01",
+      "status": 200,
+      "body": {
+        "id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg1/providers/Microsoft.Network/networkInterfaces/nic1",
+        "name": "nic1",
+        "properties": {
+          "primary": true,
+          "ipConfigurations": [
+            {
+              "properties": {
+                "privateIPAddress": "10.0.0.4",
+                "publicIPAddress": {
+                  "properties": {
+                    "ipAddress": "20.1.2.3"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "url": "https://management.azure.com/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg1/providers/Microsoft.Network/networkInterfaces/nic2?%24expand=IPConfigurations%2FPublicIPAddress&api-version=2025-03-01",
+      "status": 404,
+      "body": {
+        "error": {
+          "code": "NotFound",
+          "message": "Resource was not found."
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "url": "https://management.azure.com/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg1/providers/microsoft.Compute/virtualMachineScaleSets/ss1/virtualMachines/0/networkInterfaces/ssnic?%24expand=IPConfigurations%2FPublicIPAddress&api-version=2018-10-01",
+      "status": 200,
+      "body": {
+        "id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg1/providers/Microsoft.Network/networkInterfaces/ssnic",
+        "name": "ssnic",
+        "properties": {
+          "primary": true,
+          "ipConfigurations": [
+            {
+              "properties": {
+                "privateIPAddress": "10.0.1.5"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "prometheus_yml": "scrape_configs:\n  - job_name: azure\n    azure_sd_configs:\n      - subscription_id: 11111111-1111-1111-1111-111111111111\n        tenant_id: 00000000-0000-0000-0000-0000000000aa\n        client_id: 22222222-2222-2222-2222-222222222222\n        client_secret: recorded-secret\n        refresh_interval: 30s\n        port: 9100\n        # ARM calls use this http_client_config: route them through the recording proxy\n        proxy_from_environment: true\n        # tls_config: {ca_file: /path/to/mitm-ca.pem}\n"
+}

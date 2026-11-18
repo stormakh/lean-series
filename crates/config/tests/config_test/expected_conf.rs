@@ -600,61 +600,48 @@ pub fn expected_conf() -> Config {
                 ..job("service-nomad")
             },
             ScrapeConfig {
-                service_discovery_configs: sd(vec![
-                    // waits for ec2:
-                    // &aws.EC2SDConfig{
-                    //     Region:          "us-east-1",
-                    //     AccessKey:       "access",
-                    //     SecretKey:       "mysecret",
-                    //     Profile:         "profile",
-                    //     RefreshInterval: model.Duration(60 * time.Second),
-                    //     Port:            80,
-                    //     Filters: []*aws.Filter{
-                    //         {
-                    //             Name:   "tag:environment",
-                    //             Values: []string{"prod"},
-                    //         },
-                    //         {
-                    //             Name:   "tag:service",
-                    //             Values: []string{"web", "db"},
-                    //         },
-                    //     },
-                    //     HTTPClientConfig: config.DefaultHTTPClientConfig,
-                    // },
-                ]),
+                service_discovery_configs: sd(vec![Box::new(discovery::aws::ec2::Ec2SdConfig {
+                    region: s("us-east-1"),
+                    access_key: s("access"),
+                    secret_key: Secret(s("mysecret")),
+                    profile: s("profile"),
+                    refresh_interval: Duration::from_secs(60),
+                    port: 80,
+                    filters: vec![
+                        discovery::aws::Filter { name: s("tag:environment"), values: vec![s("prod")] },
+                        discovery::aws::Filter { name: s("tag:service"), values: vec![s("web"), s("db")] },
+                    ],
+                    http_client_config: HttpClientConfig::default_config(),
+                    ..Default::default()
+                })]),
                 ..job("service-ec2")
             },
             ScrapeConfig {
-                service_discovery_configs: sd(vec![
-                    // waits for lightsail:
-                    // &aws.LightsailSDConfig{
-                    //     Region:           "us-east-1",
-                    //     AccessKey:        "access",
-                    //     SecretKey:        "mysecret",
-                    //     Profile:          "profile",
-                    //     RefreshInterval:  model.Duration(60 * time.Second),
-                    //     Port:             80,
-                    //     HTTPClientConfig: config.DefaultHTTPClientConfig,
-                    // },
-                ]),
+                service_discovery_configs: sd(vec![Box::new(discovery::aws::lightsail::LightsailSdConfig {
+                    region: s("us-east-1"),
+                    access_key: s("access"),
+                    secret_key: Secret(s("mysecret")),
+                    profile: s("profile"),
+                    refresh_interval: Duration::from_secs(60),
+                    port: 80,
+                    http_client_config: HttpClientConfig::default_config(),
+                    ..Default::default()
+                })]),
                 ..job("service-lightsail")
             },
             ScrapeConfig {
-                service_discovery_configs: sd(vec![
-                    // waits for azure:
-                    // &azure.SDConfig{
-                    //     Environment:          "AzurePublicCloud",
-                    //     SubscriptionID:       "11AAAA11-A11A-111A-A111-1111A1111A11",
-                    //     ResourceGroup:        "my-resource-group",
-                    //     TenantID:             "BBBB222B-B2B2-2B22-B222-2BB2222BB2B2",
-                    //     ClientID:             "333333CC-3C33-3333-CCC3-33C3CCCCC33C",
-                    //     ClientSecret:         "mysecret",
-                    //     AuthenticationMethod: "OAuth",
-                    //     RefreshInterval:      model.Duration(5 * time.Minute),
-                    //     Port:                 9100,
-                    //     HTTPClientConfig:     config.DefaultHTTPClientConfig,
-                    // },
-                ]),
+                service_discovery_configs: sd(vec![Box::new(discovery::azure::SdConfig {
+                    environment: s("AzurePublicCloud"),
+                    subscription_id: s("11AAAA11-A11A-111A-A111-1111A1111A11"),
+                    resource_group: s("my-resource-group"),
+                    tenant_id: s("BBBB222B-B2B2-2B22-B222-2BB2222BB2B2"),
+                    client_id: s("333333CC-3C33-3333-CCC3-33C3CCCCC33C"),
+                    client_secret: Secret(s("mysecret")),
+                    authentication_method: s("OAuth"),
+                    refresh_interval: Duration::from_secs(300),
+                    port: 9100,
+                    http_client_config: HttpClientConfig::default_config(),
+                })]),
                 ..job("service-azure")
             },
             ScrapeConfig {
@@ -752,40 +739,32 @@ pub fn expected_conf() -> Config {
                 ..job("dockerswarm")
             },
             ScrapeConfig {
-                service_discovery_configs: sd(vec![
-                    // waits for oci:
-                    // &oci.SDConfig{
-                    //     Auth:             "api_key",
-                    //     Region:           "us-ashburn-1",
-                    //     Tenancy:          "ocid1.tenancy.oc1..tenancy001",
-                    //     User:             "ocid1.user.oc1..user001",
-                    //     Fingerprint:      "aa:bb:cc:dd:ee:ff",
-                    //     KeyFile:          filepath.FromSlash("testdata/valid_key_file"),
-                    //     KeyPassphrase:    "mysecret",
-                    //     Compartments:     []string{"ocid1.compartment.oc1..comp001"},
-                    //     Port:             9100,
-                    //     RefreshInterval:  model.Duration(60 * time.Second),
-                    //     HTTPClientConfig: config.DefaultHTTPClientConfig,
-                    // },
-                ]),
+                service_discovery_configs: sd(vec![Box::new(discovery::oci::SdConfig {
+                    auth: s("api_key"),
+                    region: s("us-ashburn-1"),
+                    tenancy: s("ocid1.tenancy.oc1..tenancy001"),
+                    user: s("ocid1.user.oc1..user001"),
+                    fingerprint: s("aa:bb:cc:dd:ee:ff"),
+                    key_file: s("testdata/valid_key_file"),
+                    key_passphrase: Secret(s("mysecret")),
+                    compartments: vec![s("ocid1.compartment.oc1..comp001")],
+                    port: 9100,
+                    refresh_interval: Duration::from_secs(60),
+                    http_client_config: HttpClientConfig::default_config(),
+                    ..Default::default()
+                })]),
                 ..job("service-oci")
             },
             ScrapeConfig {
-                service_discovery_configs: sd(vec![
-                    // waits for openstack:
-                    // &openstack.SDConfig{
-                    //     Role:            "instance",
-                    //     Region:          "RegionOne",
-                    //     Port:            80,
-                    //     Availability:    "public",
-                    //     RefreshInterval: model.Duration(60 * time.Second),
-                    //     TLSConfig: config.TLSConfig{
-                    //         CAFile:   filepath.FromSlash("testdata/valid_ca_file"),
-                    //         CertFile: filepath.FromSlash("testdata/valid_cert_file"),
-                    //         KeyFile:  filepath.FromSlash("testdata/valid_key_file"),
-                    //     },
-                    // },
-                ]),
+                service_discovery_configs: sd(vec![Box::new(discovery::openstack::SdConfig {
+                    role: discovery::openstack::Role(s("instance")),
+                    region: s("RegionOne"),
+                    port: 80,
+                    availability: s("public"),
+                    refresh_interval: Duration::from_secs(60),
+                    tls_config: TlsConfig { ca_file: s("testdata/valid_ca_file"), ..cert_key_tls() },
+                    ..Default::default()
+                })]),
                 ..job("service-openstack")
             },
             ScrapeConfig {
