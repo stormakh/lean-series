@@ -1418,7 +1418,7 @@ pub struct Head {
     pub(crate) max_time: AtomicI64,
     /// Mint allowed to be added to the head.
     pub(crate) min_valid_time: AtomicI64,
-    pub(crate) last_wal_truncation_time: AtomicI64,
+    pub last_wal_truncation_time: AtomicI64,
     pub(crate) last_memory_truncation_time: AtomicI64,
     pub(crate) last_series_id: AtomicU64,
     /// All the ooo m-map chunks should be after this.
@@ -1977,7 +1977,7 @@ impl Head {
     }
 
     /// Go `getWALExpiry`.
-    pub(crate) fn get_wal_expiry(&self, id: HeadSeriesRef) -> Option<i64> {
+    pub fn get_wal_expiry(&self, id: HeadSeriesRef) -> Option<i64> {
         lock(&self.wal_expiries).get(&id).copied()
     }
 

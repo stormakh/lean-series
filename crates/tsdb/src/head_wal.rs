@@ -124,12 +124,12 @@ impl Head {
     }
 
     /// Go `readSeriesStateFile`.
-    pub(crate) fn read_series_state_file(&self) -> Result<SeriesLifecycleState, Error> {
+    pub fn read_series_state_file(&self) -> Result<SeriesLifecycleState, Error> {
         Err(Error::msg("open series_state.json: no such file or directory"))
     }
 
     /// Go `findLastSeriesID`: scans the WAL from the state's segment to `end_segment`.
-    pub(crate) fn find_last_series_id(&self, state: &SeriesLifecycleState, end_segment: i64) -> Result<u64, Error> {
+    pub fn find_last_series_id(&self, state: &SeriesLifecycleState, end_segment: i64) -> Result<u64, Error> {
         let _ = (state, end_segment);
         todo!("head_wal port: findLastSeriesID")
     }
