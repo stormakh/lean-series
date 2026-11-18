@@ -13,6 +13,7 @@
 //! - Logging goes through [`Logger`] (Go `*slog.Logger`); the default discards everything.
 //! - Self-instrumentation values are plain atomics ([`metrics`]) with upstream metric names in comments.
 
+pub mod exemplar;
 pub mod meta;
 pub mod metrics;
 pub mod reader;
