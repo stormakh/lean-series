@@ -6,14 +6,19 @@
 //! Discoverers run on their own threads and block.
 //!
 //! See README.md for how to add a provider.
+pub mod aws;
+pub mod azure;
 pub mod cancel;
 pub mod chan;
 pub mod file;
+pub mod gce;
 pub mod glob;
 pub mod http;
 pub mod log;
 pub mod manager;
 pub mod metrics;
+pub mod oci;
+pub mod openstack;
 pub mod refresh;
 pub mod registry;
 pub mod targetgroup;
