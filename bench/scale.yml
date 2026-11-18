@@ -1,0 +1,7 @@
+# Workload "scale": 10 avalanche targets x 10,000 series (gauges, counters, classic histograms) = 100k series.
+global: {scrape_interval: 15s}
+scrape_configs:
+  - job_name: prometheus
+    static_configs: [{targets: ['localhost:9390']}]
+  - job_name: avalanche
+    static_configs: [{targets: ['localhost:9001','localhost:9002','localhost:9003','localhost:9004','localhost:9005','localhost:9006','localhost:9007','localhost:9008','localhost:9009','localhost:9010']}]
