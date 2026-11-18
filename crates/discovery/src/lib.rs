@@ -11,13 +11,17 @@ pub mod chan;
 pub mod file;
 pub mod glob;
 pub mod http;
+pub mod linode;
 pub mod log;
 pub mod manager;
 pub mod metrics;
+pub mod puppetdb;
 pub mod refresh;
 pub mod registry;
 pub mod sdutil;
 pub mod targetgroup;
+pub mod uyuni;
+pub mod vultr;
 
 use std::any::Any;
 use std::collections::HashMap;

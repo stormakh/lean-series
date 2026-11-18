@@ -42,6 +42,10 @@ fn builtin() -> Vec<Registration> {
     vec![
         registration::<crate::file::SdConfig>(),
         registration::<crate::http::SdConfig>(),
+        registration::<crate::linode::SdConfig>(),
+        registration::<crate::puppetdb::SdConfig>(),
+        registration::<crate::uyuni::SdConfig>(),
+        registration::<crate::vultr::SdConfig>(),
     ]
 }
 
