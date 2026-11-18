@@ -12,7 +12,7 @@ use crate::{Entry, Parser};
 /// The data parsed for one entry (Go `parsedEntry`).
 #[derive(Clone, Debug, Default)]
 pub struct ParsedEntry {
-    /// In all but comment entries.
+    /// In all but comment entries. Bytes: protobuf series keys hold raw 0xff separators.
     pub m: Vec<u8>,
     /// In histogram entries.
     pub shs: Option<Histogram>,
@@ -45,7 +45,7 @@ pub fn test_parse(p: &mut dyn Parser) -> Vec<ParsedEntry> {
         let et = match p.next() {
             Ok(et) => et,
             Err(e) if e.is_eof() => break,
-            Err(e) => panic!("unexpected error: {e}"),
+            Err(e) => panic!("unexpected error: {e} (after {} entries, last {:?})", ret.len(), ret.last()),
         };
         let mut got = ParsedEntry::default();
         match et {

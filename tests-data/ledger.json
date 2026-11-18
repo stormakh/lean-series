@@ -4370,7 +4370,7 @@
 {
 "package": "model/textparse",
 "go": "FuzzProtobufParser_Labels",
-"file": "",
+"file": "protobufparse_test",
 "crate": "textparse",
 "rust": "fuzz_protobuf_parser_labels",
 "upstream": "pass"
