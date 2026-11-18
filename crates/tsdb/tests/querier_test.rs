@@ -1,6 +1,8 @@
 //! Port of `tsdb/querier_test.go`. Tests that need the head run their body with `--cfg head` and are ignored
 //! until the head is merged.
 
+#![allow(clippy::needless_update, clippy::type_complexity, clippy::unnecessary_to_owned, clippy::cloned_ref_to_slice_refs)]
+
 mod common;
 
 use std::collections::{BTreeMap, HashMap};

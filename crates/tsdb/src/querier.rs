@@ -1616,6 +1616,8 @@ pub fn new_merged_string_iter<'a>(
 }
 
 impl StringIter for MergedStringIter<'_> {
+    // The branches follow Go's switch one to one.
+    #[allow(clippy::if_same_then_else)]
     fn next(&mut self) -> bool {
         if (!self.aok && !self.bok) || self.err.is_some() {
             return false;

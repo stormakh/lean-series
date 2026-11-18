@@ -1,5 +1,7 @@
 //! Port of `tsdb/block_test.go`.
 
+#![allow(clippy::needless_update, clippy::type_complexity, clippy::unnecessary_to_owned, clippy::cloned_ref_to_slice_refs)]
+
 mod common;
 
 use std::io::{Seek, SeekFrom, Write};
