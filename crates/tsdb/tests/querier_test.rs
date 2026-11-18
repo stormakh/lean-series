@@ -1798,3 +1798,1215 @@ fn test_populate_with_del_chunk_series_iterator_with_st() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Deleted iterator.
+
+#[test]
+fn test_deleted_iterator() {
+    // Insert random stuff from (0, 1000).
+    let act: Vec<Sample> = (0..1000).map(|i| sf(i / 2, i, rand_f64())).collect();
+    let meta = chk(act.clone());
+
+    let cases: Vec<Intervals> = vec![
+        vec![iv(1, 20)],
+        vec![iv(1, 10), iv(12, 20), iv(21, 23), iv(25, 30)],
+        vec![iv(1, 10), iv(12, 20), iv(20, 30)],
+        vec![iv(1, 10), iv(12, 23), iv(25, 30)],
+        vec![iv(1, 23), iv(12, 20), iv(25, 30)],
+        vec![iv(1, 23), iv(12, 20), iv(25, 3000)],
+        vec![iv(0, 2000)],
+        vec![iv(500, 2000)],
+        vec![iv(0, 200)],
+        vec![iv(1000, 20000)],
+    ];
+    for r in &cases {
+        let mut i: i64 = -1;
+        let mut it = DeletedIterator::new(meta.chunk().iterator(None), r.clone());
+        let mut ranges: &[Interval] = r;
+        while it.next() == ValueType::Float {
+            i += 1;
+            for tr in ranges.to_vec() {
+                if tr.in_bounds(i) {
+                    i = tr.maxt + 1;
+                    ranges = &ranges[1..];
+                }
+            }
+            assert!(i < 1000);
+            let (ts, v) = it.at();
+            assert_eq!(act[i as usize].t, ts);
+            assert_eq!(act[i as usize].f, v);
+            assert_eq!(act[i as usize].st, it.at_st());
+        }
+        // There has been an extra call to Next().
+        i += 1;
+        for tr in ranges.to_vec() {
+            if tr.in_bounds(i) {
+                i = tr.maxt + 1;
+                ranges = &ranges[1..];
+            }
+        }
+        assert!(i >= 1000);
+        assert!(it.err().is_none());
+    }
+
+    // Reuse.
+    for (name, seek, shift) in
+        [("next/same_range", false, 0i64), ("next/next_chunk", false, 20), ("seek/same_range", true, 0), ("seek/next_chunk", true, 20)]
+    {
+        let mut chks: Vec<chunkenc::XorChunk> = Vec::new();
+        for iteration in 0..2 {
+            let start = iteration * shift;
+            let mut c = chunkenc::XorChunk::new();
+            let mut app = Chunk::appender(&mut c).unwrap();
+            for ts in start..start + 20 {
+                app.append(&mut c, 0, ts, ts as f64);
+            }
+            chks.push(c);
+        }
+        let mut it: DeletedIterator<AnyIterator<'_>> = DeletedIterator::new(AnyIterator::Nop(chunkenc::NopIterator), vec![]);
+        for (iteration, c) in chks.iter().enumerate() {
+            let start = iteration as i64 * shift;
+            // Reuse the wrapper by resetting only its exported fields, as external callers do.
+            it.intervals.clear();
+            // Leave samples after the deletion interval so iteration advances past it before the wrapper is reused.
+            it.intervals.add(iv(start, start + 9));
+            it.iter = Chunk::iterator(c, None);
+            let mut vt = if seek { it.seek(start) } else { it.next() };
+            for ts in start + 10..start + 20 {
+                assert_eq!(ValueType::Float, vt, "{name} iteration {}", iteration + 1);
+                let (got_ts, got_v) = it.at();
+                assert_eq!(ts, got_ts, "{name} iteration {}", iteration + 1);
+                assert_eq!(ts as f64, got_v, "{name} iteration {}", iteration + 1);
+                vt = it.next();
+            }
+            assert_eq!(ValueType::None, vt, "{name} iteration {}", iteration + 1);
+            assert!(it.err().is_none());
+        }
+    }
+}
+
+#[test]
+fn test_deleted_iterator_with_seek() {
+    let mut c = chunkenc::XorChunk::new();
+    let mut app = Chunk::appender(&mut c).unwrap();
+    // Insert random stuff from (0, 1000).
+    for i in 0..1000i64 {
+        app.append(&mut c, 0, i, i as f64);
+    }
+    let cases: Vec<(Intervals, i64, bool, i64)> = vec![
+        (vec![iv(1, 20)], 1, true, 21),
+        (vec![iv(1, 20)], 20, true, 21),
+        (vec![iv(1, 20)], 10, true, 21),
+        (vec![iv(1, 20)], 999, true, 999),
+        (vec![iv(1, 20)], 1000, false, 0),
+        (vec![iv(1, 23), iv(24, 40), iv(45, 3000)], 1, true, 41),
+        (vec![iv(5, 23), iv(24, 40), iv(41, 3000)], 5, false, 0),
+        (vec![iv(0, 2000)], 10, false, 0),
+        (vec![iv(500, 2000)], 10, true, 10),
+        (vec![iv(500, 2000)], 501, false, 0),
+    ];
+    for (r, seek, ok, seeked_ts) in cases {
+        let mut it = DeletedIterator::new(Chunk::iterator(&c, None), r);
+        assert_eq!(ok, it.seek(seek) == ValueType::Float);
+        if ok {
+            assert_eq!(seeked_ts, it.at_t());
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Postings for matchers.
+
+fn pfm_cases() -> Vec<(Vec<Matcher>, Vec<Labels>)> {
+    vec![
+		// Simple equals.
+		(
+			vec![m(MatchType::Equal, "n", "1")],
+			vec![
+				ls(&["n", "1"]),
+				ls(&["n", "1", "i", "a"]),
+				ls(&["n", "1", "i", "b"]),
+				ls(&["n", "1", "i", "\n"]),
+			],
+		),
+		(
+			vec![m(MatchType::Equal, "n", "1"), m(MatchType::Equal, "i", "a")],
+			vec![
+				ls(&["n", "1", "i", "a"]),
+			],
+		),
+		(
+			vec![m(MatchType::Equal, "n", "1"), m(MatchType::Equal, "i", "missing")],
+			vec![],
+		),
+		(
+			vec![m(MatchType::Equal, "missing", "")],
+			vec![
+				ls(&["n", "1"]),
+				ls(&["n", "1", "i", "a"]),
+				ls(&["n", "1", "i", "b"]),
+				ls(&["n", "1", "i", "\n"]),
+				ls(&["n", "2"]),
+				ls(&["n", "2.5"]),
+			],
+		),
+		// Not equals.
+		(
+			vec![m(MatchType::NotEqual, "n", "1")],
+			vec![
+				ls(&["n", "2"]),
+				ls(&["n", "2.5"]),
+			],
+		),
+		(
+			vec![m(MatchType::NotEqual, "i", "")],
+			vec![
+				ls(&["n", "1", "i", "a"]),
+				ls(&["n", "1", "i", "b"]),
+				ls(&["n", "1", "i", "\n"]),
+			],
+		),
+		(
+			vec![m(MatchType::NotEqual, "missing", "")],
+			vec![],
+		),
+		(
+			vec![m(MatchType::Equal, "n", "1"), m(MatchType::NotEqual, "i", "a")],
+			vec![
+				ls(&["n", "1"]),
+				ls(&["n", "1", "i", "b"]),
+				ls(&["n", "1", "i", "\n"]),
+			],
+		),
+		(
+			vec![m(MatchType::Equal, "n", "1"), m(MatchType::NotEqual, "i", "")],
+			vec![
+				ls(&["n", "1", "i", "a"]),
+				ls(&["n", "1", "i", "b"]),
+				ls(&["n", "1", "i", "\n"]),
+			],
+		),
+		// Regex.
+		(
+			vec![m(MatchType::Regexp, "n", "^1$")],
+			vec![
+				ls(&["n", "1"]),
+				ls(&["n", "1", "i", "a"]),
+				ls(&["n", "1", "i", "b"]),
+				ls(&["n", "1", "i", "\n"]),
+			],
+		),
+		(
+			vec![m(MatchType::Equal, "n", "1"), m(MatchType::Regexp, "i", "^a$")],
+			vec![
+				ls(&["n", "1", "i", "a"]),
+			],
+		),
+		(
+			vec![m(MatchType::Equal, "n", "1"), m(MatchType::Regexp, "i", "^a?$")],
+			vec![
+				ls(&["n", "1"]),
+				ls(&["n", "1", "i", "a"]),
+			],
+		),
+		(
+			vec![m(MatchType::Regexp, "i", "^$")],
+			vec![
+				ls(&["n", "1"]),
+				ls(&["n", "2"]),
+				ls(&["n", "2.5"]),
+			],
+		),
+		(
+			vec![m(MatchType::Equal, "n", "1"), m(MatchType::Regexp, "i", "^$")],
+			vec![
+				ls(&["n", "1"]),
+			],
+		),
+		(
+			vec![m(MatchType::Equal, "n", "1"), m(MatchType::Regexp, "i", "^.*$")],
+			vec![
+				ls(&["n", "1"]),
+				ls(&["n", "1", "i", "a"]),
+				ls(&["n", "1", "i", "b"]),
+				ls(&["n", "1", "i", "\n"]),
+			],
+		),
+		(
+			vec![m(MatchType::Equal, "n", "1"), m(MatchType::Regexp, "i", "^.+$")],
+			vec![
+				ls(&["n", "1", "i", "a"]),
+				ls(&["n", "1", "i", "b"]),
+				ls(&["n", "1", "i", "\n"]),
+			],
+		),
+		// Not regex.
+		(
+			vec![m(MatchType::NotRegexp, "i", "")],
+			vec![
+				ls(&["n", "1", "i", "a"]),
+				ls(&["n", "1", "i", "b"]),
+				ls(&["n", "1", "i", "\n"]),
+			],
+		),
+		(
+			vec![m(MatchType::NotRegexp, "n", "^1$")],
+			vec![
+				ls(&["n", "2"]),
+				ls(&["n", "2.5"]),
+			],
+		),
+		(
+			vec![m(MatchType::NotRegexp, "n", "1")],
+			vec![
+				ls(&["n", "2"]),
+				ls(&["n", "2.5"]),
+			],
+		),
+		(
+			vec![m(MatchType::NotRegexp, "n", "1|2.5")],
+			vec![
+				ls(&["n", "2"]),
+			],
+		),
+		(
+			vec![m(MatchType::NotRegexp, "n", "(1|2.5)")],
+			vec![
+				ls(&["n", "2"]),
+			],
+		),
+		(
+			vec![m(MatchType::Equal, "n", "1"), m(MatchType::NotRegexp, "i", "^a$")],
+			vec![
+				ls(&["n", "1"]),
+				ls(&["n", "1", "i", "b"]),
+				ls(&["n", "1", "i", "\n"]),
+			],
+		),
+		(
+			vec![m(MatchType::Equal, "n", "1"), m(MatchType::NotRegexp, "i", "^a?$")],
+			vec![
+				ls(&["n", "1", "i", "b"]),
+				ls(&["n", "1", "i", "\n"]),
+			],
+		),
+		(
+			vec![m(MatchType::Equal, "n", "1"), m(MatchType::NotRegexp, "i", "^$")],
+			vec![
+				ls(&["n", "1", "i", "a"]),
+				ls(&["n", "1", "i", "b"]),
+				ls(&["n", "1", "i", "\n"]),
+			],
+		),
+		(
+			vec![m(MatchType::Equal, "n", "1"), m(MatchType::NotRegexp, "i", "^.*$")],
+			vec![],
+		),
+		(
+			vec![m(MatchType::Equal, "n", "1"), m(MatchType::NotRegexp, "i", "^.+$")],
+			vec![
+				ls(&["n", "1"]),
+			],
+		),
+		// Combinations.
+		(
+			vec![m(MatchType::Equal, "n", "1"), m(MatchType::NotEqual, "i", ""), m(MatchType::Equal, "i", "a")],
+			vec![
+				ls(&["n", "1", "i", "a"]),
+			],
+		),
+		(
+			vec![m(MatchType::Equal, "n", "1"), m(MatchType::NotEqual, "i", "b"), m(MatchType::Regexp, "i", "^(b|a).*$")],
+			vec![
+				ls(&["n", "1", "i", "a"]),
+			],
+		),
+		// Set optimization for Regex.
+		// Refer to https://github.com/prometheus/prometheus/issues/2651.
+		(
+			vec![m(MatchType::Regexp, "n", "1|2")],
+			vec![
+				ls(&["n", "1"]),
+				ls(&["n", "1", "i", "a"]),
+				ls(&["n", "1", "i", "b"]),
+				ls(&["n", "1", "i", "\n"]),
+				ls(&["n", "2"]),
+			],
+		),
+		(
+			vec![m(MatchType::Regexp, "i", "a|b")],
+			vec![
+				ls(&["n", "1", "i", "a"]),
+				ls(&["n", "1", "i", "b"]),
+			],
+		),
+		(
+			vec![m(MatchType::Regexp, "i", "(a|b)")],
+			vec![
+				ls(&["n", "1", "i", "a"]),
+				ls(&["n", "1", "i", "b"]),
+			],
+		),
+		(
+			vec![m(MatchType::Regexp, "n", "x1|2")],
+			vec![
+				ls(&["n", "2"]),
+			],
+		),
+		(
+			vec![m(MatchType::Regexp, "n", "2|2\\.5")],
+			vec![
+				ls(&["n", "2"]),
+				ls(&["n", "2.5"]),
+			],
+		),
+		// Empty value.
+		(
+			vec![m(MatchType::Regexp, "i", "c||d")],
+			vec![
+				ls(&["n", "1"]),
+				ls(&["n", "2"]),
+				ls(&["n", "2.5"]),
+			],
+		),
+		(
+			vec![m(MatchType::Regexp, "i", "(c||d)")],
+			vec![
+				ls(&["n", "1"]),
+				ls(&["n", "2"]),
+				ls(&["n", "2.5"]),
+			],
+		),
+		// Test shortcut for i=~".*"
+		(
+			vec![m(MatchType::Regexp, "i", ".*")],
+			vec![
+				ls(&["n", "1"]),
+				ls(&["n", "1", "i", "a"]),
+				ls(&["n", "1", "i", "b"]),
+				ls(&["n", "1", "i", "\n"]),
+				ls(&["n", "2"]),
+				ls(&["n", "2.5"]),
+			],
+		),
+		// Test shortcut for n=~".*" and i=~"^.*$"
+		(
+			vec![m(MatchType::Regexp, "n", ".*"), m(MatchType::Regexp, "i", "^.*$")],
+			vec![
+				ls(&["n", "1"]),
+				ls(&["n", "1", "i", "a"]),
+				ls(&["n", "1", "i", "b"]),
+				ls(&["n", "1", "i", "\n"]),
+				ls(&["n", "2"]),
+				ls(&["n", "2.5"]),
+			],
+		),
+		// Test shortcut for n=~"^.*$"
+		(
+			vec![m(MatchType::Regexp, "n", "^.*$"), m(MatchType::Equal, "i", "a")],
+			vec![
+				ls(&["n", "1", "i", "a"]),
+			],
+		),
+		// Test shortcut for i!~".*"
+		(
+			vec![m(MatchType::NotRegexp, "i", ".*")],
+			vec![],
+		),
+		// Test shortcut for n!~"^.*$",  i!~".*". First one triggers empty result.
+		(
+			vec![m(MatchType::NotRegexp, "n", "^.*$"), m(MatchType::NotRegexp, "i", ".*")],
+			vec![],
+		),
+		// Test shortcut i!~".*"
+		(
+			vec![m(MatchType::Regexp, "n", ".*"), m(MatchType::NotRegexp, "i", ".*")],
+			vec![],
+		),
+		// Test shortcut i!~"^.*$"
+		(
+			vec![m(MatchType::Equal, "n", "1"), m(MatchType::NotRegexp, "i", "^.*$")],
+			vec![],
+		),
+		// Test shortcut i!~".+"
+		(
+			vec![m(MatchType::Regexp, "n", ".*"), m(MatchType::NotRegexp, "i", ".+")],
+			vec![
+				ls(&["n", "1"]),
+				ls(&["n", "2"]),
+				ls(&["n", "2.5"]),
+			],
+		),
+
+    ]
+}
+
+fn check_postings_for_matchers(ir: &dyn IndexReader) {
+    let ctx = Context::background();
+    for (matchers, exp) in pfm_cases() {
+        let mut exp: std::collections::HashSet<String> = exp.iter().map(|l| l.to_string()).collect();
+        let mut p = tsdb::querier::postings_for_matchers(&ctx, ir, &matchers).unwrap();
+        let mut builder = labels::ScratchBuilder::default();
+        let mut chks = Vec::new();
+        while p.next() {
+            ir.series(p.at(), &mut builder, &mut chks).unwrap();
+            let l = builder.labels().to_string();
+            assert!(exp.remove(&l), "Evaluating {matchers:?}, unexpected result {l}");
+        }
+        assert!(p.err().is_none());
+        assert!(exp.is_empty(), "Evaluating {matchers:?}, missing {exp:?}");
+    }
+}
+
+// adapted: Go evaluates the matchers against the index of a head; until the head is merged they are evaluated
+// against the index of a block with the same series (with `--cfg head` also against the head).
+#[test]
+fn test_postings_for_matchers() {
+    let series: Vec<Labels> = vec![
+        ls(&["n", "1"]),
+        ls(&["n", "1", "i", "a"]),
+        ls(&["n", "1", "i", "b"]),
+        ls(&["n", "1", "i", "\n"]),
+        ls(&["n", "2"]),
+        ls(&["n", "2.5"]),
+    ];
+    let dir = TempDir::new();
+    let entries: Vec<storage::SeriesArc> =
+        series.iter().map(|l| storage::new_list_series(l.clone(), vec![sf(0, 0, 0.0)])).collect();
+    let block = tsdb::block::open_block(None, &create_block(dir.path(), &entries), None, None).unwrap();
+    {
+        let ir = tsdb::BlockReader::index(&block).unwrap();
+        check_postings_for_matchers(&*ir);
+        ir.close().unwrap();
+    }
+    block.close().unwrap();
+
+    #[cfg(head)]
+    {
+        use tsdb::head::{Head, HeadOptions, HeadStats};
+        let chunk_dir = TempDir::new();
+        let opts =
+            HeadOptions { chunk_range: 1000, chunk_dir_root: chunk_dir.path().to_path_buf(), ..HeadOptions::default() };
+        let h = Head::new(None, None, opts, Arc::new(HeadStats::default())).unwrap();
+        let mut app = h.appender(&Context::background());
+        for l in &series {
+            let _ = app.append(0, l, 0, 0.0);
+        }
+        assert!(app.commit().is_none());
+        let ir = tsdb::BlockReader::index(&*h).unwrap();
+        check_postings_for_matchers(&*ir);
+        h.close().unwrap();
+    }
+}
+
+#[test]
+#[ignore = "needs db"]
+fn test_querier_index_queries_race() {
+    #[cfg(head)]
+    {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        const TEST_REPEATS: usize = 1000;
+        let test_cases: Vec<Vec<Matcher>> = vec![
+            // This matcher should involve the AllPostings posting list in calculating the posting lists.
+            vec![m(MatchType::NotEqual, "__name__", "metric")],
+            // The first matcher should be effectively the same as AllPostings, because all series have always_0=0.
+            // If it is evaluated first, then __name__=metric will contain more series than always_0=0.
+            vec![m(MatchType::NotEqual, "always_0", "0"), m(MatchType::Equal, "__name__", "metric")],
+        ];
+        for matchers in test_cases {
+            let db = tsdb::db::new_test_db(tsdb::db::with_opts(tsdb::db::DefaultOptions()));
+            let h = db.head();
+            let stop = Arc::new(AtomicBool::new(false));
+            let s2 = stop.clone();
+            let appender = std::thread::spawn(move || {
+                let mut i = 0;
+                while !s2.load(Ordering::SeqCst) {
+                    let mut app = h.appender(&Context::background());
+                    app.append(0, &ls(&["__name__", "metric", "seq", &i.to_string(), "always_0", "0"]), 0, 0.0)
+                        .unwrap();
+                    assert!(app.commit().is_none());
+                    i += 1;
+                    // Throttle down the appends to keep the test somewhat nimble.
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            });
+            for _ in 0..TEST_REPEATS {
+                let q = db.querier(i64::MIN, i64::MAX).unwrap();
+                let (values, _, err) = q.label_values(&Context::background(), "seq", None, &matchers);
+                assert!(err.is_none());
+                assert!(values.is_empty(), r#"label values for label "seq" should be empty"#);
+                // Sleep to give the appends some change to run.
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            stop.store(true, Ordering::SeqCst);
+            appender.join().unwrap();
+        }
+    }
+}
+
+// Ensures that calling Close more than once doesn't block and doesn't panic.
+#[test]
+#[ignore = "needs db"]
+fn test_close() {
+    #[cfg(head)]
+    {
+        let dir = TempDir::new();
+        create_block(dir.path(), &gen_series(1, 1, 0, 10));
+        create_block(dir.path(), &gen_series(1, 1, 10, 20));
+        let db = tsdb::db::open(dir.path(), None, None, tsdb::db::DefaultOptions(), None)
+            .expect("Opening test storage failed");
+        let mut q = db.querier(0, 20).unwrap();
+        assert!(q.close().is_none());
+        assert!(q.close().is_some());
+        db.close().unwrap();
+    }
+}
+
+/// Go `mockMatcherIndex`: checks that the regex matcher takes the expected path.
+struct MockMatcherIndex;
+
+impl IndexReader for MockMatcherIndex {
+    fn symbols(&self) -> Box<dyn index::StringIter + '_> {
+        Box::new(index::new_string_list_iter(vec![]))
+    }
+    fn sorted_label_values(&self, _: &Context, _: &str, _: Option<&storage::LabelHints>, _: &[Matcher]) -> Result<Vec<String>, Error> {
+        Err(Error::msg("sorted label values called"))
+    }
+    fn label_values(&self, _: &Context, _: &str, _: Option<&storage::LabelHints>, _: &[Matcher]) -> Result<Vec<String>, Error> {
+        Err(Error::msg("label values called"))
+    }
+    fn postings(&self, _: &Context, _: &str, _: &[&str]) -> Result<index::BoxPostings<'_>, Error> {
+        Ok(index::empty_postings())
+    }
+    fn postings_for_label_matching(&self, _: &Context, _: &str, _: &(dyn Fn(&str) -> bool + Sync)) -> index::BoxPostings<'_> {
+        index::err_postings(index::Error::new("PostingsForLabelMatching called"))
+    }
+    fn postings_for_all_label_values(&self, _: &Context, _: &str) -> index::BoxPostings<'_> {
+        index::err_postings(index::Error::new("PostingsForAllLabelValues called"))
+    }
+    fn sorted_postings<'a>(&'a self, _: index::BoxPostings<'a>) -> index::BoxPostings<'a> {
+        index::empty_postings()
+    }
+    fn sharded_postings<'a>(&'a self, p: index::BoxPostings<'a>, _: u64, _: u64) -> index::BoxPostings<'a> {
+        p
+    }
+    fn series(&self, _: u64, _: &mut labels::ScratchBuilder, _: &mut Vec<Meta>) -> Result<(), Error> {
+        Ok(())
+    }
+    fn label_names(&self, _: &Context, _: &[Matcher]) -> Result<Vec<String>, Error> {
+        Ok(vec![])
+    }
+    fn label_names_for(&self, _: &Context, _: &mut dyn index::Postings) -> Result<Vec<String>, Error> {
+        Err(Error::msg("label names for called"))
+    }
+    fn close(&self) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+#[test]
+fn test_postings_for_matcher() {
+    let ctx = Context::background();
+    let cases = vec![
+        // Equal label matcher will just return.
+        (m(MatchType::Equal, "test", "test"), false),
+        // Regex matcher which doesn't have '|' will call Labelvalues().
+        (m(MatchType::Regexp, "test", ".*"), true),
+        (m(MatchType::Regexp, "test", "a|b"), false),
+        // Test case for double quoted regex matcher.
+        (m(MatchType::Regexp, "test", "^(?:a|b)$"), false),
+    ];
+    for (matcher, has_error) in cases {
+        let ir = MockMatcherIndex;
+        let res = tsdb::querier::postings_for_matcher(&ctx, &ir, &matcher);
+        assert_eq!(has_error, res.is_err(), "{matcher}");
+    }
+}
+
+// adapted: Go builds a `blockBaseSeriesSet` literal and checks its current labels and chunk metas. Here the same
+// set is built through `new_block_chunk_series_set` with a chunk reader that gives an empty chunk for every meta;
+// the chunk iterator then yields the metas of the series (refs and times) as Go's `si.metas`.
+#[test]
+fn test_block_base_series_set() {
+    let cm = |r: u64| Meta { chunk_ref: r, ..Meta::default() };
+    struct Refd {
+        lset: Labels,
+        chunks: Vec<Meta>,
+        r: u64,
+    }
+    let cases: Vec<(Vec<Refd>, Vec<u64>, Vec<usize>)> = vec![
+        (
+            vec![
+                Refd { lset: ls(&["a", "a"]), chunks: [29, 45, 245, 123, 4232, 5344, 121].map(cm).to_vec(), r: 12 },
+                Refd { lset: ls(&["a", "a", "b", "b"]), chunks: [82, 23, 234, 65, 26].map(cm).to_vec(), r: 10 },
+                Refd { lset: ls(&["b", "c"]), chunks: vec![cm(8282)], r: 1 },
+                Refd { lset: ls(&["b", "b"]), chunks: [829, 239, 2349, 659, 269].map(cm).to_vec(), r: 108 },
+            ],
+            // 13 doesn't exist and should just be skipped over.
+            vec![12, 13, 10, 108],
+            vec![0, 1, 3],
+        ),
+        (
+            vec![
+                Refd { lset: ls(&["a", "a", "b", "b"]), chunks: [82, 23, 234, 65, 26].map(cm).to_vec(), r: 10 },
+                Refd { lset: ls(&["b", "c"]), chunks: vec![cm(8282)], r: 3 },
+            ],
+            vec![],
+            vec![],
+        ),
+    ];
+    for (series, postings, exp_idxs) in cases {
+        let mut mi = new_mock_index();
+        for s in &series {
+            mi.add_series(s.r, s.lset.clone(), &s.chunks).unwrap();
+        }
+        let p = tsdb::querier::OwnedPostings::from_static(Arc::new(mi), Box::new(index::new_list_postings(postings)));
+        let mut bcs = tsdb::querier::new_block_chunk_series_set(
+            Ulid::default(),
+            p,
+            Arc::new(tsdb::querier::NopChunkReader::new()),
+            Arc::new(MemTombstones::new()),
+            0,
+            0,
+            false,
+        );
+        let mut i = 0;
+        while bcs.next() {
+            let s = bcs.at().clone();
+            let idx = exp_idxs[i];
+            assert_eq!(&series[idx].lset, s.labels());
+            let mut it = s.iterator(None);
+            let mut metas = Vec::new();
+            while it.next() {
+                let c = it.at();
+                metas.push((c.chunk_ref, c.min_time, c.max_time));
+            }
+            let exp: Vec<_> = series[idx].chunks.iter().map(|c| (c.chunk_ref, c.min_time, c.max_time)).collect();
+            assert_eq!(exp, metas);
+            i += 1;
+        }
+        assert_eq!(exp_idxs.len(), i);
+        assert!(bcs.err().is_none());
+    }
+}
+
+#[test]
+#[ignore = "needs db"]
+fn test_query_with_deleted_histograms() {
+    #[cfg(head)]
+    {
+        type Gen = Box<dyn Fn(i64) -> (Option<Histogram>, Option<FloatHistogram>)>;
+        let ctx = Context::background();
+        let rnd = || (rand_f64() * 1000.0) as i64;
+        let cases: Vec<(&str, Gen)> = vec![
+            ("intCounter", Box::new(|i| (Some(tu::generate_test_histogram(i)), None))),
+            ("intgauge", Box::new(move |_| (Some(tu::generate_test_gauge_histogram(rnd())), None))),
+            ("floatCounter", Box::new(|i| (None, Some(tu::generate_test_float_histogram(i))))),
+            ("floatGauge", Box::new(move |_| (None, Some(tu::generate_test_gauge_float_histogram(rnd()))))),
+        ];
+        for (name, tc) in cases {
+            let db = tsdb::db::new_test_db(tsdb::db::with_opts(tsdb::db::DefaultOptions()));
+            let mut app = db.appender(&ctx);
+            let lbs = ls(&["__name__", "test", "type", name]);
+            let mut series_ref = 0;
+            for i in 0..100 {
+                let (h, fh) = tc(i);
+                series_ref = app.append_histogram(series_ref, &lbs, i, h.as_ref(), fh.as_ref()).unwrap();
+            }
+            assert!(app.commit().is_none());
+            let matcher = m(MatchType::Equal, "__name__", "test");
+            // Delete the last 20.
+            db.delete(&ctx, 80, 100, &[matcher.clone()]).unwrap();
+            let chunk_querier = db.chunk_querier(0, 100).unwrap();
+            let mut css = chunk_querier.select(&ctx, false, None, &[matcher]);
+            let mut series_count = 0;
+            while css.next() {
+                series_count += 1;
+                let series = css.at().clone();
+                let mut sample_count = 0;
+                let mut it = series.iterator(None);
+                while it.next() {
+                    let mut cit = it.at().chunk().iterator(None);
+                    while cit.next() != ValueType::None {
+                        sample_count += 1;
+                    }
+                }
+                assert!(it.err().is_none());
+                assert_eq!(80, sample_count, "{name}");
+            }
+            assert!(css.err().is_none());
+            assert_eq!(1, series_count);
+        }
+    }
+}
+
+#[test]
+#[ignore = "needs db"]
+fn test_query_with_one_chunk_completely_deleted() {
+    #[cfg(head)]
+    {
+        let ctx = Context::background();
+        let db = tsdb::db::new_test_db(tsdb::db::with_opts(tsdb::db::DefaultOptions()));
+        let mut app = db.appender(&ctx);
+        let lbs = ls(&["__name__", "test"]);
+        let mut series_ref = 0;
+        // Create an int histogram chunk with samples between 0 - 20 and 30 - 40.
+        for i in (0..20).chain(30..40) {
+            let h = tu::generate_test_histogram(1);
+            series_ref = app.append_histogram(series_ref, &lbs, i, Some(&h), None).unwrap();
+        }
+        // Append some float histograms - float histograms are a different encoding type from int histograms so a
+        // new chunk is created.
+        for i in 60..100 {
+            let fh = tu::generate_test_float_histogram(1);
+            series_ref = app.append_histogram(series_ref, &lbs, i, None, Some(&fh)).unwrap();
+        }
+        assert!(app.commit().is_none());
+        let matcher = m(MatchType::Equal, "__name__", "test");
+        // Delete all samples from the int histogram chunk. The deletion intervals doesn't cover the entire
+        // histogram chunk, but does cover all the samples in the chunk.
+        db.delete(&ctx, 0, 20, &[matcher.clone()]).unwrap();
+        db.delete(&ctx, 30, 40, &[matcher.clone()]).unwrap();
+        let chunk_querier = db.chunk_querier(0, 100).unwrap();
+        let mut css = chunk_querier.select(&ctx, false, None, &[matcher]);
+        let mut series_count = 0;
+        while css.next() {
+            series_count += 1;
+            let series = css.at().clone();
+            let mut sample_count = 0;
+            let mut it = series.iterator(None);
+            while it.next() {
+                let mut cit = it.at().chunk().iterator(None);
+                loop {
+                    let vt = cit.next();
+                    if vt == ValueType::None {
+                        break;
+                    }
+                    assert_eq!(
+                        ValueType::FloatHistogram,
+                        vt,
+                        "Only float histograms expected, other sample types should have been deleted."
+                    );
+                    sample_count += 1;
+                }
+            }
+            assert!(it.err().is_none());
+            assert_eq!(40, sample_count);
+        }
+        assert!(css.err().is_none());
+        assert_eq!(1, series_count);
+    }
+}
+
+#[test]
+#[ignore = "needs db"]
+fn test_chunk_querier_overlapping_in_order_and_ooo_chunks() {
+    #[cfg(head)]
+    {
+        for store_st in [false, true] {
+            for val_type in [ValueType::Float, ValueType::Histogram, ValueType::FloatHistogram] {
+                test_chunk_querier_overlapping_in_order_and_ooo_chunks(val_type, store_st);
+            }
+        }
+    }
+}
+
+#[cfg(head)]
+fn test_chunk_querier_overlapping_in_order_and_ooo_chunks(val_type: ValueType, store_st: bool) {
+    const OOO_CAP_MAX: i64 = 32;
+    // Pick more OOO samples than any chunk encoding can hold so the querier is forced to cut the merged iterable
+    // into multiple chunks.
+    const OOO_SAMPLES_TO_APPEND: i64 = u16::MAX as i64 + 10;
+    const FIRST_INDEX: i64 = 0;
+    const LAST_INDEX: i64 = OOO_SAMPLES_TO_APPEND + 1;
+
+    let mut opts = tsdb::db::DefaultOptions();
+    opts.out_of_order_cap_max = OOO_CAP_MAX;
+    opts.out_of_order_time_window = 24 * 60 * 60 * 1000;
+    opts.enable_st_storage = store_st;
+    if store_st {
+        opts.float_chunk_encoding = chunkenc::ENC_XOR2;
+    }
+    let db = tsdb::db::new_test_db(tsdb::db::with_opts(opts));
+    db.disable_compactions();
+    let lbls = ls(&["foo", "bar"]);
+    let append_sample = |app: &mut Box<dyn storage::Appender>, ts: i64| match val_type {
+        ValueType::Float => app.append(0, &lbls, ts, ts as f64).map(|_| ()),
+        ValueType::Histogram => {
+            app.append_histogram(0, &lbls, ts, Some(&tu::generate_test_histogram(ts)), None).map(|_| ())
+        }
+        ValueType::FloatHistogram => {
+            app.append_histogram(0, &lbls, ts, None, Some(&tu::generate_test_float_histogram(ts))).map(|_| ())
+        }
+        ValueType::None => Err(Error::msg(format!("unsupported value type: {val_type}"))),
+    };
+    // Append the two in-order samples at the start and end of the range.
+    let mut app = db.appender(&Context::background());
+    for i in [FIRST_INDEX, LAST_INDEX] {
+        append_sample(&mut app, 10000 + i * 10).unwrap();
+    }
+    assert!(app.commit().is_none());
+    // The head internals checked by Go (head chunks and OOO chunk counts) are checked by the head port's tests.
+    let mut app = db.appender(&Context::background());
+    for i in FIRST_INDEX + 1..LAST_INDEX {
+        append_sample(&mut app, 10000 + i * 10).unwrap();
+    }
+    assert!(app.commit().is_none());
+
+    let chunk_querier = db.chunk_querier(i64::MIN, i64::MAX).unwrap();
+    let mut css = chunk_querier.select(&Context::background(), false, None, &[m(MatchType::Equal, "foo", "bar")]);
+    let (mut series_count, mut chunk_count, mut sample_count) = (0, 0, 0);
+    let mut last_ts = i64::MIN;
+    while css.next() {
+        series_count += 1;
+        let series = css.at().clone();
+        let mut it = series.iterator(None);
+        while it.next() {
+            chunk_count += 1;
+            let mut cit = it.at().chunk().iterator(None);
+            loop {
+                let vt = cit.next();
+                if vt == ValueType::None {
+                    break;
+                }
+                assert_eq!(val_type, vt);
+                let ts = cit.at_t();
+                assert!(ts > last_ts, "timestamps must be strictly increasing across the returned chunks");
+                last_ts = ts;
+                sample_count += 1;
+            }
+            assert!(cit.err().is_none());
+        }
+        assert!(it.err().is_none());
+    }
+    assert!(css.err().is_none());
+    assert_eq!(1, series_count);
+    assert!(chunk_count > 1);
+    assert_eq!(LAST_INDEX - FIRST_INDEX + 1, sample_count);
+}
+
+/// Go `mockReaderOfLabels`.
+struct MockReaderOfLabels;
+
+const MOCK_READER_OF_LABELS_SERIES_COUNT: usize = tsdb::querier::CHECK_CONTEXT_EVERY_N_ITERATIONS * 10;
+
+impl IndexReader for MockReaderOfLabels {
+    fn symbols(&self) -> Box<dyn index::StringIter + '_> {
+        panic!("Series called")
+    }
+    fn sorted_label_values(&self, _: &Context, _: &str, _: Option<&storage::LabelHints>, _: &[Matcher]) -> Result<Vec<String>, Error> {
+        panic!("SortedLabelValues called")
+    }
+    fn label_values(&self, _: &Context, _: &str, _: Option<&storage::LabelHints>, _: &[Matcher]) -> Result<Vec<String>, Error> {
+        Ok(vec![String::new(); MOCK_READER_OF_LABELS_SERIES_COUNT])
+    }
+    fn postings(&self, _: &Context, _: &str, _: &[&str]) -> Result<index::BoxPostings<'_>, Error> {
+        panic!("Postings called")
+    }
+    fn postings_for_label_matching(&self, _: &Context, _: &str, _: &(dyn Fn(&str) -> bool + Sync)) -> index::BoxPostings<'_> {
+        panic!("PostingsForLabelMatching called")
+    }
+    fn postings_for_all_label_values(&self, _: &Context, _: &str) -> index::BoxPostings<'_> {
+        panic!("PostingsForAllLabelValues called")
+    }
+    fn sorted_postings<'a>(&'a self, _: index::BoxPostings<'a>) -> index::BoxPostings<'a> {
+        panic!("SortedPostings called")
+    }
+    fn sharded_postings<'a>(&'a self, _: index::BoxPostings<'a>, _: u64, _: u64) -> index::BoxPostings<'a> {
+        panic!("Postings called")
+    }
+    fn series(&self, _: u64, _: &mut labels::ScratchBuilder, _: &mut Vec<Meta>) -> Result<(), Error> {
+        panic!("Series called")
+    }
+    fn label_names(&self, _: &Context, _: &[Matcher]) -> Result<Vec<String>, Error> {
+        panic!("LabelNames called")
+    }
+    fn label_names_for(&self, _: &Context, _: &mut dyn index::Postings) -> Result<Vec<String>, Error> {
+        panic!("LabelNamesFor called")
+    }
+    fn close(&self) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+// adapted: Go counts the `ctx.Err()` calls of a mock context that fails after 5 calls (one check every
+// checkContextEveryNIterations values). `storage::Context` cannot count calls; here a cancelled context must stop the
+// filtering loop with the context error (without it, the call would return an empty result).
+#[test]
+fn test_reader_postings_for_label_matching_honors_context_cancel() {
+    let ir = MockReaderOfLabels;
+    let (ctx, cancel) = Context::background().with_cancel();
+    cancel.cancel();
+    let err = tsdb::querier::label_values_with_matchers(&ctx, &ir, "__name__", None, &[m(MatchType::Regexp, "__name__", ".+")])
+        .unwrap_err();
+    assert!(err.is(&storage::ERR_CANCELED));
+}
+
+// Reproduces the data race bug from https://github.com/prometheus/prometheus/issues/14723, when one of the
+// queriers (blockQuerier in this case) alters the passed matchers.
+#[test]
+fn test_merge_querier_concurrent_select_matchers() {
+    let dir = TempDir::new();
+    let block = tsdb::block::open_block(None, &create_block(dir.path(), &gen_series(1, 1, 0, 1)), None, None).unwrap();
+    let p = tsdb::querier::new_block_querier(&block, 0, 1).unwrap();
+    // A secondary querier is required to enable concurrent select; a blockQuerier is used for simplicity.
+    let s = tsdb::querier::new_block_querier(&block, 0, 1).unwrap();
+    let original_matchers = vec![m(MatchType::Regexp, "baz", ".*"), m(MatchType::Equal, "foo", "bar")];
+    let matchers = original_matchers.clone();
+    let mut merged = storage::new_merge_querier(vec![p], vec![s], Arc::new(storage::chained_series_merge));
+    {
+        let mut set = merged.select(&Context::background(), false, None, &matchers);
+        while set.next() {}
+    }
+    assert_eq!(original_matchers, matchers);
+    assert!(merged.close().is_none());
+    drop(merged);
+    block.close().unwrap();
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Search.
+
+/// Go `prefixFilter`: accepts values that start with the given prefix and scores them 1.0.
+struct PrefixFilter(&'static str);
+
+impl storage::Filter for PrefixFilter {
+    fn accept(&self, v: &str) -> (bool, f64) {
+        if v.starts_with(self.0) { (true, 1.0) } else { (false, 0.0) }
+    }
+}
+
+fn new_block_base_querier_for_search(label_sets: &[Labels]) -> BlockBaseQuerier {
+    let mut ix = new_mock_index();
+    // Group series refs by label for writing postings.
+    let mut postings: BTreeMap<(String, String), Vec<u64>> = BTreeMap::new();
+    for (i, l) in label_sets.iter().enumerate() {
+        ix.add_series(i as u64, l.clone(), &[]).unwrap();
+        l.range(|n, v| postings.entry((n.to_string(), v.to_string())).or_default().push(i as u64));
+    }
+    for ((n, v), refs) in postings {
+        ix.write_postings(&n, &v, &mut index::new_list_postings(refs)).unwrap();
+    }
+    BlockBaseQuerier::from_parts(
+        Ulid::default(),
+        Arc::new(ix),
+        Arc::new(MockChunkReader::default()),
+        Arc::new(MemTombstones::new()),
+        0,
+        0,
+    )
+}
+
+fn collect_search_result_set(mut rs: storage::BoxSearchResultSet<'_>) -> Vec<storage::SearchResult> {
+    let mut got = Vec::new();
+    while rs.next() {
+        got.push(rs.at().clone());
+    }
+    assert!(rs.err().is_none());
+    assert!(rs.close().is_none());
+    got
+}
+
+fn hints(filter: Option<&'static str>, limit: i64, order_by: storage::Ordering) -> storage::SearchHints {
+    storage::SearchHints {
+        filter: filter.map(|p| Arc::new(PrefixFilter(p)) as Arc<dyn storage::Filter>),
+        limit,
+        order_by,
+    }
+}
+
+#[test]
+fn test_block_base_querier_search_label_names() {
+    use storage::Searcher;
+    let ctx = Context::background();
+    let q = new_block_base_querier_for_search(&[
+        ls(&["env", "prod", "job", "api"]),
+        ls(&["env", "dev", "job", "api"]),
+        ls(&["region", "eu"]),
+    ]);
+    // No filter returns all names.
+    let got = collect_search_result_set(q.search_label_names(&ctx, None, &[]));
+    let mut vals: Vec<String> = got.iter().map(|r| r.value.clone()).collect();
+    assert!(got.iter().all(|r| r.score == 1.0));
+    vals.sort();
+    assert_eq!(vec!["env", "job", "region"], vals);
+    // Filter selects matching names.
+    let got = collect_search_result_set(q.search_label_names(&ctx, Some(&hints(Some("e"), 0, Default::default())), &[]));
+    assert_eq!(got.len(), 1);
+    assert_eq!("env", got[0].value);
+    // Limit is applied.
+    let got = collect_search_result_set(q.search_label_names(&ctx, Some(&hints(None, 1, Default::default())), &[]));
+    assert_eq!(got.len(), 1);
+}
+
+#[test]
+fn test_block_base_querier_search_label_values() {
+    use storage::Searcher;
+    let ctx = Context::background();
+    let q = new_block_base_querier_for_search(&[ls(&["env", "prod"]), ls(&["env", "dev"]), ls(&["env", "staging"])]);
+    // No filter returns all values.
+    let got = collect_search_result_set(q.search_label_values(&ctx, "env", None, &[]));
+    let mut vals: Vec<String> = got.iter().map(|r| r.value.clone()).collect();
+    assert!(got.iter().all(|r| r.score == 1.0));
+    vals.sort();
+    assert_eq!(vec!["dev", "prod", "staging"], vals);
+    // Filter selects matching values.
+    let got = collect_search_result_set(q.search_label_values(&ctx, "env", Some(&hints(Some("p"), 0, Default::default())), &[]));
+    assert_eq!(got.len(), 1);
+    assert_eq!("prod", got[0].value);
+    // Limit is applied after filtering.
+    let got = collect_search_result_set(q.search_label_values(&ctx, "env", Some(&hints(Some("p"), 1, Default::default())), &[]));
+    assert_eq!(vec![storage::SearchResult { value: "prod".into(), score: 1.0 }], got);
+    // Limit is applied.
+    let got = collect_search_result_set(q.search_label_values(&ctx, "env", Some(&hints(None, 2, Default::default())), &[]));
+    assert_eq!(got.len(), 2);
+    // Unknown label name returns empty.
+    let got = collect_search_result_set(q.search_label_values(&ctx, "unknown", None, &[]));
+    assert!(got.is_empty());
+    // OrderByValueDesc returns values in reverse alphabetical order.
+    let got = collect_search_result_set(q.search_label_values(
+        &ctx,
+        "env",
+        Some(&hints(None, 0, storage::Ordering::ByValueDesc)),
+        &[],
+    ));
+    assert!(got.iter().all(|r| r.score == 1.0));
+    let vals: Vec<String> = got.iter().map(|r| r.value.clone()).collect();
+    assert_eq!(vec!["staging", "prod", "dev"], vals);
+}
+
+/// Go `forEachSearchBackend` (adapted: the block is built without the head; with `--cfg head` the head backend
+/// runs as well).
+fn for_each_search_backend(label_sets: &[Labels], f: &dyn Fn(&dyn storage::Searcher)) {
+    let dir = TempDir::new();
+    let entries: Vec<storage::SeriesArc> =
+        label_sets.iter().map(|l| storage::new_list_series(l.clone(), vec![sf(0, 2100, 1.0)])).collect();
+    let block = tsdb::block::open_block(None, &create_block(dir.path(), &entries), None, None).unwrap();
+    {
+        let mut q = tsdb::querier::new_block_querier(&block, 1500, 2500).unwrap();
+        f(q.as_searcher().unwrap());
+        assert!(q.close().is_none());
+    }
+    block.close().unwrap();
+    #[cfg(head)]
+    {
+        let h = tsdb::head::new_test_head(1000, false);
+        let mut app = h.appender(&Context::background());
+        for l in label_sets {
+            app.append(0, l, 2100, 1.0).unwrap();
+        }
+        assert!(app.commit().is_none());
+        let mut q = tsdb::querier::new_block_querier(&*h, 1500, 2500).unwrap();
+        f(q.as_searcher().unwrap());
+        assert!(q.close().is_none());
+    }
+}
+
+/// Go `requireSearchValues`: `rs` yields exactly `want`, in order.
+fn require_search_values(rs: storage::BoxSearchResultSet<'_>, want: &[&str]) {
+    let got: Vec<String> = collect_search_result_set(rs).into_iter().map(|r| r.value).collect();
+    assert_eq!(want, got);
+}
+
+// Checks that a limited ascending search returns the lexically smallest values. The limit must be applied after
+// ordering.
+#[test]
+fn test_search_label_values_limit_applied_after_ordering() {
+    let ctx = Context::background();
+    // Appended in descending order, so the head's in-memory value list for __name__ is the reverse of the expected
+    // result.
+    let unordered_insertion = vec![
+        ls(&["__name__", "z_metric", "job", "api"]),
+        ls(&["__name__", "m_metric", "job", "api"]),
+        ls(&["__name__", "a_metric", "job", "api"]),
+    ];
+    // Blocks store series sorted by label set, so the series carrying the smallest "pod" value gets the highest
+    // series reference.
+    let unordered_series_refs = vec![
+        ls(&["__name__", "a_metric", "job", "api", "pod", "z_pod"]),
+        ls(&["__name__", "b_metric", "job", "api", "pod", "m_pod"]),
+        ls(&["__name__", "c_metric", "job", "api", "pod", "a_pod"]),
+    ];
+    let job_api = vec![m(MatchType::Equal, "job", "api")];
+    let asc = storage::Ordering::ByValueAsc;
+
+    // No matchers.
+    for_each_search_backend(&unordered_insertion, &|q| {
+        let want = ["a_metric", "m_metric", "z_metric"];
+        for limit in 1..=want.len() {
+            // A nil filter and an accept-all filter must agree.
+            for filter in [None, Some("")] {
+                let rs = q.search_label_values(&ctx, "__name__", Some(&hints(filter, limit as i64, asc)), &[]);
+                require_search_values(rs, &want[..limit]);
+            }
+        }
+    });
+    // Matcher on another label.
+    for_each_search_backend(&unordered_series_refs, &|q| {
+        let want = ["a_pod", "m_pod", "z_pod"];
+        for limit in 1..=want.len() {
+            let rs = q.search_label_values(&ctx, "pod", Some(&hints(None, limit as i64, asc)), &job_api);
+            require_search_values(rs, &want[..limit]);
+        }
+    });
+    // Matcher on the searched label.
+    for_each_search_backend(&unordered_insertion, &|q| {
+        let rs = q.search_label_values(
+            &ctx,
+            "__name__",
+            Some(&hints(None, 2, asc)),
+            &[m(MatchType::Regexp, "__name__", ".*_metric")],
+        );
+        require_search_values(rs, &["a_metric", "m_metric"]);
+    });
+    // OrderByScoreDesc without a filter.
+    for_each_search_backend(&unordered_insertion, &|q| {
+        let rs = q.search_label_values(&ctx, "__name__", Some(&hints(None, 2, storage::Ordering::ByScoreDesc)), &[]);
+        require_search_values(rs, &["a_metric", "m_metric"]);
+    });
+    // OrderByValueDesc.
+    for_each_search_backend(&unordered_insertion, &|q| {
+        let rs = q.search_label_values(&ctx, "__name__", Some(&hints(None, 2, storage::Ordering::ByValueDesc)), &[]);
+        require_search_values(rs, &["z_metric", "m_metric"]);
+    });
+}
+
+// Checks the merged case: the merge truncates the k-way merge of its children, which is only correct if every child
+// returned its own smallest N.
+#[test]
+#[ignore = "needs head"]
+fn test_search_label_values_limit_across_merged_queriers() {
+    #[cfg(head)]
+    {
+        let ctx = Context::background();
+        let dir = TempDir::new();
+        let entries: Vec<storage::SeriesArc> = ["n_metric", "p_metric", "r_metric"]
+            .iter()
+            .map(|n| storage::new_list_series(ls(&["__name__", n, "job", "api"]), vec![sf(0, 2100, 1.0)]))
+            .collect();
+        let block = tsdb::block::open_block(None, &create_block(dir.path(), &entries), None, None).unwrap();
+        let block_q = tsdb::querier::new_block_querier(&block, 1500, 2500).unwrap();
+        // Appended in descending order so the head's value list is unordered.
+        let head = tsdb::head::new_test_head(1000, false);
+        let mut app = head.appender(&ctx);
+        for name in ["z_metric", "m_metric", "a_metric"] {
+            app.append(0, &ls(&["__name__", name, "job", "api"]), 2100, 1.0).unwrap();
+        }
+        assert!(app.commit().is_none());
+        let head_q = tsdb::querier::new_block_querier(&*head, 1500, 2500).unwrap();
+        let mut q = storage::new_merge_querier(vec![head_q, block_q], vec![], Arc::new(storage::chained_series_merge));
+        {
+            let rs = q.as_searcher().unwrap().search_label_values(
+                &ctx,
+                "__name__",
+                Some(&hints(None, 2, storage::Ordering::ByValueAsc)),
+                &[],
+            );
+            require_search_values(rs, &["a_metric", "m_metric"]);
+        }
+        assert!(q.close().is_none());
+        drop(q);
+        block.close().unwrap();
+    }
+}

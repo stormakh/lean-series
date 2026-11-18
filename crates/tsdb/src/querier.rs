@@ -1661,24 +1661,23 @@ impl StringIter for MergedStringIter<'_> {
 // Deleted iterator.
 
 /// Go `DeletedIterator`: wraps a sample iterator and skips the samples in the deletion intervals. The intervals
-/// must be sorted by min time; the iterator drops intervals from the front as it moves past them.
+/// must be sorted by min time; the iterator drops intervals from the front as it moves past them. To reuse it, set
+/// both `iter` and `intervals`; no other state needs resetting.
 pub struct DeletedIterator<I> {
     /// The wrapped iterator.
     pub iter: I,
-    /// The deletion intervals (the ones before `start` are already passed).
+    /// The deletion intervals, sorted by min time in ascending order.
     pub intervals: Intervals,
-    start: usize,
 }
 
 impl<I: ChunkIterator> DeletedIterator<I> {
     /// Go `&DeletedIterator{Iter: iter, Intervals: intervals}`.
     pub fn new(iter: I, intervals: Intervals) -> DeletedIterator<I> {
-        DeletedIterator { iter, intervals, start: 0 }
+        DeletedIterator { iter, intervals }
     }
 
     fn reset_intervals(&mut self) {
         self.intervals.clear();
-        self.start = 0;
     }
 }
 
@@ -1690,15 +1689,15 @@ impl<I: ChunkIterator> ChunkIterator for DeletedIterator<I> {
                 return ValueType::None;
             }
             let ts = self.iter.at_t();
-            while self.start < self.intervals.len() {
-                let tr = self.intervals[self.start];
+            while let Some(tr) = self.intervals.first().copied() {
                 if tr.in_bounds(ts) {
                     continue 'outer;
                 }
                 if ts <= tr.maxt {
                     return vt;
                 }
-                self.start += 1;
+                // The interval list is short (the tombstones of one chunk), so dropping the front is cheap.
+                self.intervals.remove(0);
             }
             return vt;
         }
@@ -1714,13 +1713,12 @@ impl<I: ChunkIterator> ChunkIterator for DeletedIterator<I> {
         }
         // Now double check if the entry falls into a deleted interval.
         let ts = self.iter.at_t();
-        while self.start < self.intervals.len() {
-            let itv = self.intervals[self.start];
+        while let Some(itv) = self.intervals.first().copied() {
             if ts < itv.mint {
                 return vt;
             }
             if ts > itv.maxt {
-                self.start += 1;
+                self.intervals.remove(0);
                 continue;
             }
             // We're in the middle of an interval, we can now call Next().
