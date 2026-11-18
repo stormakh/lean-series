@@ -80,7 +80,7 @@ fn clone_opts(o: &HeadOptions) -> HeadOptions {
         stripe_size: o.stripe_size,
         series_callback: o.series_callback.clone(),
         enable_exemplar_storage: o.enable_exemplar_storage,
-        enable_memory_snapshot_on_shutdown: o.enable_memory_snapshot_on_shutdown,
+        enable_memory_snapshot_on_shutdown: std::sync::atomic::AtomicBool::new(o.enable_memory_snapshot_on_shutdown.load(std::sync::atomic::Ordering::Relaxed)),
         isolation_disabled: o.isolation_disabled,
         wal_replay_concurrency: o.wal_replay_concurrency,
         enable_sharding: o.enable_sharding,
@@ -1006,7 +1006,7 @@ fn test_head_num_stale_series() {
     // adapted: the flag cannot be set on the open head; reopen once with it set, then restart again so that
     // the close writes the snapshot and the new head loads it.
     let mut o = clone_opts(&head.opts);
-    o.enable_memory_snapshot_on_shutdown = true;
+    o.enable_memory_snapshot_on_shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
     restart_and_verify(&mut head, Some(o), 3, 5);
     restart_and_verify(&mut head, None, 3, 5);
 
@@ -1094,7 +1094,7 @@ fn test_head_num_stale_series_mixed_type() {
             let name = format!("TestHead_NumStaleSeries_MixedType/{mode}/{stale}_to_{resolve}");
             let opts = new_test_head_default_options(1000, false);
             let mut opts = opts;
-            opts.enable_memory_snapshot_on_shutdown = mode == "snapshot";
+            opts.enable_memory_snapshot_on_shutdown.store(mode == "snapshot", std::sync::atomic::Ordering::Relaxed);
             let mut head = new_test_head_with_options("num-stale-mixed", compression::Type::None, opts);
             head.init(0).expect("init");
 
@@ -1387,7 +1387,7 @@ fn test_head_num_native_histogram_series_and_buckets() {
     // This will test restarting with snapshot.
     // adapted: see test_head_num_stale_series (one restart sets the flag, the next one uses the snapshot).
     let mut o = clone_opts(&head.opts);
-    o.enable_memory_snapshot_on_shutdown = true;
+    o.enable_memory_snapshot_on_shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
     restart_and_verify(&mut head, Some(o), 1, 8, 2);
     restart_and_verify(&mut head, None, 1, 8, 2);
 
@@ -1428,7 +1428,7 @@ fn test_head_num_native_histogram_series_and_buckets() {
                     "TestHead_NumNativeHistogramSeriesAndBuckets/stale_payload_buckets_are_counted/appender_v2={appender_v2}/snapshot={snapshot}/{vname}"
                 );
                 let mut opts = new_test_head_default_options(1000, false);
-                opts.enable_memory_snapshot_on_shutdown = snapshot;
+                opts.enable_memory_snapshot_on_shutdown.store(snapshot, std::sync::atomic::Ordering::Relaxed);
                 let mut test_head = new_test_head_with_options("stale-payload-buckets", compression::Type::None, opts);
                 test_head.init(0).expect("init");
 

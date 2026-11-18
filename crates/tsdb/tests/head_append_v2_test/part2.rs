@@ -85,7 +85,7 @@ fn copy_opts(o: &HeadOptions) -> HeadOptions {
         stripe_size: o.stripe_size,
         series_callback: o.series_callback.clone(),
         enable_exemplar_storage: o.enable_exemplar_storage,
-        enable_memory_snapshot_on_shutdown: o.enable_memory_snapshot_on_shutdown,
+        enable_memory_snapshot_on_shutdown: std::sync::atomic::AtomicBool::new(o.enable_memory_snapshot_on_shutdown.load(std::sync::atomic::Ordering::Relaxed)),
         isolation_disabled: o.isolation_disabled,
         wal_replay_concurrency: o.wal_replay_concurrency,
         enable_sharding: o.enable_sharding,
@@ -279,7 +279,7 @@ fn test_chunk_snapshot_taken_after_incomplete_snapshot_appender_v2() {
 
     let opts = HeadOptions {
         chunk_dir_root: dir.path().to_path_buf(),
-        enable_memory_snapshot_on_shutdown: true,
+        enable_memory_snapshot_on_shutdown: std::sync::atomic::AtomicBool::new(true),
         ..HeadOptions::default()
     };
     let head = Head::new(Some(wl_temp), None, opts, None).expect("new head");
@@ -664,7 +664,7 @@ fn test_replay_after_mmap_replay_error_appender_v2() {
         let opts = HeadOptions {
             chunk_range: DEFAULT_BLOCK_DURATION,
             chunk_dir_root: dir.path().to_path_buf(),
-            enable_memory_snapshot_on_shutdown: true,
+            enable_memory_snapshot_on_shutdown: std::sync::atomic::AtomicBool::new(true),
             ..HeadOptions::default()
         };
         opts.max_exemplars.store(DEFAULT_MAX_EXEMPLARS, Ordering::SeqCst);
@@ -1051,7 +1051,7 @@ fn test_snapshot_ahead_of_wal_error_appender_v2() {
     // adapted: Go sets `head.opts.EnableMemorySnapshotOnShutdown = true` right after `newTestHead`; here the
     // head is made with the option set (it is read only on Init and Close).
     let mut opts = new_test_head_default_options(120 * 4, false);
-    opts.enable_memory_snapshot_on_shutdown = true;
+    opts.enable_memory_snapshot_on_shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
     let mut th = new_test_head_with_options("snapshot-ahead", compression::Type::None, opts);
     let wal_dir = th.wal.as_ref().unwrap().dir().to_path_buf();
     let chunk_dir_root = th.head.opts.chunk_dir_root.clone();
@@ -1074,7 +1074,7 @@ fn test_snapshot_ahead_of_wal_error_appender_v2() {
     // keep using the same snapshot directory instead of a random one.
     std::fs::remove_dir_all(&wal_dir).expect("remove wal");
     let mut opts = copy_opts(&th.head.opts);
-    opts.enable_memory_snapshot_on_shutdown = false;
+    opts.enable_memory_snapshot_on_shutdown.store(false, std::sync::atomic::Ordering::Relaxed);
     let w = new_wl(&wal_dir, compression::Type::None);
     let head = Head::new(Some(w.clone()), None, opts, None).expect("new head");
     th.head = head.clone();
@@ -1093,7 +1093,7 @@ fn test_snapshot_ahead_of_wal_error_appender_v2() {
 
     // Create new Head which should detect the incorrect index and delete the snapshot.
     let mut opts = copy_opts(&head.opts);
-    opts.enable_memory_snapshot_on_shutdown = true;
+    opts.enable_memory_snapshot_on_shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
     let w = new_wl(&wal_dir, compression::Type::None);
     let head = Head::new(Some(w.clone()), None, opts, None).expect("new head");
     th.head = head.clone();
@@ -1641,7 +1641,7 @@ fn test_head_appender_v2_num_stale_series() {
             // adapted note at the snapshot restart below).
             let mut opts = copy_opts(&th.head.opts);
             if let Some(s) = snapshot {
-                opts.enable_memory_snapshot_on_shutdown = s;
+                opts.enable_memory_snapshot_on_shutdown.store(s, std::sync::atomic::Ordering::Relaxed);
             }
             th.head.close().expect("close");
 
