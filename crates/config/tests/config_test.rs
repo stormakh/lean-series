@@ -57,7 +57,7 @@ fn test_yaml_not_longer_supported_am_api() {
 }
 
 #[test]
-#[ignore = "waits for SD providers: azure, consul, digitalocean, dns, docker, dockerswarm, ec2, kubernetes, kuma, marathon, nerve, openstack, triton"]
+#[ignore = "waits for SD providers: consul, digitalocean, dns, docker, dockerswarm, kubernetes, kuma, marathon, nerve, triton"]
 fn test_yaml_roundtrip() {
     let _g = setup();
     let want = load_file("testdata/roundtrip.good.yml", false, &nop()).unwrap();
@@ -509,7 +509,7 @@ const EXPECTED_ERRORS: &[(&str, &str, &[&str])] = &[
 ];
 
 #[test]
-#[ignore = "waits for SD providers: azure, ec2, eureka, hetzner, ionos, kubernetes, lightsail, marathon, oci, openstack, outscale, ovhcloud, puppetdb, scaleway, stackit, uyuni"]
+#[ignore = "waits for SD providers: eureka, hetzner, ionos, kubernetes, marathon, outscale, ovhcloud, puppetdb, scaleway, stackit, uyuni"]
 fn test_bad_configs() {
     let _g = setup();
     for (filename, err_msg, _) in EXPECTED_ERRORS {
@@ -1129,7 +1129,7 @@ fn test_get_scrape_configs_loaded() {
 // ---- cfg-expected: TestLoadConfig, TestElideSecrets, TestLoadConfigRuleFilesAbsolutePath ----
 
 #[test]
-#[ignore = "waits for SD providers: azure, consul, digitalocean, dns, docker, dockerswarm, ec2, eureka, hetzner, ionos, kubernetes, kuma, lightsail, linode, marathon, nerve, nomad, oci, openstack, outscale, ovhcloud, puppetdb, scaleway, stackit, triton, uyuni, vultr"]
+#[ignore = "waits for SD providers: consul, digitalocean, dns, docker, dockerswarm, eureka, hetzner, ionos, kubernetes, kuma, linode, marathon, nerve, nomad, outscale, ovhcloud, puppetdb, scaleway, stackit, triton, uyuni, vultr"]
 fn test_load_config() {
     let _g = setup();
     // Parse a valid file that sets a global scrape timeout. This tests whether parsing
@@ -1145,7 +1145,7 @@ fn test_load_config() {
 
 // YAML marshaling must not reveal authentication credentials.
 #[test]
-#[ignore = "waits for SD providers: azure, consul, digitalocean, dns, docker, dockerswarm, ec2, eureka, hetzner, ionos, kubernetes, kuma, lightsail, linode, marathon, nerve, nomad, oci, openstack, outscale, ovhcloud, puppetdb, scaleway, stackit, triton, uyuni, vultr"]
+#[ignore = "waits for SD providers: consul, digitalocean, dns, docker, dockerswarm, eureka, hetzner, ionos, kubernetes, kuma, linode, marathon, nerve, nomad, outscale, ovhcloud, puppetdb, scaleway, stackit, triton, uyuni, vultr"]
 fn test_elide_secrets() {
     let _g = setup();
     let c = load_file("testdata/conf.good.yml", false, &Logger::nop()).unwrap();
