@@ -41,6 +41,7 @@ pub struct Registration {
 fn builtin() -> Vec<Registration> {
     vec![
         registration::<crate::file::SdConfig>(),
+        registration::<crate::hetzner::SdConfig>(),
         registration::<crate::http::SdConfig>(),
     ]
 }

@@ -10,6 +10,8 @@ pub mod cancel;
 pub mod chan;
 pub mod file;
 pub mod glob;
+pub(crate) mod gojson;
+pub mod hetzner;
 pub mod http;
 pub mod log;
 pub mod manager;
