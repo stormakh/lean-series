@@ -41,9 +41,11 @@ pub struct Registration {
 fn builtin() -> Vec<Registration> {
     vec![
         registration::<crate::consul::SdConfig>(),
+        registration::<crate::digitalocean::SdConfig>(),
         registration::<crate::dns::SdConfig>(),
         registration::<crate::eureka::SdConfig>(),
         registration::<crate::file::SdConfig>(),
+        registration::<crate::hetzner::SdConfig>(),
         registration::<crate::http::SdConfig>(),
         registration::<crate::ionos::SdConfig>(),
         registration::<crate::linode::SdConfig>(),
@@ -54,6 +56,7 @@ fn builtin() -> Vec<Registration> {
         registration::<crate::outscale::SdConfig>(),
         registration::<crate::ovhcloud::SdConfig>(),
         registration::<crate::puppetdb::SdConfig>(),
+        registration::<crate::scaleway::SdConfig>(),
         registration::<crate::stackit::SdConfig>(),
         registration::<crate::triton::SdConfig>(),
         registration::<crate::uyuni::SdConfig>(),
