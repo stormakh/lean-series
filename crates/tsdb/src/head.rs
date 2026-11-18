@@ -168,6 +168,7 @@ pub struct HeadOptions {
     pub stripe_size: usize,
     pub series_callback: Option<Arc<dyn SeriesLifecycleCallback>>,
     pub enable_exemplar_storage: bool,
+    /// An atomic (a plain field in Go) so that tests can switch it on a running head, as Go tests do.
     pub enable_memory_snapshot_on_shutdown: AtomicBool,
     pub isolation_disabled: bool,
     /// Maximum number of threads for WAL replay; `<= 0` uses the number of CPUs.
