@@ -19,7 +19,7 @@ pub enum Kind {
     Bool,
     /// `*int32` / `*int64`: `strconv.Itoa`.
     Int,
-    /// `*time.Time`: `Format(time.RFC3339)`.
+    /// `*time.Time`: `Format(time.RFC3339)` (the parsed zone offset is kept).
     Time,
 }
 
@@ -41,7 +41,7 @@ pub fn value(e: &Element, path: &str, kind: Kind) -> Result<Option<String>, Stri
         Kind::Enum => (!t.is_empty()).then(|| t.to_string()),
         Kind::Bool => Some(go_parse_bool(t).ok_or_else(|| format!("expected Boolean to be of type *bool, got {t}"))?.to_string()),
         Kind::Int => Some(t.trim().parse::<i64>().map_err(|_| format!("strconv.ParseInt: parsing {}: invalid syntax", yaml::go_quote(t)))?.to_string()),
-        Kind::Time => Some(crate::util::format_rfc3339(crate::util::parse_rfc3339(t).ok_or_else(|| format!("failed to parse timestamp {}", yaml::go_quote(t)))?)),
+        Kind::Time => Some(crate::util::reformat_rfc3339(t).ok_or_else(|| format!("failed to parse timestamp {}", yaml::go_quote(t)))?),
     })
 }
 

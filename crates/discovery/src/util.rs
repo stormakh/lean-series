@@ -82,3 +82,25 @@ pub fn format_unix_rfc3339(secs: i64) -> String {
     let y = yoe + era * 400 + if m <= 2 { 1 } else { 0 };
     format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", rem / 3600, rem % 3600 / 60, rem % 60)
 }
+
+/// Go `t.Format(time.RFC3339)` of a time parsed from an RFC 3339 string: the parsed zone offset is kept ("Z" for
+/// a zero offset) and fractional seconds are dropped, as for times the AWS SDKs decode.
+pub fn reformat_rfc3339(s: &str) -> Option<String> {
+    let t = parse_rfc3339(s)?;
+    let s = s.trim();
+    let tail = &s[s.len().saturating_sub(6)..];
+    let offset: i64 = if (tail.starts_with('+') || tail.starts_with('-')) && tail.as_bytes().get(3) == Some(&b':') {
+        let v = tail[1..3].parse::<i64>().ok()? * 3600 + tail[4..6].parse::<i64>().ok()? * 60;
+        if tail.starts_with('-') { -v } else { v }
+    } else {
+        0
+    };
+    let secs = t.duration_since(UNIX_EPOCH).ok()?.as_secs() as i64;
+    let local = format_unix_rfc3339(secs + offset);
+    if offset == 0 {
+        return Some(local);
+    }
+    let sign = if offset < 0 { '-' } else { '+' };
+    let a = offset.abs();
+    Some(format!("{}{sign}{:02}:{:02}", &local[..local.len() - 1], a / 3600, a % 3600 / 60))
+}

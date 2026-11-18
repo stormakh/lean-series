@@ -266,7 +266,12 @@ impl Client {
             }
         };
         let resp = self.call(ctx, op, &build, &parse_err)?;
-        xml::parse(&String::from_utf8_lossy(&resp.body)).map_err(|e| format!("operation error {}: {}, deserialization failed, failed to decode response body, {e}", self.svc.service_id, op))
+        let text = String::from_utf8_lossy(&resp.body);
+        // smithy FetchRootElement: a body without a root element (io.EOF) is an empty output, not an error
+        if !text.contains('<') || text.trim_start().strip_prefix("<?").and_then(|r| r.split_once("?>")).is_some_and(|(_, rest)| !rest.contains('<')) {
+            return Ok(xml::Element::default());
+        }
+        xml::parse(&text).map_err(|e| format!("operation error {}: {}, deserialization failed, failed to decode response body, {e}", self.svc.service_id, op))
     }
 
     /// An awsJson1.1 call: POSTs `body` with `X-Amz-Target: <prefix>.<op>` and returns the response object.
