@@ -24,23 +24,23 @@ impl DurationVisitor {
         match node {
             Expr::VectorSelector(n) => {
                 if let Some(e) = &n.original_offset_expr {
-                    n.original_offset = self.calculate_duration(e, true)?;
+                    n.original_offset = self.calculate_duration_expr(e, true)?;
                 }
             }
             Expr::MatrixSelector(n) => {
                 if let Some(e) = &n.range_expr {
-                    n.range = self.calculate_duration(e, false)?;
+                    n.range = self.calculate_duration_expr(e, false)?;
                 }
             }
             Expr::Subquery(n) => {
                 if let Some(e) = &n.original_offset_expr {
-                    n.original_offset = self.calculate_duration(e, true)?;
+                    n.original_offset = self.calculate_duration_expr(e, true)?;
                 }
                 if let Some(e) = &n.step_expr {
-                    n.step = self.calculate_duration(e, false)?;
+                    n.step = self.calculate_duration_expr(e, false)?;
                 }
                 if let Some(e) = &n.range_expr {
-                    n.range = self.calculate_duration(e, false)?;
+                    n.range = self.calculate_duration_expr(e, false)?;
                 }
             }
             _ => {}
@@ -48,10 +48,19 @@ impl DurationVisitor {
         Ok(())
     }
 
-    /// Go `calculateDuration`: the duration of a duration expression in nanoseconds.
-    pub fn calculate_duration(&self, expr: &DurationExpr, allowed_negative: bool) -> Result<i64, String> {
+    /// Go `calculateDuration` for a duration expression node.
+    pub fn calculate_duration_expr(&self, expr: &DurationExpr, allowed_negative: bool) -> Result<i64, String> {
         let duration = self.evaluate_duration(expr)?;
-        let pos = expr.position_range();
+        Self::to_duration(duration, expr.position_range(), allowed_negative)
+    }
+
+    /// Go `calculateDuration`: the duration of a duration expression in nanoseconds.
+    pub fn calculate_duration(&self, expr: &Expr, allowed_negative: bool) -> Result<i64, String> {
+        let duration = self.evaluate_duration_expr(expr)?;
+        Self::to_duration(duration, expr.position_range(), allowed_negative)
+    }
+
+    fn to_duration(duration: f64, pos: crate::parser::PositionRange, allowed_negative: bool) -> Result<i64, String> {
         if duration.is_nan() || duration.is_infinite() {
             return Err(format!("{}:{}: duration is NaN or infinite", pos.start, pos.end));
         }
