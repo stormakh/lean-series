@@ -1881,3 +1881,165 @@ fn test_query_cost_max_samples_read_matrix() {
     assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.join("\n"));
 }
 
+
+// -----------------------------------------------------------------------------------------------------------------
+// Query cost: duration limits.
+
+/// Go `sleepyQuerier`: Select blocks for `sleep` or until the context is done.
+struct SleepyQuerier {
+    sleep: Duration,
+}
+
+impl LabelQuerier for SleepyQuerier {
+    fn label_values(&self, _: &Context, _: &str, _: Option<&LabelHints>, _: &[Matcher]) -> LabelResult {
+        (Vec::new(), Annotations::new(), None)
+    }
+    fn label_names(&self, _: &Context, _: Option<&LabelHints>, _: &[Matcher]) -> LabelResult {
+        (Vec::new(), Annotations::new(), None)
+    }
+    fn close(&mut self) -> Option<Error> {
+        None
+    }
+}
+
+impl Querier for SleepyQuerier {
+    fn select(&self, ctx: &Context, _: bool, _: Option<&SelectHints>, _: &[Matcher]) -> BoxSeriesSet {
+        let end = std::time::Instant::now() + self.sleep;
+        while std::time::Instant::now() < end && !ctx.is_done() {
+            thread::sleep(Duration::from_millis(1));
+        }
+        match ctx.err() {
+            Some(e) => storage::err_series_set(e),
+            None => storage::empty_series_set(),
+        }
+    }
+}
+
+fn sleepy(sleep: Duration) -> Arc<dyn storage::Queryable> {
+    Arc::new(QueryableFunc(move |_, _| -> Result<BoxQuerier, Error> { Ok(Box::new(SleepyQuerier { sleep })) }))
+}
+
+fn cost_engine_with_timeout(timeout: Duration) -> Engine {
+    Engine::new(EngineOpts {
+        max_samples: 1_000_000,
+        timeout,
+        no_step_subquery_interval_fn: Some(Arc::new(|_| 60_000)),
+        enable_query_cost: true,
+        parser: Some(promql::parser::Parser::new(promqltest::test_parser_opts())),
+        ..Default::default()
+    })
+}
+
+fn is_timeout(e: &Option<Error>) -> bool {
+    matches!(e.as_ref().and_then(PromqlError::find), Some(PromqlError::QueryTimeout(_)))
+}
+
+#[test]
+fn test_query_cost_max_duration() {
+    let engine = cost_engine_with_timeout(Duration::from_secs(100));
+    let q = sleepy(Duration::from_secs(1));
+    let ctx = Context::background();
+    engine.set_query_limits(0, 0, Duration::from_millis(5));
+    let mut qry = engine.new_instant_query(&ctx, q.clone(), None, "metric", 0).unwrap();
+    assert!(is_timeout(&qry.exec(&ctx).err));
+    engine.set_query_limits(0, 0, Duration::ZERO);
+    let opts = promql::QueryOpts::with_limits(false, Duration::ZERO, 0, 0, Duration::from_millis(5), None);
+    let mut qry = engine.new_instant_query(&ctx, q, Some(&opts), "metric", 0).unwrap();
+    assert!(is_timeout(&qry.exec(&ctx).err));
+}
+
+#[test]
+fn test_query_cost_max_duration_resolution() {
+    let query_sleep = Duration::from_millis(500);
+    let ms = Duration::from_millis;
+    let s = Duration::from_secs;
+    // (name, engine timeout, ceiling, requested, want construct error, want error ceiling, want timeout)
+    let cases: Vec<(&str, Duration, Duration, Duration, bool, &str, bool)> = vec![
+        ("request below the ceiling tightens it", s(100), s(10), ms(5), false, "", true),
+        ("request equal to the ceiling is accepted", s(100), ms(5), ms(5), false, "", true),
+        ("request above the ceiling is rejected", s(100), ms(5), s(10), true, "5ms", false),
+        ("no request falls back to the ceiling", s(100), ms(5), Duration::ZERO, false, "", true),
+        ("no request and a generous ceiling allows the query", s(100), s(10), Duration::ZERO, false, "", false),
+        ("unset ceiling leaves the query timeout flag in force", ms(5), Duration::ZERO, Duration::ZERO, false, "", true),
+        ("unset ceiling accepts a request below the query timeout flag", s(100), Duration::ZERO, ms(5), false, "", true),
+        ("unset ceiling rejects a request above the query timeout flag", ms(50), Duration::ZERO, s(10), true, "50ms", false),
+        ("ceiling above the query timeout flag is effective on its own", ms(50), s(10), Duration::ZERO, false, "", false),
+        ("ceiling above the query timeout flag allows a request above it", ms(50), s(10), s(5), false, "", false),
+    ];
+    for (name, engine_timeout, ceiling, requested, want_construct, want_ceiling, want_timeout) in cases {
+        let engine = cost_engine_with_timeout(engine_timeout);
+        engine.set_query_limits(0, 0, ceiling);
+        let opts = (!requested.is_zero())
+            .then(|| promql::QueryOpts::with_limits(false, Duration::ZERO, 0, 0, requested, None));
+        let ctx = Context::background();
+        let r = engine.new_instant_query(&ctx, sleepy(query_sleep), opts.as_ref(), "metric", 0);
+        if want_construct {
+            let err = r.err().expect(name);
+            match PromqlError::find(&err) {
+                Some(PromqlError::LimitAboveCeiling { limit, requested: rq, ceiling: cl }) => {
+                    assert_eq!("max_query_duration", limit, "{}", name);
+                    assert_eq!(&util::stats::go_duration_string(requested), rq, "{}", name);
+                    assert_eq!(want_ceiling, cl, "{}", name);
+                }
+                other => panic!("{}: {:?}", name, other),
+            }
+            continue;
+        }
+        let mut q = r.expect(name);
+        let err = q.exec(&ctx).err;
+        if want_timeout {
+            assert!(is_timeout(&err), "{}: {:?}", name, err);
+        } else {
+            assert!(err.is_none(), "{}: {:?}", name, err);
+        }
+    }
+}
+
+#[test]
+fn test_query_cost_max_duration_reject_attribution() {
+    // adapted: Go runs this under synctest (a fake clock); here real time with the same durations is used.
+    let ms = Duration::from_millis;
+    // (name, ceiling, requested, caller, cancel, want reject)
+    let cases: Vec<(&str, Duration, Duration, Duration, bool, u64)> = vec![
+        ("configured duration", ms(100), Duration::ZERO, Duration::ZERO, false, 1),
+        ("request duration", Duration::ZERO, ms(100), Duration::ZERO, false, 1),
+        ("startup timeout", Duration::ZERO, Duration::ZERO, Duration::ZERO, false, 0),
+        ("earlier caller deadline", Duration::from_secs(1), Duration::ZERO, ms(10), false, 0),
+        ("caller cancellation", Duration::from_secs(1), Duration::ZERO, ms(10), true, 0),
+    ];
+    for (name, ceiling, requested, caller, cancel, want_reject) in cases {
+        let engine = Engine::new(EngineOpts {
+            max_samples: 1000,
+            timeout: ms(100),
+            enable_query_cost: true,
+            ..Default::default()
+        });
+        engine.set_query_limits(0, 0, ceiling);
+        let opts = promql::QueryOpts::with_limits(false, Duration::ZERO, 0, 0, requested, None);
+        let mut ctx = Context::background();
+        let mut _guard = None;
+        if !caller.is_zero() {
+            if cancel {
+                let (c, token) = ctx.with_cancel();
+                ctx = c;
+                _guard = Some(thread::spawn(move || {
+                    thread::sleep(caller);
+                    token.cancel();
+                }));
+            } else {
+                let (c, token) = ctx.with_timeout(caller);
+                ctx = c;
+                let _ = token;
+            }
+        }
+        let mut q = engine.new_instant_query(&ctx, sleepy(Duration::from_secs(2)), Some(&opts), "metric", 0).unwrap();
+        let err = q.exec(&ctx).err;
+        if cancel {
+            assert!(matches!(err.as_ref().and_then(PromqlError::find), Some(PromqlError::QueryCanceled(_))), "{}: {:?}", name, err);
+        } else {
+            assert!(is_timeout(&err), "{}: {:?}", name, err);
+        }
+        assert_eq!(want_reject, engine.query_rejected_total("max_duration"), "{}", name);
+    }
+}
+

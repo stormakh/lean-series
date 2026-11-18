@@ -437,6 +437,7 @@ impl Engine {
     ) -> Result<Query, Error> {
         let mut qry = self.new_query(q, qs, opts, start, end, interval)?;
         let ng = &*self.inner;
+        let parent_ctx = ctx.clone();
         let mut ctx = ctx.clone();
         let mut _cancel = None;
         if ng.enable_query_cost {
@@ -479,7 +480,7 @@ impl Engine {
         })();
         if ng.enable_query_cost {
             if let Err(e) = &res {
-                self.observe_query_rejection(&ctx, e);
+                self.observe_query_rejection(e, qry.cost_duration_cause(&parent_ctx, &ctx));
             }
         }
         res.map(|_| qry)
@@ -597,7 +598,9 @@ impl Engine {
         self.acquire_query_slot(ctx, q)
     }
 
-    fn observe_query_rejection(&self, ctx: &Context, err: &Error) {
+    /// Go `observeQueryRejection`. `cost_duration_cause` tells whether the context ended because of the
+    /// query-cost duration limit (Go `context.Cause(ctx) == errQueryCostDuration`).
+    fn observe_query_rejection(&self, err: &Error, cost_duration_cause: bool) {
         let ng = &*self.inner;
         if !ng.enable_query_cost {
             return;
@@ -605,7 +608,7 @@ impl Engine {
         let reason = match PromqlError::find(err) {
             Some(PromqlError::TooManySeries(_)) => Some("max_series"),
             Some(PromqlError::TooManySamplesRead(_)) => Some("max_samples_read"),
-            Some(PromqlError::QueryTimeout(_)) if context_cause_is_cost_duration(ctx) => Some("max_duration"),
+            Some(PromqlError::QueryTimeout(_)) if cost_duration_cause => Some("max_duration"),
             _ => None,
         };
         if let Some(r) = reason {
@@ -619,13 +622,6 @@ impl Engine {
     }
 }
 
-thread_local! {
-    static COST_DEADLINE_CAUSE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-fn context_cause_is_cost_duration(ctx: &Context) -> bool {
-    ctx.err().is_some_and(|e| e.is(&ERR_DEADLINE_EXCEEDED)) && COST_DEADLINE_CAUSE.with(|c| c.get())
-}
 
 /// A reserved query slot; dropping it releases the slot.
 pub struct QuerySlot {
@@ -765,11 +761,16 @@ impl Query {
     fn execution_context(&self, ctx: &Context) -> (Context, CancelToken) {
         match self.deadline {
             None => ctx.with_timeout(self.engine.inner.timeout),
-            Some(d) => {
-                COST_DEADLINE_CAUSE.with(|c| c.set(!self.max_query_duration.is_zero()));
-                ctx.with_deadline(d)
-            }
+            Some(d) => ctx.with_deadline(d),
         }
+    }
+
+    /// Whether `ctx` (made from `parent` by `execution_context`) ended because of the query-cost duration limit.
+    fn cost_duration_cause(&self, parent: &Context, ctx: &Context) -> bool {
+        !self.max_query_duration.is_zero()
+            && self.deadline.is_some()
+            && parent.err().is_none()
+            && ctx.err().is_some_and(|e| e.is(&ERR_DEADLINE_EXCEEDED))
     }
 
     fn construction_error(&self, ctx: &Context, err: Error) -> Error {
@@ -791,12 +792,14 @@ impl Query {
         let engine = self.engine.clone();
         let ng = &*engine.inner;
         ng.metrics.current_queries.fetch_add(1, Ordering::Relaxed);
+        let parent_ctx = ctx;
         let (ctx, cancel) = self.execution_context(ctx);
         *self.cancel.lock().unwrap() = Some(cancel.clone());
 
         self.stats.start(QueryTiming::ExecTotalTime);
         let (v, ws, err) = self.exec_timed(&ctx);
         self.stats.finish(QueryTiming::ExecTotalTime);
+        let cost_cause = self.cost_duration_cause(parent_ctx, &ctx);
         cancel.cancel();
 
         // The query logger.
@@ -824,7 +827,7 @@ impl Query {
         ng.metrics.query_samples_read.fetch_add(self.sample_stats.samples_read.max(0) as u64, Ordering::Relaxed);
         if ng.enable_query_cost {
             if let Some(e) = &err {
-                engine.observe_query_rejection(&ctx, e);
+                engine.observe_query_rejection(e, cost_cause);
             }
         }
         (v, ws, err)
