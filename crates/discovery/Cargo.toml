@@ -13,3 +13,4 @@ crypto = { path = "../crypto" }
 
 [dev-dependencies]
 http = { path = "../http" }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }

@@ -14,10 +14,12 @@ pub mod http;
 pub mod log;
 pub mod manager;
 pub mod metrics;
+pub mod moby;
 pub mod refresh;
 pub mod registry;
 pub mod sdutil;
 pub mod targetgroup;
+pub mod triton;
 
 use std::any::Any;
 use std::collections::HashMap;
