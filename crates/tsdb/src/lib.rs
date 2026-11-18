@@ -16,6 +16,7 @@
 pub mod exemplar;
 pub mod meta;
 pub mod metrics;
+pub mod querier;
 pub mod reader;
 
 pub use meta::*;
