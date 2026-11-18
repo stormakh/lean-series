@@ -832,3 +832,78 @@ fn select_hints_cases() -> Vec<(&'static str, i64, i64, Vec<SelectHints>)> {
         (r#"sum_over_time(sum_over_time(metric{job="1"}[100s])[100s:25s] @ 3000)[3s:1s] @ 50"#, 0, 0, vec![SelectHints { start: 2800001, end: 3000000, range: 100000, func: "sum_over_time".to_string(), step: 25000, ..Default::default() }]),
     ]
 }
+
+// -----------------------------------------------------------------------------------------------------------------
+// PreprocessExpr.
+
+#[path = "common/mod.rs"]
+mod common;
+
+#[test]
+fn test_preprocess_expr() {
+    let test_parser = promql::parser::Parser::default();
+    // Preserve subquery duration expressions.
+    for input in ["foo[1h / 2:1h / 2]", "foo[1h / 2:30m]", "foo[1h / 2:]"] {
+        let expr = test_parser.parse_expr(input).unwrap();
+        let expr = promql::preprocess_expr(expr, 1_000_000, 9_999_000, 60_000).unwrap();
+        assert_eq!(input, expr.to_string());
+    }
+
+    // Wrap step-invariant expressions: the expected ASTs are dumped from the upstream table
+    // (scripts/gen/promql_engine_fixtures.py).
+    let path = format!("{}/../../tests-data/promql/engine/preprocess_expr.json", env!("CARGO_MANIFEST_DIR"));
+    let fixture = json::Json::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let mut failures = Vec::new();
+    for tc in fixture.as_arr().unwrap() {
+        let input = tc.str_of("input");
+        let expr = test_parser.parse_expr(input).unwrap();
+        let expr = promql::preprocess_expr(expr, 1_000_000, 9_999_000, 0).unwrap();
+        if tc.bool_of("outputTest") && input != expr.to_string() {
+            failures.push(format!("error on input '{}': printed {}", input, expr));
+        }
+        let want = common::lossy(tc.get("expected").unwrap());
+        let got = common::dump_expr(&expr);
+        if let Some(d) = common::json_diff(&want, &got, "") {
+            failures.push(format!("error on input '{}': {}", input, d));
+        }
+    }
+
+    // Info step invariance.
+    let p = promql::parser::Parser::new(promql::parser::Options {
+        enable_experimental_functions: true,
+        ..Default::default()
+    });
+    for (input, want_call, want_input) in info_step_invariance_cases() {
+        let expr = p.parse_expr(input).unwrap();
+        let mut expr = promql::preprocess_expr(expr, 1_000_000, 9_999_000, 0).unwrap();
+        let got_call = matches!(expr, promql::parser::Expr::StepInvariant(_));
+        if got_call != want_call {
+            failures.push(format!("{}: call step invariant {} != {}", input, got_call, want_call));
+        }
+        if let promql::parser::Expr::StepInvariant(si) = expr {
+            expr = si.expr;
+        }
+        let promql::parser::Expr::Call(call) = &expr else { panic!("{}: not a call", input) };
+        let got_input = matches!(call.args[0], promql::parser::Expr::StepInvariant(_));
+        if got_input != want_input {
+            failures.push(format!("{}: input step invariant {} != {}", input, got_input, want_input));
+        }
+        if call.args.len() > 1 {
+            assert!(matches!(call.args[1], promql::parser::Expr::VectorSelector(_)), "{}", input);
+        }
+    }
+    assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.join("\n"));
+}
+
+fn info_step_invariance_cases() -> Vec<(&'static str, bool, bool)> {
+    vec![
+        ("info(metric @ 120 or other_metric @ 480)", false, true),
+        (r#"info(metric @ 120 or other_metric @ 480, {foo="bar"} @ 120)"#, false, true),
+        ("info(metric @ 120 or other_metric @ 120)", true, false),
+        (r#"info(metric @ 120 or other_metric @ 120, {foo="bar"})"#, true, false),
+        ("info(metric @ 180 offset 1m or other_metric @ 120)", true, false),
+        (r#"info(label_replace(label_replace(vector(1), "instance", "a", "__name__", ".*"), "job", "1", "__name__", ".*"), {version=~".*"})"#, false, true),
+        (r#"info(label_replace(label_replace(vector(1), "instance", "a", "__name__", ".*"), "job", "1", "__name__", ".*") or other_metric @ 120, {version=~".*"})"#, false, true),
+        (r#"info(other_metric @ 120 or label_replace(label_replace(vector(1), "instance", "a", "__name__", ".*"), "job", "1", "__name__", ".*"), {version=~".*"})"#, false, true),
+    ]
+}
