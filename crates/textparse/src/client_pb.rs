@@ -444,7 +444,7 @@ fn unmarshal_value(r: &mut Rd<'_>, v: &mut f64, msg: &str) -> Result<(), DecodeE
     Ok(())
 }
 
-fn unmarshal_counter(r: &mut Rd<'_>, m: &mut Counter) -> Result<(), DecodeError> {
+fn unmarshal_counter(r: &mut Rd<'_>, m: &mut Counter, pool: &mut ExPool) -> Result<(), DecodeError> {
     while r.more() {
         let pre = r.i;
         let (f, wt) = r.key("Counter")?;
@@ -460,7 +460,7 @@ fn unmarshal_counter(r: &mut Rd<'_>, m: &mut Counter) -> Result<(), DecodeError>
                     return Err(Rd::wrong(wt, "Exemplar"));
                 }
                 let s = r.len_delim()?;
-                unmarshal_exemplar(&mut r.sub(&s), m.exemplar.get_or_insert_with(Exemplar::default))?;
+                unmarshal_exemplar(&mut r.sub(&s), m.exemplar.get_or_insert_with(|| pool.take()))?;
             }
             3 => {
                 if wt != 2 {
@@ -537,7 +537,7 @@ fn unmarshal_summary(r: &mut Rd<'_>, m: &mut Summary) -> Result<(), DecodeError>
     Ok(())
 }
 
-fn unmarshal_bucket(r: &mut Rd<'_>, m: &mut Bucket) -> Result<(), DecodeError> {
+fn unmarshal_bucket(r: &mut Rd<'_>, m: &mut Bucket, pool: &mut ExPool) -> Result<(), DecodeError> {
     while r.more() {
         let pre = r.i;
         let (f, wt) = r.key("Bucket")?;
@@ -559,7 +559,7 @@ fn unmarshal_bucket(r: &mut Rd<'_>, m: &mut Bucket) -> Result<(), DecodeError> {
                     return Err(Rd::wrong(wt, "Exemplar"));
                 }
                 let s = r.len_delim()?;
-                unmarshal_exemplar(&mut r.sub(&s), m.exemplar.get_or_insert_with(Exemplar::default))?;
+                unmarshal_exemplar(&mut r.sub(&s), m.exemplar.get_or_insert_with(|| pool.take()))?;
             }
             4 => {
                 if wt != 1 {
@@ -626,7 +626,7 @@ fn packed_double(r: &mut Rd<'_>, wt: u8, out: &mut Vec<f64>, field: &str) -> Res
     Ok(())
 }
 
-fn unmarshal_histogram(r: &mut Rd<'_>, m: &mut Histogram) -> Result<(), DecodeError> {
+fn unmarshal_histogram(r: &mut Rd<'_>, m: &mut Histogram, pool: &mut ExPool) -> Result<(), DecodeError> {
     while r.more() {
         let pre = r.i;
         let (f, wt) = r.key("Histogram")?;
@@ -650,7 +650,7 @@ fn unmarshal_histogram(r: &mut Rd<'_>, m: &mut Histogram) -> Result<(), DecodeEr
                 let s = r.len_delim()?;
                 m.bucket.push(Bucket::default());
                 let n = m.bucket.len();
-                unmarshal_bucket(&mut r.sub(&s), &mut m.bucket[n - 1])?;
+                unmarshal_bucket(&mut r.sub(&s), &mut m.bucket[n - 1], pool)?;
             }
             4 => {
                 if wt != 1 {
@@ -716,7 +716,7 @@ fn unmarshal_histogram(r: &mut Rd<'_>, m: &mut Histogram) -> Result<(), DecodeEr
                     return Err(Rd::wrong(wt, "Exemplars"));
                 }
                 let s = r.len_delim()?;
-                m.exemplars.push(Exemplar::default());
+                m.exemplars.push(pool.take());
                 let n = m.exemplars.len();
                 unmarshal_exemplar(&mut r.sub(&s), &mut m.exemplars[n - 1])?;
             }
@@ -755,6 +755,26 @@ pub struct MetricStreamingDecoder<'a> {
     metrics: Vec<Range<usize>>,
     metric_index: usize,
     labels: Vec<Range<usize>>,
+    ex_pool: ExPool,
+}
+
+/// Exemplars kept for reuse, so decoding allocates nothing once warm (Go allocates new ones).
+#[derive(Default)]
+struct ExPool(Vec<Exemplar>);
+
+impl ExPool {
+    #[inline]
+    fn take(&mut self) -> Exemplar {
+        self.0.pop().unwrap_or_default()
+    }
+
+    #[inline]
+    fn give(&mut self, mut e: Exemplar) {
+        e.label.clear();
+        e.value = 0.0;
+        e.timestamp = None;
+        self.0.push(e);
+    }
 }
 
 impl<'a> MetricStreamingDecoder<'a> {
@@ -906,13 +926,19 @@ impl<'a> MetricStreamingDecoder<'a> {
         self.timestamp_ms = 0;
         self.counter.value = 0.0;
         self.counter.start_timestamp = None;
-        self.counter.exemplar = None;
+        if let Some(e) = self.counter.exemplar.take() {
+            self.ex_pool.give(e);
+        }
         self.gauge.value = 0.0;
         let h = &mut self.histogram;
         h.sample_count = 0;
         h.sample_count_float = 0.0;
         h.sample_sum = 0.0;
-        h.bucket.clear();
+        for b in h.bucket.drain(..) {
+            if let Some(e) = b.exemplar {
+                self.ex_pool.give(e);
+            }
+        }
         h.start_timestamp = None;
         h.schema = 0;
         h.zero_threshold = 0.0;
@@ -924,7 +950,9 @@ impl<'a> MetricStreamingDecoder<'a> {
         h.positive_span.clear();
         h.positive_delta.clear();
         h.positive_count.clear();
-        h.exemplars.clear();
+        for e in h.exemplars.drain(..) {
+            self.ex_pool.give(e);
+        }
         let s = &mut self.summary;
         s.sample_count = 0;
         s.sample_sum = 0.0;
@@ -957,7 +985,7 @@ impl<'a> MetricStreamingDecoder<'a> {
                         return Err(Rd::wrong(wt, "Counter"));
                     }
                     let s = r.len_delim()?;
-                    unmarshal_counter(&mut r.sub(&s), &mut self.counter)?;
+                    unmarshal_counter(&mut r.sub(&s), &mut self.counter, &mut self.ex_pool)?;
                 }
                 4 => {
                     if wt != 2 {
@@ -984,7 +1012,7 @@ impl<'a> MetricStreamingDecoder<'a> {
                         return Err(Rd::wrong(wt, "Histogram"));
                     }
                     let s = r.len_delim()?;
-                    unmarshal_histogram(&mut r.sub(&s), &mut self.histogram)?;
+                    unmarshal_histogram(&mut r.sub(&s), &mut self.histogram, &mut self.ex_pool)?;
                 }
                 _ => r.skip(pre)?,
             }
