@@ -5,6 +5,7 @@ pub mod credentials;
 pub mod ec2;
 pub mod ecs;
 pub mod elasticache;
+pub mod labels;
 pub mod lightsail;
 pub mod msk;
 pub mod rds;
