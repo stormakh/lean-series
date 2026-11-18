@@ -129,3 +129,20 @@ fn test_vector_elem_binop_histograms() {
         assert_eq!(Some(&tc.want), res.h.as_deref(), "{}", tc.name);
     }
 }
+
+#[test]
+fn test_cost_fallback_sample_window() {
+    // Intervals are nanoseconds (Go time.Duration); timestamps milliseconds.
+    for (name, end, interval, want_start) in [
+        ("default", 0i64, 0i64, -300000i64),
+        ("negative interval", 0, -1_000_000_000, -300000),
+        ("minimum duration", 0, i64::MIN, -300000),
+        ("eight intervals", 0, 60_000_000_000, -480000),
+        ("maximum duration", 0, i64::MAX, -1800000),
+        ("timestamp underflow", i64::MIN + 1, 60_000_000_000, i64::MIN),
+    ] {
+        let (start, got_end) = promql::estimate::fallback_sample_window(end, interval);
+        assert_eq!(want_start, start, "{name}");
+        assert_eq!(end, got_end, "{name}");
+    }
+}

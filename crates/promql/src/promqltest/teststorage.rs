@@ -710,6 +710,17 @@ impl Storage for TestStorage {
     fn close(&self) -> Option<Error> {
         None
     }
+    fn as_cost_sampling_queryable(&self) -> Option<&dyn storage::CostSamplingQueryable> {
+        Some(self)
+    }
+}
+
+/// Go `tsdb.DB.CostSamplingQueryable`: a head-only DB gives one native block querier, so the source is the
+/// storage itself.
+impl storage::CostSamplingQueryable for TestStorage {
+    fn cost_sampling_queryable(&self) -> (Option<&dyn storage::SampleAndChunkQueryable>, bool) {
+        (Some(self), true)
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------------------

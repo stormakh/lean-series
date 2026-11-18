@@ -2,6 +2,7 @@
 
 pub mod durations;
 pub mod engine;
+pub mod estimate;
 pub mod features;
 pub mod functions;
 pub mod gosort;
