@@ -559,22 +559,13 @@ pub fn expected_conf() -> Config {
             },
             ScrapeConfig {
                 service_discovery_configs: sd(vec![
-                    // waits for marathon:
-                    // &marathon.SDConfig{
-                    //     Servers: []string{
-                    //         "https://marathon.example.com:443",
-                    //     },
-                    //     RefreshInterval: model.Duration(30 * time.Second),
-                    //     AuthToken:       "mysecret",
-                    //     HTTPClientConfig: config.HTTPClientConfig{
-                    //         TLSConfig: config.TLSConfig{
-                    //             CertFile: filepath.FromSlash("testdata/valid_cert_file"),
-                    //             KeyFile:  filepath.FromSlash("testdata/valid_key_file"),
-                    //         },
-                    //         FollowRedirects: true,
-                    //         EnableHTTP2:     true,
-                    //     },
-                    // },
+                    Box::new(discovery::marathon::SdConfig {
+                        servers: strs(&["https://marathon.example.com:443"]),
+                        refresh_interval: Duration::from_secs(30),
+                        auth_token: Secret::new("mysecret"),
+                        http_client_config: HttpClientConfig { tls_config: cert_key_tls(), follow_redirects: true, enable_http2: true, ..Default::default() },
+                        ..Default::default()
+                    }),
                 ]),
                 ..job("service-marathon")
             },
@@ -652,12 +643,11 @@ pub fn expected_conf() -> Config {
             },
             ScrapeConfig {
                 service_discovery_configs: sd(vec![
-                    // waits for nerve:
-                    // &zookeeper.NerveSDConfig{
-                    //     Servers: []string{"localhost"},
-                    //     Paths:   []string{"/monitoring"},
-                    //     Timeout: model.Duration(10 * time.Second),
-                    // },
+                    Box::new(discovery::zookeeper::NerveSdConfig {
+                        servers: strs(&["localhost"]),
+                        paths: strs(&["/monitoring"]),
+                        timeout: Duration::from_secs(10),
+                    }),
                 ]),
                 ..job("service-nerve")
             },
@@ -695,20 +685,18 @@ pub fn expected_conf() -> Config {
             },
             ScrapeConfig {
                 service_discovery_configs: sd(vec![
-                    // waits for digitalocean:
-                    // &digitalocean.SDConfig{
-                    //     HTTPClientConfig: config.HTTPClientConfig{
-                    //         Authorization: &config.Authorization{
-                    //             Type:        "Bearer",
-                    //             Credentials: "abcdef",
-                    //         },
-                    //         FollowRedirects: true,
-                    //         EnableHTTP2:     true,
-                    //     },
-                    //     Port:            80,
-                    //     RefreshInterval: model.Duration(60 * time.Second),
-                    //     Role:            "droplets",
-                    // },
+                    Box::new(discovery::digitalocean::SdConfig {
+                        http_client_config: HttpClientConfig {
+                            authorization: Some(Authorization { type_: s("Bearer"), credentials: Secret::new("abcdef"), ..Default::default() }),
+                            follow_redirects: true,
+                            enable_http2: true,
+                            ..Default::default()
+                        },
+                        port: 80,
+                        refresh_interval: Duration::from_secs(60),
+                        role: discovery::digitalocean::Role(s("droplets")),
+                        ..Default::default()
+                    }),
                 ]),
                 ..job("digitalocean-droplets")
             },
@@ -805,42 +793,40 @@ pub fn expected_conf() -> Config {
 
                 relabel_configs: vec![rc(names(&["instance"]), "instance", Action::Uppercase)],
                 service_discovery_configs: sd(vec![
-                    // waits for hetzner:
-                    // &hetzner.SDConfig{
-                    //     HTTPClientConfig: config.HTTPClientConfig{
-                    //         Authorization: &config.Authorization{
-                    //             Type:        "Bearer",
-                    //             Credentials: "abcdef",
-                    //         },
-                    //         FollowRedirects: true,
-                    //         EnableHTTP2:     true,
-                    //     },
-                    //     Port:            80,
-                    //     RefreshInterval: model.Duration(60 * time.Second),
-                    //     Role:            "hcloud",
-                    // },
-                    // waits for hetzner:
-                    // &hetzner.SDConfig{
-                    //     HTTPClientConfig: config.HTTPClientConfig{
-                    //         BasicAuth:       &config.BasicAuth{Username: "abcdef", Password: "abcdef"},
-                    //         FollowRedirects: true,
-                    //         EnableHTTP2:     true,
-                    //     },
-                    //     Port:            80,
-                    //     RefreshInterval: model.Duration(60 * time.Second),
-                    //     Role:            "robot",
-                    // },
+                    Box::new(discovery::hetzner::SdConfig {
+                        http_client_config: HttpClientConfig {
+                            authorization: Some(Authorization { type_: s("Bearer"), credentials: Secret::new("abcdef"), ..Default::default() }),
+                            follow_redirects: true,
+                            enable_http2: true,
+                            ..Default::default()
+                        },
+                        port: 80,
+                        refresh_interval: Duration::from_secs(60),
+                        role: discovery::hetzner::Role(s("hcloud")),
+                        ..Default::default()
+                    }),
+                    Box::new(discovery::hetzner::SdConfig {
+                        http_client_config: HttpClientConfig {
+                            basic_auth: Some(BasicAuth { username: s("abcdef"), password: Secret::new("abcdef"), ..Default::default() }),
+                            follow_redirects: true,
+                            enable_http2: true,
+                            ..Default::default()
+                        },
+                        port: 80,
+                        refresh_interval: Duration::from_secs(60),
+                        role: discovery::hetzner::Role(s("robot")),
+                        ..Default::default()
+                    }),
                 ]),
                 ..job("hetzner")
             },
             ScrapeConfig {
                 service_discovery_configs: sd(vec![
-                    // waits for eureka:
-                    // &eureka.SDConfig{
-                    //     Server:           "http://eureka.example.com:8761/eureka",
-                    //     RefreshInterval:  model.Duration(30 * time.Second),
-                    //     HTTPClientConfig: config.DefaultHTTPClientConfig,
-                    // },
+                    Box::new(discovery::eureka::SdConfig {
+                        server: s("http://eureka.example.com:8761/eureka"),
+                        refresh_interval: Duration::from_secs(30),
+                        http_client_config: HttpClientConfig::default_config(),
+                    }),
                 ]),
                 ..job("service-eureka")
             },
@@ -867,30 +853,30 @@ pub fn expected_conf() -> Config {
             },
             ScrapeConfig {
                 service_discovery_configs: sd(vec![
-                    // waits for scaleway:
-                    // &scaleway.SDConfig{
-                    //     APIURL:           "https://api.scaleway.com",
-                    //     AccessKey:        "SCWXXXXXXXXXXXXXXXXX",
-                    //     HTTPClientConfig: config.DefaultHTTPClientConfig,
-                    //     Port:             80,
-                    //     Project:          "11111111-1111-1111-1111-111111111112",
-                    //     RefreshInterval:  model.Duration(60 * time.Second),
-                    //     Role:             "instance",
-                    //     SecretKey:        "11111111-1111-1111-1111-111111111111",
-                    //     Zone:             "fr-par-1",
-                    // },
-                    // waits for scaleway:
-                    // &scaleway.SDConfig{
-                    //     APIURL:           "https://api.scaleway.com",
-                    //     AccessKey:        "SCWXXXXXXXXXXXXXXXXX",
-                    //     HTTPClientConfig: config.DefaultHTTPClientConfig,
-                    //     Port:             80,
-                    //     Project:          "11111111-1111-1111-1111-111111111112",
-                    //     RefreshInterval:  model.Duration(60 * time.Second),
-                    //     Role:             "baremetal",
-                    //     SecretKey:        "11111111-1111-1111-1111-111111111111",
-                    //     Zone:             "fr-par-1",
-                    // },
+                    Box::new(discovery::scaleway::SdConfig {
+                        api_url: s("https://api.scaleway.com"),
+                        access_key: s("SCWXXXXXXXXXXXXXXXXX"),
+                        http_client_config: HttpClientConfig::default_config(),
+                        port: 80,
+                        project: s("11111111-1111-1111-1111-111111111112"),
+                        refresh_interval: Duration::from_secs(60),
+                        role: discovery::scaleway::Role(s("instance")),
+                        secret_key: Secret::new("11111111-1111-1111-1111-111111111111"),
+                        zone: s("fr-par-1"),
+                        ..Default::default()
+                    }),
+                    Box::new(discovery::scaleway::SdConfig {
+                        api_url: s("https://api.scaleway.com"),
+                        access_key: s("SCWXXXXXXXXXXXXXXXXX"),
+                        http_client_config: HttpClientConfig::default_config(),
+                        port: 80,
+                        project: s("11111111-1111-1111-1111-111111111112"),
+                        refresh_interval: Duration::from_secs(60),
+                        role: discovery::scaleway::Role(s("baremetal")),
+                        secret_key: Secret::new("11111111-1111-1111-1111-111111111111"),
+                        zone: s("fr-par-1"),
+                        ..Default::default()
+                    }),
                 ]),
                 ..job("scaleway")
             },
