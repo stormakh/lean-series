@@ -3,7 +3,7 @@
 use model::histogram::*;
 
 /// Go `value.StaleNaN` (model/value): the bit pattern of the stale marker.
-const STALE_NAN: u64 = 0x7ff0000000000002;
+use model::value::STALE_NAN;
 
 fn collect<B, I: BucketIterator<B>>(mut it: I) -> Vec<Bucket<B>> {
     let mut v = Vec::new();

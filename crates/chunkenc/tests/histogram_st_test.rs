@@ -9,7 +9,7 @@ use common::{generate_test_histogram, generate_test_histograms};
 use model::histogram::{CounterResetHint, Histogram, Span};
 
 /// Go `value.StaleNaN`.
-const STALE_NAN: u64 = 0x7ff0000000000002;
+use model::value::STALE_NAN;
 
 fn is_stale_nan(f: f64) -> bool {
     f.to_bits() == STALE_NAN

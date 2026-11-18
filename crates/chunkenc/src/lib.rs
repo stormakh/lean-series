@@ -87,7 +87,7 @@ pub(crate) const CHUNK_HEADER_SIZE: usize = 2;
 pub(crate) const CHUNK_ALLOCATION_SIZE: usize = 128;
 pub(crate) const CHUNK_COMPACT_CAPACITY_THRESHOLD: usize = 32;
 
-pub(crate) const STALE_NAN: u64 = 0x7ff0000000000002;
+pub(crate) use model::value::STALE_NAN;
 
 #[inline(always)]
 pub(crate) fn is_stale_nan(f: f64) -> bool {

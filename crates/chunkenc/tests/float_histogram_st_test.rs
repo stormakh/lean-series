@@ -11,7 +11,7 @@ use chunkenc::{
 };
 use model::histogram::{CounterResetHint, FloatHistogram, Histogram, Span};
 
-const STALE_NAN: u64 = 0x7ff0000000000002;
+use model::value::STALE_NAN;
 
 fn is_stale_nan(f: f64) -> bool {
     f.to_bits() == STALE_NAN

@@ -6,7 +6,7 @@ use chunkenc::Iterator as _;
 use chunkenc::{Bstream, BstreamReader, Chunk, ENC_XOR2, Error, ValueType, Xor2Chunk, Xor2Iterator, from_data};
 use common::{Rand, SampleCase, Triple, triple};
 
-const STALE_NAN: u64 = 0x7ff0000000000002;
+use model::value::STALE_NAN;
 
 fn stale_nan() -> f64 {
     f64::from_bits(STALE_NAN)

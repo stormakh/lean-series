@@ -9,7 +9,7 @@ pub enum HistogramRef<'a> {
     Float(&'a FloatHistogram),
 }
 
-const STALE_NAN: u64 = 0x7ff0000000000002;
+use crate::value::STALE_NAN;
 
 /// Returns the cumulative bucket counts of a valid NHCB, one per custom bound followed by +Inf, along with its
 /// count and sum. It reuses `buf`. Every returned value of a stale marker is a stale marker. `None` is Go's nil
