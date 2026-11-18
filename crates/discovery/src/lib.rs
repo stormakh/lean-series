@@ -8,6 +8,7 @@
 //! See README.md for how to add a provider.
 pub mod cancel;
 pub mod chan;
+pub mod digitalocean;
 pub mod file;
 pub mod glob;
 pub(crate) mod gojson;
