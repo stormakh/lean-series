@@ -12,3 +12,7 @@ util = { path = "../util" }
 
 [dev-dependencies]
 json = { path = "../json" }
+
+[[test]]
+name = "promqltest"
+harness = false
