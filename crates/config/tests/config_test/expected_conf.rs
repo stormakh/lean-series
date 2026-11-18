@@ -630,21 +630,18 @@ pub fn expected_conf() -> Config {
                 ..job("service-lightsail")
             },
             ScrapeConfig {
-                service_discovery_configs: sd(vec![
-                    // waits for azure:
-                    // &azure.SDConfig{
-                    //     Environment:          "AzurePublicCloud",
-                    //     SubscriptionID:       "11AAAA11-A11A-111A-A111-1111A1111A11",
-                    //     ResourceGroup:        "my-resource-group",
-                    //     TenantID:             "BBBB222B-B2B2-2B22-B222-2BB2222BB2B2",
-                    //     ClientID:             "333333CC-3C33-3333-CCC3-33C3CCCCC33C",
-                    //     ClientSecret:         "mysecret",
-                    //     AuthenticationMethod: "OAuth",
-                    //     RefreshInterval:      model.Duration(5 * time.Minute),
-                    //     Port:                 9100,
-                    //     HTTPClientConfig:     config.DefaultHTTPClientConfig,
-                    // },
-                ]),
+                service_discovery_configs: sd(vec![Box::new(discovery::azure::SdConfig {
+                    environment: s("AzurePublicCloud"),
+                    subscription_id: s("11AAAA11-A11A-111A-A111-1111A1111A11"),
+                    resource_group: s("my-resource-group"),
+                    tenant_id: s("BBBB222B-B2B2-2B22-B222-2BB2222BB2B2"),
+                    client_id: s("333333CC-3C33-3333-CCC3-33C3CCCCC33C"),
+                    client_secret: Secret(s("mysecret")),
+                    authentication_method: s("OAuth"),
+                    refresh_interval: Duration::from_secs(300),
+                    port: 9100,
+                    http_client_config: HttpClientConfig::default_config(),
+                })]),
                 ..job("service-azure")
             },
             ScrapeConfig {

@@ -41,6 +41,7 @@ pub struct Registration {
 fn builtin() -> Vec<Registration> {
     vec![
         registration::<crate::azure::SdConfig>(),
+        registration::<crate::aws::SdConfig>(),
         registration::<crate::aws::ec2::Ec2SdConfig>(),
         registration::<crate::aws::ecs::EcsSdConfig>(),
         registration::<crate::aws::elasticache::ElasticacheSdConfig>(),
