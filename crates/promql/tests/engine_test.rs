@@ -907,3 +907,37 @@ fn info_step_invariance_cases() -> Vec<(&'static str, bool, bool)> {
         (r#"info(other_metric @ 120 or label_replace(label_replace(vector(1), "instance", "a", "__name__", ".*"), "job", "1", "__name__", ".*"), {version=~".*"})"#, false, true),
     ]
 }
+
+#[test]
+fn test_query_lookback_delta() {
+    let load = "load 5m\nmetric 0 1 2\n";
+    let last = 600_000i64;
+    let m = 60_000i64;
+    // (name, ts, engine lookback, query lookback, expect samples)
+    // adapted: Go's negative engine lookback (-10m) cannot be a Rust Duration; zero is used, which the engine
+    // treats like Go treats a non-positive value here: the query lookback (20m) overrides it.
+    let cases: [(&str, i64, u64, u64, bool); 7] = [
+        ("default lookback delta", last + 5 * m - 1, 0, 0, true),
+        ("outside default lookback delta", last + 5 * m, 0, 0, false),
+        ("custom engine lookback delta", last + 10 * m - 1, 10, 0, true),
+        ("outside custom engine lookback delta", last + 10 * m, 10, 0, false),
+        ("custom query lookback delta", last + 20 * m - 1, 10, 20, true),
+        ("outside custom query lookback delta", last + 20 * m, 10, 20, false),
+        ("negative custom query lookback delta", last + 20 * m - 1, 0, 20, true),
+    ];
+    for (name, ts, engine_lb, query_lb, expect) in cases {
+        let engine = promqltest::new_test_engine(
+            false,
+            Duration::from_secs(engine_lb * 60),
+            promqltest::DEFAULT_MAX_SAMPLES_PER_QUERY,
+        );
+        let st = promqltest::loaded_storage(load).unwrap();
+        let opts = promql::QueryOpts::new(false, Duration::from_secs(query_lb * 60), None);
+        let ctx = Context::background();
+        let mut qry = engine.new_instant_query(&ctx, Arc::new(st), Some(&opts), "metric", ts).unwrap();
+        let res = qry.exec(&ctx);
+        assert!(res.err.is_none(), "{}", name);
+        let v = res.vector().expect(name);
+        assert_eq!(expect, !v.is_empty(), "{}", name);
+    }
+}
