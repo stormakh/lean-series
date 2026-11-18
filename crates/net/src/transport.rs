@@ -16,40 +16,80 @@ use crate::types::{Error, Header, Request, Response, go_io_error};
 /// Custom dialer (Go `WithDialContextFunc`): network ("tcp") and "host:port"; the deadline, if any.
 pub type DialFunc = Arc<dyn Fn(&str, &str, Option<Instant>) -> std::io::Result<TcpStream> + Send + Sync>;
 
-pub enum Conn {
+/// A connection with a deadline for the whole exchange: every read and write gets the time that is left.
+pub struct Conn {
+    s: Stream,
+    deadline: Option<Instant>,
+}
+
+pub enum Stream {
     Plain(TcpStream),
     Tls(Box<rustls::StreamOwned<rustls::ClientConnection, TcpStream>>),
 }
 
+fn timed_out() -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::TimedOut, "i/o timeout")
+}
+
 impl Conn {
     fn tcp(&self) -> &TcpStream {
-        match self {
-            Conn::Plain(s) => s,
-            Conn::Tls(s) => &s.sock,
+        match &self.s {
+            Stream::Plain(s) => s,
+            Stream::Tls(s) => &s.sock,
         }
     }
-    fn set_deadline(&self, deadline: Option<Instant>) -> Result<(), Error> {
-        let left = match deadline {
-            None => None,
-            Some(d) => {
-                let now = Instant::now();
-                if now >= d {
-                    return Err(Error::timeout());
-                }
-                Some(d - now)
-            }
-        };
-        let _ = self.tcp().set_read_timeout(left);
-        let _ = self.tcp().set_write_timeout(left);
+    fn set_deadline(&mut self, deadline: Option<Instant>) -> Result<(), Error> {
+        if deadline.is_some_and(|d| Instant::now() >= d) {
+            return Err(Error::timeout());
+        }
+        self.deadline = deadline;
+        if deadline.is_none() {
+            let _ = self.tcp().set_read_timeout(None);
+            let _ = self.tcp().set_write_timeout(None);
+        }
         Ok(())
+    }
+    /// Arms the socket timeouts with the time left before the deadline.
+    fn arm(&self) -> std::io::Result<()> {
+        if let Some(d) = self.deadline {
+            let now = Instant::now();
+            if now >= d {
+                return Err(timed_out());
+            }
+            self.tcp().set_read_timeout(Some(d - now))?;
+            self.tcp().set_write_timeout(Some(d - now))?;
+        }
+        Ok(())
+    }
+    /// Runs the TLS handshake now (it would otherwise run on the first write).
+    fn handshake(&mut self) -> std::io::Result<()> {
+        self.arm()?;
+        if let Stream::Tls(t) = &mut self.s {
+            while t.conn.is_handshaking() {
+                t.conn.complete_io(&mut t.sock)?;
+            }
+        }
+        Ok(())
+    }
+    /// An idle connection that the server closed or sent unsolicited bytes on must not be reused.
+    fn is_dead(&self) -> bool {
+        let t = self.tcp();
+        if t.set_nonblocking(true).is_err() {
+            return true;
+        }
+        let mut b = [0u8; 1];
+        let dead = !matches!(t.peek(&mut b), Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock);
+        let _ = t.set_nonblocking(false);
+        dead
     }
 }
 
 impl Read for Conn {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        match self {
-            Conn::Plain(s) => s.read(buf),
-            Conn::Tls(s) => match s.read(buf) {
+        self.arm()?;
+        match &mut self.s {
+            Stream::Plain(s) => s.read(buf),
+            Stream::Tls(s) => match s.read(buf) {
                 // a peer closing without close_notify ends the stream like Go does
                 Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(0),
                 r => r,
@@ -59,15 +99,17 @@ impl Read for Conn {
 }
 impl Write for Conn {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        match self {
-            Conn::Plain(s) => s.write(buf),
-            Conn::Tls(s) => s.write(buf),
+        self.arm()?;
+        match &mut self.s {
+            Stream::Plain(s) => s.write(buf),
+            Stream::Tls(s) => s.write(buf),
         }
     }
     fn flush(&mut self) -> std::io::Result<()> {
-        match self {
-            Conn::Plain(s) => s.flush(),
-            Conn::Tls(s) => s.flush(),
+        self.arm()?;
+        match &mut self.s {
+            Stream::Plain(s) => s.flush(),
+            Stream::Tls(s) => s.flush(),
         }
     }
 }
@@ -174,8 +216,13 @@ impl Transport {
         if !ttl.is_zero() {
             v.retain(|i| i.since.elapsed() < ttl);
         }
-        let pos = v.iter().rposition(|i| i.key == key)?;
-        Some(v.swap_remove(pos).conn)
+        while let Some(pos) = v.iter().rposition(|i| i.key == key) {
+            let c = v.swap_remove(pos).conn;
+            if !c.is_dead() {
+                return Some(c);
+            }
+        }
+        None
     }
 
     fn put_idle(&self, key: String, conn: Conn) {
@@ -243,18 +290,35 @@ impl Transport {
             }
         };
         if u.scheme != "https" {
-            return Ok(Conn::Plain(tcp));
+            return Ok(Conn { s: Stream::Plain(tcp), deadline });
+        }
+        // Go's GetClientCertificate aborts the handshake when the certificate cannot be loaded; rustls cannot
+        // fail from its resolver, so load it once before connecting
+        if let Some(src) = &self.tls.client_cert {
+            src.get().map_err(Error::other)?;
         }
         let name = self.tls.server_name_for(u.hostname()).map_err(Error::other)?;
         let cc = rustls::ClientConnection::new(self.rustls.clone(), name).map_err(|e| Error::other(crate::tls::tls_error_text(&e)))?;
-        let conn = Conn::Tls(Box::new(rustls::StreamOwned::new(cc, tcp)));
+        // the handshake has its own 10 s limit (Go TLSHandshakeTimeout) inside the request deadline
+        let hs_limit = Instant::now() + Duration::from_secs(10);
+        let hs_deadline = Some(deadline.map_or(hs_limit, |d| d.min(hs_limit)));
+        let mut conn = Conn { s: Stream::Tls(Box::new(rustls::StreamOwned::new(cc, tcp))), deadline: hs_deadline };
+        if let Err(e) = conn.handshake() {
+            return Err(match e.kind() {
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => {
+                    if deadline.is_some_and(|d| Instant::now() >= d) { Error::timeout() } else { Error::other("net/http: TLS handshake timeout") }
+                }
+                _ => Error::other(io_error_text(&e)),
+            });
+        }
         conn.set_deadline(deadline)?;
         Ok(conn)
     }
 
     fn connect_tunnel(&self, mut tcp: TcpStream, p: &GoUrl, target: &str, deadline: Option<Instant>) -> Result<TcpStream, Error> {
-        let c = Conn::Plain(tcp.try_clone().map_err(|e| Error::other(go_io_error(&e)))?);
+        let mut c = Conn { s: Stream::Plain(tcp.try_clone().map_err(|e| Error::other(go_io_error(&e)))?), deadline: None };
         c.set_deadline(deadline)?;
+        c.arm().map_err(|_| Error::timeout())?;
         let mut h = format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n");
         if let Some(ui) = &p.user {
             let v = crypto::base64(format!("{}:{}", ui.username, ui.password).as_bytes());
@@ -348,29 +412,29 @@ impl Transport {
         conn.flush()
     }
 
-    /// One request on one connection. Returns the response and the connection when it can be reused, or
-    /// (error, whether any response byte arrived).
-    fn exchange(&self, mut conn: Conn, req: &Request, proxy: Option<&GoUrl>, deadline: Option<Instant>) -> Result<(Response, Option<Conn>), (Error, bool)> {
-        conn.set_deadline(deadline).map_err(|e| (e, false))?;
+    /// One request on one connection. Returns the response and the connection when it can be reused, or the
+    /// error and how far the exchange got (0: request not written, 1: written, 2: response bytes read).
+    fn exchange(&self, mut conn: Conn, req: &Request, proxy: Option<&GoUrl>, deadline: Option<Instant>) -> Result<(Response, Option<Conn>), (Error, u8)> {
+        conn.set_deadline(deadline).map_err(|e| (e, 0))?;
         let io = |e: std::io::Error| timeout_or(&e, || io_error_text(&e));
-        self.write_request(&mut conn, req, proxy).map_err(|e| (io(e), false))?;
+        self.write_request(&mut conn, req, proxy).map_err(|e| (io(e), 0))?;
         let mut r = BufReader::with_capacity(16 * 1024, conn);
         let mut line = String::new();
-        let mut got_any = false;
+        let mut stage = 1u8;
         loop {
             line.clear();
-            let n = r.read_line(&mut line).map_err(|e| (io(e), got_any))?;
+            let n = r.read_line(&mut line).map_err(|e| (io(e), stage))?;
             if n == 0 {
-                return Err((Error::other("EOF"), got_any));
+                return Err((Error::other("EOF"), stage));
             }
-            got_any = true;
-            let (status, http10) = parse_status(&line).map_err(|e| (e, true))?;
+            stage = 2;
+            let (status, http10) = parse_status(&line).map_err(|e| (e, 2))?;
             let mut header = Header::new();
             loop {
                 line.clear();
-                let n = r.read_line(&mut line).map_err(|e| (io(e), true))?;
+                let n = r.read_line(&mut line).map_err(|e| (io(e), 2))?;
                 if n == 0 {
-                    return Err((Error::other("unexpected EOF"), true));
+                    return Err((Error::other("unexpected EOF"), 2));
                 }
                 let t = line.trim_end_matches(['\r', '\n']);
                 if t.is_empty() {
@@ -385,28 +449,27 @@ impl Transport {
             }
             let conn_hdr = header.get_str("Connection").to_ascii_lowercase();
             let mut reusable = self.opts.keep_alives && !conn_hdr.contains("close") && (!http10 || conn_hdr.contains("keep-alive"));
-            let chunked = header.get_str("Transfer-Encoding").to_ascii_lowercase().contains("chunked");
-            let clen = header.get("Content-Length").and_then(|v| v.trim().parse::<usize>().ok());
+            let (chunked, clen) = framing(&header).map_err(|e| (e, 2))?;
             let limit = req.max_body_bytes.unwrap_or(usize::MAX);
             let mut body = Vec::new();
             if req.method == "HEAD" || status == 204 || status == 304 {
             } else if chunked {
-                body = read_chunked(&mut r, limit).map_err(|e| (e, true))?;
+                body = read_chunked(&mut r, limit).map_err(|e| (e, 2))?;
             } else if let Some(n) = clen {
                 if n > limit {
-                    return Err((Error::too_large(), true));
+                    return Err((Error::too_large(), 2));
                 }
                 body = vec![0u8; n];
-                r.read_exact(&mut body).map_err(|e| (if e.kind() == std::io::ErrorKind::UnexpectedEof { Error::other("unexpected EOF") } else { io(e) }, true))?;
+                r.read_exact(&mut body).map_err(|e| (if e.kind() == std::io::ErrorKind::UnexpectedEof { Error::other("unexpected EOF") } else { io(e) }, 2))?;
             } else {
                 let mut buf = [0u8; 16 * 1024];
                 loop {
-                    let n = r.read(&mut buf).map_err(|e| (io(e), true))?;
+                    let n = r.read(&mut buf).map_err(|e| (io(e), 2))?;
                     if n == 0 {
                         break;
                     }
                     if body.len() + n > limit {
-                        return Err((Error::too_large(), true));
+                        return Err((Error::too_large(), 2));
                     }
                     body.extend_from_slice(&buf[..n]);
                 }
@@ -415,7 +478,7 @@ impl Transport {
             if req.decompress && req.header.get("Accept-Encoding").is_none() {
                 let enc = header.get_str("Content-Encoding").to_ascii_lowercase();
                 if enc == "gzip" || enc == "deflate" {
-                    body = decode_body(&enc, &body, limit).map_err(|e| (e, true))?;
+                    body = decode_body(&enc, &body, limit).map_err(|e| (e, 2))?;
                     header.del("Content-Encoding");
                     header.del("Content-Length");
                 }
@@ -470,8 +533,34 @@ fn parse_status(line: &str) -> Result<(u16, bool), Error> {
     }
 }
 
+/// Go's body framing rules: Transfer-Encoding must be exactly "chunked"; several Content-Length values must
+/// agree and parse.
+fn framing(h: &Header) -> Result<(bool, Option<usize>), Error> {
+    let te = h.values("Transfer-Encoding");
+    if !te.is_empty() {
+        let raw = te.join(",");
+        if te.len() == 1 && te[0].trim().eq_ignore_ascii_case("chunked") {
+            return Ok((true, None));
+        }
+        return Err(Error::other(format!("unsupported transfer encoding: {}", yaml::go_quote(&raw))));
+    }
+    let cl = h.values("Content-Length");
+    let Some(first) = cl.first() else { return Ok((false, None)) };
+    let first = first.trim();
+    if cl.iter().any(|v| v.trim() != first) {
+        return Err(Error::other("http: message cannot contain multiple Content-Length headers"));
+    }
+    if first.is_empty() || !first.bytes().all(|c| c.is_ascii_digit()) {
+        return Err(Error::other(format!("bad Content-Length {}", yaml::go_quote(first))));
+    }
+    first.parse::<usize>().map(|n| (false, Some(n))).map_err(|_| Error::other(format!("bad Content-Length {}", yaml::go_quote(first))))
+}
+
 fn read_chunked<R: BufRead>(r: &mut R, max: usize) -> Result<Vec<u8>, Error> {
-    let io = |e: std::io::Error| timeout_or(&e, || io_error_text(&e));
+    let io = |e: std::io::Error| match e.kind() {
+        std::io::ErrorKind::UnexpectedEof => Error::other("unexpected EOF"),
+        _ => timeout_or(&e, || io_error_text(&e)),
+    };
     let mut body = Vec::new();
     let mut line = String::new();
     loop {
@@ -482,23 +571,32 @@ fn read_chunked<R: BufRead>(r: &mut R, max: usize) -> Result<Vec<u8>, Error> {
         let hex = line.trim().split(';').next().unwrap_or("").trim();
         let n = usize::from_str_radix(hex, 16).map_err(|_| Error::other("invalid byte in chunk length"))?;
         if n == 0 {
+            // trailers up to the empty line
             loop {
                 line.clear();
-                let k = r.read_line(&mut line).map_err(io)?;
-                if k == 0 || line.trim().is_empty() {
+                if r.read_line(&mut line).map_err(io)? == 0 {
+                    return Err(Error::other("unexpected EOF"));
+                }
+                if line.trim().is_empty() {
                     return Ok(body);
                 }
             }
         }
-        if body.len() + n > max {
-            return Err(Error::too_large());
-        }
+        let end = body.len().checked_add(n).filter(|e| *e <= max).ok_or_else(Error::too_large)?;
         let st = body.len();
-        body.resize(st + n, 0);
+        body.resize(end, 0);
         r.read_exact(&mut body[st..]).map_err(io)?;
         let mut crlf = [0u8; 2];
         r.read_exact(&mut crlf).map_err(io)?;
+        if &crlf != b"\r\n" {
+            return Err(Error::other("malformed chunked encoding"));
+        }
     }
+}
+
+/// Go `Request.isReplayable`.
+fn replayable(req: &Request) -> bool {
+    matches!(req.method.as_str(), "GET" | "HEAD" | "OPTIONS" | "TRACE") || req.header.has("Idempotency-Key") || req.header.has("X-Idempotency-Key")
 }
 
 impl RoundTripper for Transport {
@@ -524,8 +622,9 @@ impl RoundTripper for Transport {
                     }
                     return Ok(resp);
                 }
-                // a pooled connection closed by the server: retry on a new one when nothing came back
-                Err((e, false)) if !e.is_timeout() => {}
+                // a pooled connection closed by the server: retry on a new one when the request was not sent,
+                // or was sent but is replayable and nothing came back (Go's rule)
+                Err((e, stage)) if !e.is_timeout() && (stage == 0 || stage == 1 && replayable(&req)) => {}
                 Err((e, _)) => return Err(e),
             }
         }

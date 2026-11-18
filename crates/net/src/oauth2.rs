@@ -73,12 +73,13 @@ fn retrieve_error(resp: &Response, code: &str, desc: &str, uri: &str) -> Error {
     Error::other(format!("oauth2: cannot fetch token: {}\nResponse: {}", resp.status_text, String::from_utf8_lossy(&resp.body)))
 }
 
-fn post_form(client: &Client, url: &str, form: &str, basic: Option<(&str, &str)>) -> Result<Response, Error> {
+fn post_form(client: &Client, url: &str, form: &str, basic: Option<(&str, &str)>, timeout: Option<Duration>) -> Result<Response, Error> {
     let mut req = Request::new("POST", url, form.as_bytes().to_vec())?;
     req.header.set("Content-Type", "application/x-www-form-urlencoded");
     if let Some((u, p)) = basic {
         req.set_basic_auth(&query_escape(u), &query_escape(p));
     }
+    req.timeout = timeout;
     client.do_request(req)
 }
 
@@ -127,7 +128,7 @@ fn parse_token_response(resp: &Response) -> Result<Token, Error> {
             _ => 0,
         };
         let expires = expires.min(i32::MAX as i64);
-        token = Token { access_token: j.str_of("access_token").to_string(), token_type: j.str_of("token_type").to_string(), expiry: if expires > 0 { Some(Instant::now() + Duration::from_secs(expires as u64)) } else { None } };
+        token = Token { access_token: j.str_of("access_token").to_string(), token_type: j.str_of("token_type").to_string(), expiry: if expires != 0 { Some(Instant::now() + Duration::from_secs(expires.max(0) as u64)) } else { None } };
     }
     if failure || !code.is_empty() {
         return Err(retrieve_error(resp, &code, &desc, &uri));
@@ -206,13 +207,14 @@ fn sign_jwt(cfg: &OAuth2, key_pem: &str) -> Result<String, Error> {
 }
 
 impl TokenSource {
-    pub fn token(&self) -> Result<Token, Error> {
+    /// The cached token, or a new one fetched within `timeout`.
+    pub fn token(&self, timeout: Option<Duration>) -> Result<Token, Error> {
         let mut g = self.token.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(t) = g.as_ref()
             && t.valid() {
                 return Ok(t.clone());
             }
-        let t = if self.config.grant_type == GRANT_TYPE_JWT_BEARER { self.fetch_jwt()? } else { self.fetch_client_credentials()? };
+        let t = if self.config.grant_type == GRANT_TYPE_JWT_BEARER { self.fetch_jwt(timeout)? } else { self.fetch_client_credentials(timeout)? };
         *g = Some(t.clone());
         Ok(t)
     }
@@ -229,7 +231,7 @@ impl TokenSource {
         Ok(v)
     }
 
-    fn fetch_client_credentials(&self) -> Result<Token, Error> {
+    fn fetch_client_credentials(&self, timeout: Option<Duration>) -> Result<Token, Error> {
         let mut v = vec![("grant_type".to_string(), "client_credentials".to_string())];
         if !self.config.scopes.is_empty() {
             v.push(("scope".to_string(), self.config.scopes.join(" ")));
@@ -251,9 +253,9 @@ impl TokenSource {
                 if !secret.is_empty() {
                     p.push(("client_secret".to_string(), secret.to_string()));
                 }
-                post_form(&self.client, &self.config.token_url, &encode_query(&p), None)?
+                post_form(&self.client, &self.config.token_url, &encode_query(&p), None, timeout)?
             } else {
-                post_form(&self.client, &self.config.token_url, &encode_query(&v), Some((id, secret)))?
+                post_form(&self.client, &self.config.token_url, &encode_query(&v), Some((id, secret)), timeout)?
             };
             parse_token_response(&resp)
         };
@@ -268,14 +270,14 @@ impl TokenSource {
         r
     }
 
-    fn fetch_jwt(&self) -> Result<Token, Error> {
+    fn fetch_jwt(&self, timeout: Option<Duration>) -> Result<Token, Error> {
         let assertion = sign_jwt(&self.config, &self.credential)?;
         let mut v = vec![("grant_type".to_string(), GRANT_TYPE_JWT_BEARER.to_string()), ("assertion".to_string(), assertion)];
         if !self.config.scopes.is_empty() {
             v.push(("scope".to_string(), self.config.scopes.join(" ")));
         }
         let v = self.params(v)?;
-        let resp = post_form(&self.client, &self.config.token_url, &encode_query(&v), None).map_err(|e| e.wrap("oauth2: cannot fetch token"))?;
+        let resp = post_form(&self.client, &self.config.token_url, &encode_query(&v), None, timeout).map_err(|e| e.wrap("oauth2: cannot fetch token"))?;
         if resp.status < 200 || resp.status > 299 {
             return Err(retrieve_error(&resp, "", "", ""));
         }
@@ -323,7 +325,7 @@ impl OAuth2RoundTripper {
         if !ua.is_empty() {
             t = Arc::new(UserAgentRoundTripper { user_agent: ua.to_string(), next: t });
         }
-        let client = Client { transport: t, follow_redirects: true, timeout: req.timeout };
+        let client = Client { transport: t, follow_redirects: true, timeout: None };
         Ok(Arc::new(TokenSource { client, config: self.config.clone(), credential: secret, token: Mutex::new(None), auth_style: Mutex::new(AuthStyle::Unknown) }))
     }
 
@@ -355,7 +357,16 @@ impl RoundTripper for OAuth2RoundTripper {
             }
         }
         let src = self.state.lock().unwrap_or_else(|p| p.into_inner()).source.clone().ok_or_else(|| Error::other("oauth2: no token source"))?;
-        let tok = src.token()?;
+        // the token fetch spends the request's time (Go shares the request context)
+        let deadline = req.timeout.map(|t| Instant::now() + t);
+        let tok = src.token(req.timeout)?;
+        if let Some(d) = deadline {
+            let now = Instant::now();
+            if now >= d {
+                return Err(Error::timeout());
+            }
+            req.timeout = Some(d - now);
+        }
         req.header.set("Authorization", &format!("{} {}", tok.type_(), tok.access_token));
         self.next.round_trip(req)
     }

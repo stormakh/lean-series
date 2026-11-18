@@ -158,72 +158,100 @@ impl Client {
         self.do_request(Request::get(url)?)
     }
 
-    /// Go `Client.Do`: sends the request and follows redirects (at most 10) when enabled.
+    /// Go `Client.Do`: sends the request and follows redirects (at most 10) when enabled, with Go's rules:
+    /// 301/302/303 turn a non-GET/HEAD into GET without body, 307/308 keep method and body; credentials are
+    /// dropped for good once a hop leaves the initial host; URL user info becomes Basic auth.
     pub fn do_request(&self, mut req: Request) -> Result<Response, Error> {
         if req.timeout.is_none() {
             req.timeout = self.timeout;
         }
         let deadline = req.timeout.map(|t| Instant::now() + t);
         let initial = req.clone();
-        let mut hops = 0;
+        let op_method = initial.method.clone();
+        let mut via = 0usize;
+        let mut include_body = true;
+        let mut strip_sensitive = false;
         loop {
             if let Some(d) = deadline {
                 let now = Instant::now();
                 if now >= d {
-                    return Err(url_error(&req.method, &req.url, Error::timeout()));
+                    return Err(url_error(&op_method, &req.url, Error::timeout()));
                 }
                 req.timeout = Some(d - now);
             }
             let method = req.method.clone();
             let url = req.url.clone();
-            let resp = self.transport.round_trip(req.clone()).map_err(|e| url_error(&method, &url, e))?;
-            let (redirect_method, include_body) = match resp.status {
+            let mut sent = req.clone();
+            if let Some(ui) = &url.user
+                && sent.header.get_str("Authorization").is_empty()
+            {
+                sent.set_basic_auth(&ui.username, &ui.password);
+            }
+            let resp = self.transport.round_trip(sent).map_err(|e| url_error(&op_method, &url, e))?;
+            via += 1;
+            let (redirect_method, include_on_hop) = match resp.status {
                 301..=303 => (if method != "GET" && method != "HEAD" { "GET".to_string() } else { method.clone() }, false),
                 307 | 308 => (method.clone(), true),
                 _ => return Ok(resp),
             };
+            if !include_on_hop {
+                include_body = false;
+            }
             let loc = resp.header.get_str("Location").to_string();
             if loc.is_empty() {
                 return Ok(resp);
             }
-            if !self.follow_redirects {
-                return Ok(resp);
+            let next_url = url.join(&loc).map_err(|e| url_error(&op_method, &url, Error::other(format!("failed to parse Location header {}: {}", yaml::go_quote(&loc), e))))?;
+            let mut host = String::new();
+            if !req.host.is_empty()
+                && req.host != req.url.host
+                && let Ok(u) = yaml::url::parse(&loc)
+                && !u.is_abs()
+            {
+                host = req.host.clone();
             }
-            let next_url = url.join(&loc).map_err(|e| url_error(&method, &url, Error::other(format!("failed to parse Location header {}: {}", yaml::go_quote(&loc), e))))?;
-            hops += 1;
-            if hops > 10 {
-                return Err(url_error(&redirect_method, &next_url, Error::other("stopped after 10 redirects")));
+            // headers of the first request (Go's makeHeadersCopier); stripping is sticky
+            if !strip_sensitive && initial.url.host != next_url.host && !is_domain_or_subdomain(&next_url.hostname().to_lowercase(), &initial.url.hostname().to_lowercase()) {
+                strip_sensitive = true;
             }
-            // headers of the first request, minus credentials when leaving the initial host
-            let mut header = initial.header.clone();
-            let ihost = initial.url.hostname().to_lowercase();
-            let dhost = next_url.hostname().to_lowercase();
-            if !is_domain_or_subdomain(&dhost, &ihost) {
-                for h in ["Authorization", "Www-Authenticate", "Cookie", "Cookie2", "Proxy-Authorization", "Proxy-Authenticate"] {
-                    header.del(h);
+            let mut header = crate::Header::new();
+            for (k, v) in initial.header.iter() {
+                let sensitive = matches!(k, "Authorization" | "Www-Authenticate" | "Cookie" | "Cookie2" | "Proxy-Authorization" | "Proxy-Authenticate");
+                let body = matches!(k, "Content-Encoding" | "Content-Language" | "Content-Location" | "Content-Type");
+                if !(sensitive && strip_sensitive) && !(body && !include_body) {
+                    header.0.push((k.to_string(), v.to_string()));
                 }
             }
             if !(url.scheme == "https" && next_url.scheme == "http") {
-                let mut r = url.clone();
-                r.user = None;
-                r.fragment.clear();
-                r.raw_fragment.clear();
-                header.set("Referer", &r.to_url_string());
+                let explicit = header.get_str("Referer").to_string();
+                let referer = if !explicit.is_empty() {
+                    explicit
+                } else {
+                    let mut r = url.clone();
+                    r.user = None;
+                    r.to_url_string()
+                };
+                header.set("Referer", &referer);
             }
-            let mut host = String::new();
-            if !req.host.is_empty() && req.host != req.url.host
-                && let Ok(u) = yaml::url::parse(&loc)
-                    && !u.is_abs() {
-                        host = req.host.clone();
-                    }
+            if !self.follow_redirects {
+                return Ok(resp);
+            }
+            if via >= 10 {
+                return Err(Error::other(format!("{} {}: stopped after 10 redirects", op_upper(&op_method), yaml::go_quote(&loc))));
+            }
             let mut redirect_hosts = std::mem::take(&mut req.redirect_hosts);
             redirect_hosts.push(url.hostname().to_string());
-            let body = if include_body { std::mem::take(&mut req.body) } else { Vec::new() };
-            if !include_body {
-                header.del("Content-Type");
-                header.del("Content-Length");
-            }
+            let body = if include_body { initial.body.clone() } else { Vec::new() };
             req = Request { method: redirect_method, url: next_url, header, host, body, timeout: req.timeout, max_body_bytes: req.max_body_bytes, decompress: req.decompress, redirect_hosts };
         }
+    }
+}
+
+fn op_upper(method: &str) -> String {
+    let m = method.to_ascii_lowercase();
+    let mut c = m.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+        None => String::new(),
     }
 }
