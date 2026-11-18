@@ -47,3 +47,13 @@ One module and one registry line.
 - `http_sd_configs`: a request in flight is not aborted on cancel; it ends at its timeout (the refresh
   interval, as Go's client timeout).
 - Summaries have count and sum only (no quantiles).
+- Cloud providers (aws/ec2/ecs/elasticache/lightsail/msk/rds, azure, gce, oci, openstack) talk to the APIs over
+  plain HTTP + JSON/XML (no SDKs): `aws::client` (SigV4, Query/JSON protocols, SDK-style errors and retries),
+  `azure/arm.rs` + `azure/identity.rs`, `oci/client.rs` (HTTP signatures), `openstack/client.rs` (Keystone v3).
+  Not supported (clear error): AWS IAM Identity Center (SSO) and `login_session` profiles; Azure PKCS#12
+  certificates, username/password, PowerShell and the Arc/ML/Cloud Shell/Service Fabric managed identities;
+  GCE external_account, impersonated and OAuth client credential files; OCI instance_principal (ring cannot
+  generate the session RSA key), DES/3DES/GCM/scrypt encrypted keys and RSA keys under 2048 bits; OpenStack
+  Keystone v2.0. A request in flight is not aborted on cancel; it ends at its timeout.
+- `bench/sd-cloud-e2e/run.sh` compares the discovered labels of all cloud providers with real Prometheus 3.16.0
+  on recorded API responses.
