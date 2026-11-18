@@ -14,7 +14,7 @@ use model::metadata::MetricType;
 
 use crate::convertnhcb::TempHistogram;
 use crate::openmetrics2lex::Om2Lexer;
-use crate::promparse::{build_text_labels, lossy, LabelScratch};
+use crate::promparse::{build_text_labels, lossy, unreplace_str, LabelScratch};
 use crate::strconv::{append_quote_bytes, format_f, format_g, go_f64_to_i64, parse_float, NumErrKind, NumError};
 use crate::token::*;
 use crate::{Entry, Error, Parser, ParserKind, ParserOptions};
@@ -1013,7 +1013,7 @@ impl<'a> OpenMetrics2Parser<'a> {
         let mut pos = pe.name_len;
         let metric_name_empty;
         {
-            let metric_name = lossy(crate::unreplace(&s[..pe.name_len], mname), name_s);
+            let metric_name = unreplace_str(lossy(&s[..pe.name_len], name_s), mname);
             metric_name_empty = metric_name.is_empty();
             if self.enable_type_and_unit_labels {
                 if type_set {
@@ -1040,10 +1040,10 @@ impl<'a> OpenMetrics2Parser<'a> {
         while i < self.offsets.len() {
             pos += 1; // Separator.
             let k_len = self.offsets[i + 1] - self.offsets[i];
-            let label = lossy(crate::unreplace(&s[pos..pos + k_len], name), name_s);
+            let label = unreplace_str(lossy(&s[pos..pos + k_len], name_s), name);
             pos += k_len + 1; // Key and separator.
             let v_len = self.offsets[i + 3] - self.offsets[i + 2];
-            let val = lossy(crate::unreplace(&s[pos..pos + v_len], value), value_s);
+            let val = unreplace_str(lossy(&s[pos..pos + v_len], value_s), value);
             pos += v_len;
             i += 4;
             if self.enable_type_and_unit_labels {
@@ -1117,6 +1117,7 @@ impl Parser for OpenMetrics2Parser<'_> {
         }
         build_text_labels(
             self.b,
+            self.series,
             &self.offsets,
             self.mtype,
             &self.unit,
@@ -1172,8 +1173,8 @@ impl Parser for OpenMetrics2Parser<'_> {
             let mut i = ex.offsets_start;
             while i < ex.offsets_end {
                 let o = &self.e_offsets[i..i + 4];
-                let n = lossy(crate::unreplace(&self.b[o[0]..o[1]], name), name_s);
-                let v = lossy(crate::unreplace(&self.b[o[2]..o[3]], value), value_s);
+                let n = unreplace_str(lossy(&self.b[o[0]..o[1]], name_s), name);
+                let v = unreplace_str(lossy(&self.b[o[2]..o[3]], value_s), value);
                 self.builder.add(n, v);
                 i += 4;
             }
