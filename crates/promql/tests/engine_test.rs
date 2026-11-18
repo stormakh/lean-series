@@ -1463,3 +1463,127 @@ const UTF8_CASES: [(&str, &str); 12] = [
     (r#"a or on (__name__) а"#, r#"{"a"} or on (__name__) {"а"}"#),
     (r#"ö or on (__name__) {"ö"}"#, r#"{"ö"} or on (__name__) {"ö"}"#),
 ];
+
+#[test]
+fn test_query_cost_max_series_subquery() {
+    let st = promqltest::loaded_storage(
+        "\nload 10s\n  bigmetric{a=\"1\"} 1+1x100\n  bigmetric{a=\"2\"} 1+1x100\n  bigmetric{a=\"3\"} 1+1x100\n  other{b=\"1\"} 1+1x100\n  other{b=\"2\"} 1+1x100\n  other{b=\"3\"} 1+1x100\n",
+    )
+    .unwrap();
+    let engine = new_query_cost_engine();
+    let ts = 1_000_000;
+    for query in [
+        "other + sum_over_time(bigmetric[20s:10s])",
+        "other + bigmetric @ 1000",
+        "bigmetric @ 1000 + other",
+        "other + sum_over_time(bigmetric[20s:10s] @ 1000)",
+        "other + sum_over_time(bigmetric[20s] @ 1000)",
+    ] {
+        let ctx = Context::background();
+        engine.set_query_limits(6, 0, Duration::ZERO);
+        let mut qry = engine.new_instant_query(&ctx, Arc::new(st.clone()), None, query, ts).unwrap();
+        assert!(qry.exec(&ctx).err.is_none(), "{}", query);
+        assert_eq!(6, qry.stats().samples.unwrap().total_series, "{}", query);
+        let samples = qry.stats().samples.unwrap().samples_read;
+
+        engine.set_query_limits(4, 0, Duration::ZERO);
+        let mut qry = engine.new_instant_query(&ctx, Arc::new(st.clone()), None, query, ts).unwrap();
+        assert!(err_is(&qry.exec(&ctx).err, &PromqlError::TooManySeries(env())), "{}", query);
+        assert_eq!(5, qry.stats().samples.unwrap().total_series, "{}", query);
+
+        for limit in [samples, samples - 1] {
+            engine.set_query_limits(0, limit as u64, Duration::ZERO);
+            let mut qry = engine.new_instant_query(&ctx, Arc::new(st.clone()), None, query, ts).unwrap();
+            let err = qry.exec(&ctx).err;
+            if limit == samples {
+                assert!(err.is_none(), "{}: {:?}", query, err);
+            } else {
+                assert!(err_is(&err, &PromqlError::TooManySamplesRead(env())), "{}: {:?}", query, err);
+            }
+        }
+    }
+}
+
+#[test]
+fn test_query_cost_max_series_info() {
+    let st = promqltest::loaded_storage(
+        "\nload 10s\n  metric{instance=\"a\", job=\"1\"} 1+1x100\n  metric{instance=\"a\", job=\"2\"} 1+1x100\n  metric{instance=\"a\", job=\"3\"} 1+1x100\n  target_info{instance=\"a\", job=\"1\", data=\"one\"} 1+0x100\n  target_info{instance=\"a\", job=\"2\", data=\"two\"} 1+0x100\n  target_info{instance=\"a\", job=\"3\", data=\"three\"} 1+0x100\n",
+    )
+    .unwrap();
+    let engine = new_query_cost_engine();
+    engine.set_query_limits(10, 0, Duration::ZERO);
+    assert!(exec_instant(&engine, &st, None, "info(metric)", 0).is_none());
+    engine.set_query_limits(4, 0, Duration::ZERO);
+    assert!(err_is(&exec_instant(&engine, &st, None, "info(metric)", 0), &PromqlError::TooManySeries(env())));
+}
+
+struct CountingSeriesSet {
+    total: usize,
+    produced: usize,
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+    cur: Option<storage::SeriesArc>,
+}
+
+impl storage::SeriesSet for CountingSeriesSet {
+    fn next(&mut self) -> bool {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.produced >= self.total {
+            return false;
+        }
+        self.produced += 1;
+        self.cur = Some(storage::new_list_series(
+            from_strings(&["__name__", "bigmetric", "i", &self.produced.to_string()]),
+            Vec::new(),
+        ));
+        true
+    }
+    fn at(&self) -> &storage::SeriesArc {
+        self.cur.as_ref().unwrap()
+    }
+    fn err(&self) -> Option<Error> {
+        None
+    }
+    fn warnings(&self) -> Annotations {
+        Annotations::new()
+    }
+}
+
+struct CountingQuerier(Arc<std::sync::atomic::AtomicUsize>);
+
+impl LabelQuerier for CountingQuerier {
+    fn label_values(&self, _: &Context, _: &str, _: Option<&LabelHints>, _: &[Matcher]) -> LabelResult {
+        (Vec::new(), Annotations::new(), None)
+    }
+    fn label_names(&self, _: &Context, _: Option<&LabelHints>, _: &[Matcher]) -> LabelResult {
+        (Vec::new(), Annotations::new(), None)
+    }
+    fn close(&mut self) -> Option<Error> {
+        None
+    }
+}
+
+impl Querier for CountingQuerier {
+    fn select(&self, _: &Context, _: bool, _: Option<&SelectHints>, _: &[Matcher]) -> BoxSeriesSet {
+        Box::new(CountingSeriesSet { total: 1000, produced: 0, calls: self.0.clone(), cur: None })
+    }
+}
+
+#[test]
+fn test_query_cost_max_series_early_termination() {
+    const MAX_SERIES: u64 = 5;
+    const TOTAL_AVAIL: usize = 1000;
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let c = calls.clone();
+    let queryable = Arc::new(QueryableFunc(move |_, _| -> Result<BoxQuerier, Error> {
+        Ok(Box::new(CountingQuerier(c.clone())))
+    }));
+    let engine = new_query_cost_engine();
+    engine.set_query_limits(MAX_SERIES, 0, Duration::ZERO);
+    let ctx = Context::background();
+    let mut qry = engine.new_instant_query(&ctx, queryable, None, "bigmetric", 0).unwrap();
+    assert!(err_is(&qry.exec(&ctx).err, &PromqlError::TooManySeries(env())));
+    let n = calls.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(MAX_SERIES as usize + 1, n, "expected early termination after exceeding the ceiling");
+    assert!(n < TOTAL_AVAIL, "the whole series set must not be materialized");
+}
+
