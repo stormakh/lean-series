@@ -15,7 +15,9 @@ use std::sync::Arc;
 
 use chunkenc::{Chunk, Encoding};
 use model::labels::{Labels, ScratchBuilder};
-use tsdb_format::chunks::{self, ChunkDiskMapper, ChunkDiskMapperRef, DEFAULT_WRITE_BUFFER_SIZE, Meta};
+use tsdb_format::chunks::{
+    self, ChunkDiskMapper, ChunkDiskMapperRef, DEFAULT_WRITE_BUFFER_SIZE, Meta,
+};
 use tsdb_format::context::Context;
 use tsdb_format::index::{self, Postings as _, StringIter as _};
 use tsdb_format::record::{Decoder, Encoder, Type};
@@ -39,7 +41,10 @@ fn interop_with_go() {
     let root = root();
     let go = root.join("go");
     if !go.exists() {
-        eprintln!("skipped: {} does not exist (run scripts/interop/tsdb-format/run.sh)", go.display());
+        eprintln!(
+            "skipped: {} does not exist (run scripts/interop/tsdb-format/run.sh)",
+            go.display()
+        );
         return;
     }
     let want = fs::read_to_string(root.join("go.dump.txt")).unwrap();
@@ -58,25 +63,40 @@ fn interop_with_go() {
 
 fn compare_dumps(what: &str, want: &str, got: &str) {
     if want == got {
-        eprintln!("ok   {what}: same content ({} dump lines)", got.lines().count());
+        eprintln!(
+            "ok   {what}: same content ({} dump lines)",
+            got.lines().count()
+        );
         return;
     }
     let (wl, gl): (Vec<&str>, Vec<&str>) = (want.lines().collect(), got.lines().collect());
     let mut shown = 0;
     for i in 0..wl.len().max(gl.len()) {
-        let (a, b) = (wl.get(i).copied().unwrap_or(""), gl.get(i).copied().unwrap_or(""));
+        let (a, b) = (
+            wl.get(i).copied().unwrap_or(""),
+            gl.get(i).copied().unwrap_or(""),
+        );
         if a != b && shown < 5 {
             eprintln!("line {}:\n  go:   {:.200}\n  rust: {:.200}", i + 1, a, b);
             shown += 1;
         }
     }
-    panic!("{what}: dump differs from Go's ({} vs {} lines)", wl.len(), gl.len());
+    panic!(
+        "{what}: dump differs from Go's ({} vs {} lines)",
+        wl.len(),
+        gl.len()
+    );
 }
 
 /// Decodes a WAL record with the Rust decoder and encodes it again with the Rust encoder.
 fn reencode(dec: &mut Decoder, rec: &[u8]) -> Vec<u8> {
     let t = dec.r#type(rec);
-    let enc = Encoder { enable_st_storage: matches!(t, Type::SamplesV2 | Type::HistogramSamplesV2 | Type::FloatHistogramSamplesV2) };
+    let enc = Encoder {
+        enable_st_storage: matches!(
+            t,
+            Type::SamplesV2 | Type::HistogramSamplesV2 | Type::FloatHistogramSamplesV2
+        ),
+    };
     let mut b = Vec::new();
     match t {
         Type::Series => {
@@ -113,7 +133,10 @@ fn reencode(dec: &mut Decoder, rec: &[u8]) -> Vec<u8> {
             let mut v = Vec::new();
             dec.histogram_samples(rec, &mut v).unwrap();
             let custom = enc.histogram_samples(&v, &mut b);
-            assert!(custom.is_empty(), "custom bucket histograms in a regular V1 record");
+            assert!(
+                custom.is_empty(),
+                "custom bucket histograms in a regular V1 record"
+            );
         }
         Type::CustomBucketsHistogramSamples => {
             let mut v = Vec::new();
@@ -124,7 +147,10 @@ fn reencode(dec: &mut Decoder, rec: &[u8]) -> Vec<u8> {
             let mut v = Vec::new();
             dec.float_histogram_samples(rec, &mut v).unwrap();
             let custom = enc.float_histogram_samples(&v, &mut b);
-            assert!(custom.is_empty(), "custom bucket histograms in a regular V1 record");
+            assert!(
+                custom.is_empty(),
+                "custom bucket histograms in a regular V1 record"
+            );
         }
         Type::CustomBucketsFloatHistogramSamples => {
             let mut v = Vec::new();
@@ -150,13 +176,19 @@ fn dump_tombstones(dir: &Path, out: &mut String) {
     .unwrap();
     stones.sort_by_key(|s| s.0);
     for (r, ivs) in stones {
-        let is: Vec<String> = ivs.iter().map(|i| format!("{}:{}", i.mint, i.maxt)).collect();
+        let is: Vec<String> = ivs
+            .iter()
+            .map(|i| format!("{}:{}", i.mint, i.maxt))
+            .collect();
         let _ = writeln!(out, "tombstone {r} {}", is.join(" "));
     }
 }
 
-const COMPRESSIONS: [(&str, compression::Type); 3] =
-    [("none", compression::Type::None), ("snappy", compression::Type::Snappy), ("zstd", compression::Type::Zstd)];
+const COMPRESSIONS: [(&str, compression::Type); 3] = [
+    ("none", compression::Type::None),
+    ("snappy", compression::Type::Snappy),
+    ("zstd", compression::Type::Zstd),
+];
 
 /// All records of the numbered segments in `dir` (not the checkpoint).
 fn read_records(dir: &Path) -> Vec<Vec<u8>> {
@@ -191,7 +223,11 @@ fn make_checkpoint(w: &WL, to: i64) {
 
 fn dump_checkpoint(dec: &mut Decoder, name: &str, wdir: &Path, out: &mut String) {
     let (cp, idx) = wlog::last_checkpoint(wdir).unwrap();
-    let _ = writeln!(out, "checkpoint {name} {} {idx}", cp.file_name().unwrap().to_string_lossy());
+    let _ = writeln!(
+        out,
+        "checkpoint {name} {} {idx}",
+        cp.file_name().unwrap().to_string_lossy()
+    );
     let mut md = Vec::new();
     for rec in read_records(&cp) {
         if dec.r#type(&rec) == Type::Metadata {
@@ -203,7 +239,11 @@ fn dump_checkpoint(dec: &mut Decoder, name: &str, wdir: &Path, out: &mut String)
     // Go writes the metadata records from a map, in random order: dump them sorted.
     md.sort_by_key(|m| m.r#ref);
     for m in md {
-        let _ = writeln!(out, "cpmeta {name} {} {} {}\t{}", m.r#ref, m.r#type, m.unit, m.help);
+        let _ = writeln!(
+            out,
+            "cpmeta {name} {} {} {}\t{}",
+            m.r#ref, m.r#type, m.unit, m.help
+        );
     }
 }
 
@@ -217,14 +257,22 @@ fn rewrite_wals(go: &Path, out: &Path) {
     let mut dec = Decoder::new(Default::default());
     for (name, c) in COMPRESSIONS {
         let recs = read_records(&go.join(format!("wal-{name}")));
-        let size = if c == compression::Type::None { WAL_SEGMENT_SIZE } else { COMPRESSED_WAL_SEGMENT_SIZE };
+        let size = if c == compression::Type::None {
+            WAL_SEGMENT_SIZE
+        } else {
+            COMPRESSED_WAL_SEGMENT_SIZE
+        };
         let w = WL::new_size(out.join(format!("wal-{name}")), size, c).unwrap();
         for (i, rec) in recs.iter().enumerate() {
             if i == recs.len() / 2 {
                 w.next_segment().unwrap();
             }
             let again = reencode(&mut dec, rec);
-            assert!(again == *rec, "wal-{name} record {i} (type {}): Rust re-encoding differs from Go", rec[0]);
+            assert!(
+                again == *rec,
+                "wal-{name} record {i} (type {}): Rust re-encoding differs from Go",
+                rec[0]
+            );
             w.log(rec).unwrap();
         }
         let (_, last) = wlog::segments(w.dir()).unwrap();
@@ -246,10 +294,20 @@ struct HeadChunk {
 }
 
 fn read_head_chunks(dir: &Path) -> Vec<HeadChunk> {
-    let cdm = ChunkDiskMapper::new(&dir.join("chunks_head"), None, DEFAULT_WRITE_BUFFER_SIZE, 0).unwrap();
+    let cdm =
+        ChunkDiskMapper::new(&dir.join("chunks_head"), None, DEFAULT_WRITE_BUFFER_SIZE, 0).unwrap();
     let mut out = Vec::new();
     cdm.iterate_all_chunks(|series, r, mint, maxt, num_samples, enc, ooo| {
-        out.push(HeadChunk { series, r, mint, maxt, num_samples, enc: enc.0, ooo, bytes: Vec::new() });
+        out.push(HeadChunk {
+            series,
+            r,
+            mint,
+            maxt,
+            num_samples,
+            enc: enc.0,
+            ooo,
+            bytes: Vec::new(),
+        });
         Ok(())
     })
     .unwrap();
@@ -279,8 +337,10 @@ fn dump_head_chunks(dir: &Path, out: &mut String) {
 
 /// Writes the Go head chunks with the Rust ChunkDiskMapper, cutting a new file where Go's file number changes.
 fn rewrite_head_chunks(go: &Path, out: &Path) {
-    let cdm = ChunkDiskMapper::new(&out.join("chunks_head"), None, DEFAULT_WRITE_BUFFER_SIZE, 0).unwrap();
-    cdm.iterate_all_chunks(|_, _, _, _, _, _, _| Ok(())).unwrap();
+    let cdm =
+        ChunkDiskMapper::new(&out.join("chunks_head"), None, DEFAULT_WRITE_BUFFER_SIZE, 0).unwrap();
+    cdm.iterate_all_chunks(|_, _, _, _, _, _, _| Ok(()))
+        .unwrap();
     let mut prev_file = None;
     for c in read_head_chunks(go) {
         let file = c.r.unpack().0;
@@ -317,11 +377,17 @@ struct BlockSeries {
     chunks: Vec<(u64, i64, i64, u8, Vec<u8>)>,
 }
 
-/// Reads the index and the block chunks of `dir`, writing the index part of the dump to `out`.
-fn read_block(dir: &Path, out: &mut String) -> (Vec<String>, Vec<BlockSeries>) {
+/// Reads the index `name` of `dir` (and the block chunks when `with_chunks`), writing the index part of the
+/// dump to `out`.
+fn read_block(
+    dir: &Path,
+    name: &str,
+    with_chunks: bool,
+    out: &mut String,
+) -> (Vec<String>, Vec<BlockSeries>) {
     let ctx = index::background();
-    let ir = index::Reader::open(&dir.join("index"), index::decode_postings_raw).unwrap();
-    let _ = writeln!(out, "index version {}", ir.version());
+    let ir = index::Reader::open(&dir.join(name), index::decode_postings_raw).unwrap();
+    let _ = writeln!(out, "index {name} version {}", ir.version());
     let mut symbols = Vec::new();
     let mut it = ir.symbols();
     while it.next() {
@@ -334,11 +400,15 @@ fn read_block(dir: &Path, out: &mut String) -> (Vec<String>, Vec<BlockSeries>) {
     for n in &names {
         for v in ir.sorted_label_values(ctx, n, None, &[]).unwrap() {
             let mut p = ir.postings(ctx, n, &[v.as_str()]).unwrap();
-            let refs: Vec<String> = index::expand_postings(&mut *p).unwrap().iter().map(|r| r.to_string()).collect();
+            let refs: Vec<String> = index::expand_postings(&mut *p)
+                .unwrap()
+                .iter()
+                .map(|r| r.to_string())
+                .collect();
             let _ = writeln!(out, "postings {n}\t{v}\t{}", refs.join(" "));
         }
     }
-    let cr = chunks::new_dir_reader(&dir.join("chunks"), None).unwrap();
+    let cr = with_chunks.then(|| chunks::new_dir_reader(&dir.join("chunks"), None).unwrap());
     let (k, v) = index::all_postings_key();
     let mut all = ir.postings(ctx, k, &[v]).unwrap();
     let mut b = ScratchBuilder::new(0);
@@ -348,13 +418,32 @@ fn read_block(dir: &Path, out: &mut String) -> (Vec<String>, Vec<BlockSeries>) {
         metas.clear();
         ir.series(all.at(), &mut b, Some(&mut metas)).unwrap();
         let labels = b.labels();
-        let cs: Vec<String> = metas.iter().map(|m| format!("{}:{}:{}", m.r#ref, m.min_time, m.max_time)).collect();
-        let _ = writeln!(out, "series {}\t{}\t{}", all.at(), lstr(&labels), cs.join(" "));
-        let mut s = BlockSeries { r: all.at(), labels, chunks: Vec::new() };
+        let cs: Vec<String> = metas
+            .iter()
+            .map(|m| format!("{}:{}:{}", m.r#ref, m.min_time, m.max_time))
+            .collect();
+        let _ = writeln!(
+            out,
+            "series {}\t{}\t{}",
+            all.at(),
+            lstr(&labels),
+            cs.join(" ")
+        );
+        let mut s = BlockSeries {
+            r: all.at(),
+            labels,
+            chunks: Vec::new(),
+        };
         for m in &metas {
-            let (enc, bytes) = cr.chunk_bytes(m.r#ref).unwrap();
-            let _ = writeln!(out, "chunk {} {} {}", m.r#ref, enc.0, hex(bytes));
-            s.chunks.push((m.r#ref, m.min_time, m.max_time, enc.0, bytes.to_vec()));
+            let (enc, bytes) = match &cr {
+                Some(cr) => {
+                    let (enc, bytes) = cr.chunk_bytes(m.r#ref).unwrap();
+                    let _ = writeln!(out, "chunk {} {} {}", m.r#ref, enc.0, hex(bytes));
+                    (enc.0, bytes.to_vec())
+                }
+                None => (0, Vec::new()),
+            };
+            s.chunks.push((m.r#ref, m.min_time, m.max_time, enc, bytes));
         }
         series.push(s);
     }
@@ -362,11 +451,17 @@ fn read_block(dir: &Path, out: &mut String) -> (Vec<String>, Vec<BlockSeries>) {
     (symbols, series)
 }
 
-/// Writes the Go block (chunks and index) with the Rust writers.
-fn rewrite_block(go: &Path, out: &Path) {
-    let (symbols, series) = read_block(go, &mut String::new());
-    let mut cw = chunks::new_writer(&out.join("chunks"), &[chunks::with_segment_size(CHUNK_SEGMENT_SIZE)]).unwrap();
-    let mut iw = index::Writer::new(&Context::background(), &out.join("index")).unwrap();
+/// Writes the Go index `name` (and the block chunks when `with_chunks`) with the Rust writers.
+fn rewrite_block(go: &Path, out: &Path, name: &str, with_chunks: bool) {
+    let (symbols, series) = read_block(go, name, with_chunks, &mut String::new());
+    let mut cw = with_chunks.then(|| {
+        chunks::new_writer(
+            &out.join("chunks"),
+            &[chunks::with_segment_size(CHUNK_SEGMENT_SIZE)],
+        )
+        .unwrap()
+    });
+    let mut iw = index::Writer::new(&Context::background(), &out.join(name)).unwrap();
     for s in &symbols {
         iw.add_symbol(s).unwrap();
     }
@@ -374,26 +469,31 @@ fn rewrite_block(go: &Path, out: &Path) {
         let mut metas: Vec<Meta> = s
             .chunks
             .iter()
-            .map(|(_, mint, maxt, enc, b)| Meta {
-                r#ref: 0,
-                chunk: Some(chunkenc::from_data(Encoding(*enc), b.clone()).unwrap()),
+            .map(|(r, mint, maxt, enc, b)| Meta {
+                r#ref: *r,
+                chunk: with_chunks.then(|| chunkenc::from_data(Encoding(*enc), b.clone()).unwrap()),
                 min_time: *mint,
                 max_time: *maxt,
             })
             .collect();
-        cw.write_chunks(&mut metas).unwrap();
-        for (m, c) in metas.iter().zip(&s.chunks) {
-            assert_eq!(m.r#ref, c.0, "block chunk ref differs from Go's");
+        if let Some(cw) = &mut cw {
+            cw.write_chunks(&mut metas).unwrap();
+            for (m, c) in metas.iter().zip(&s.chunks) {
+                assert_eq!(m.r#ref, c.0, "block chunk ref differs from Go's");
+            }
         }
         iw.add_series(s.r, &s.labels, &metas).unwrap();
     }
-    cw.close().unwrap();
+    if let Some(mut cw) = cw {
+        cw.close().unwrap();
+    }
     iw.close().unwrap();
 }
 
 fn dump(dir: &Path) -> String {
     let mut out = String::new();
-    read_block(dir, &mut out);
+    read_block(dir, "index", true, &mut out);
+    read_block(dir, "index-large", false, &mut out);
     dump_head_chunks(dir, &mut out);
     dump_wals(dir, &mut out);
     dump_tombstones(dir, &mut out);
@@ -401,7 +501,8 @@ fn dump(dir: &Path) -> String {
 }
 
 fn rewrite(go: &Path, out: &Path) {
-    rewrite_block(go, out);
+    rewrite_block(go, out, "index", true);
+    rewrite_block(go, out, "index-large", false);
     rewrite_head_chunks(go, out);
     rewrite_wals(go, out);
     let (tr, _) = tombstones::read_tombstones(go).unwrap();

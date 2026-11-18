@@ -10,6 +10,7 @@
 // Layout of <root>/go and <root>/rust:
 //
 //	index                      block index (format v2) of all series
+//	index-large                index without chunk files: 3000 unicode series, chunk refs above 2^40, negative times
 //	chunks/000001...           block chunk segments (small segment size, so there are several)
 //	chunks_head/000001...      head chunk files written by ChunkDiskMapper (two files, some OOO chunks)
 //	wal-none/, wal-snappy/, wal-zstd/  WAL segments with every record type, plus one checkpoint each
@@ -47,13 +48,13 @@ import (
 
 // Parameters shared with the Rust side (crates/tsdb-format/tests/interop_test.rs).
 const (
-	numSeries         = 300
-	chunkSegmentSize  = 64 * 1024
-	walSegmentSize    = 4 * 32 * 1024
+	numSeries        = 300
+	chunkSegmentSize = 64 * 1024
+	walSegmentSize   = 4 * 32 * 1024
 	// compressedWALSegmentSize is large enough that snappy and zstd WALs never cut a segment because it is full.
 	compressedWALSegmentSize = 32 * 32 * 1024
-	checkpointMint    = 1_000_000
-	headCutAfterChunk = 150
+	checkpointMint           = 1_000_000
+	headCutAfterChunk        = 150
 )
 
 var logger = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -317,24 +318,10 @@ func write(root string) error {
 	}
 	must(cw.Close())
 
-	iw, err := index.NewWriter(context.Background(), filepath.Join(dir, "index"))
-	must(err)
-	syms := map[string]struct{}{}
-	for _, ls := range lsets {
-		ls.Range(func(l labels.Label) { syms[l.Name] = struct{}{}; syms[l.Value] = struct{}{} })
-	}
-	var symList []string
-	for s := range syms {
-		symList = append(symList, s)
-	}
-	sort.Strings(symList)
-	for _, s := range symList {
-		must(iw.AddSymbol(s))
-	}
-	for i, ls := range lsets {
-		must(iw.AddSeries(storage.SeriesRef(i+1), ls, metas[i]...))
-	}
-	must(iw.Close())
+	writeIndex(filepath.Join(dir, "index"), lsets, metas)
+	// A second index without chunk files: many unicode series, chunk refs above 2^40 and negative times.
+	llsets, lmetas := largeIndexContent()
+	writeIndex(filepath.Join(dir, "index-large"), llsets, lmetas)
 
 	// Head chunks.
 	cdm, err := chunks.NewChunkDiskMapper(nil, filepath.Join(dir, "chunks_head"), chunkenc.NewPool(), chunks.DefaultWriteBufferSize, chunks.DefaultWriteQueueSize)
@@ -402,6 +389,48 @@ func write(root string) error {
 	return os.WriteFile(filepath.Join(root, "go.dump.txt"), []byte(s), 0o644)
 }
 
+func writeIndex(path string, lsets []labels.Labels, metas [][]chunks.Meta) {
+	iw, err := index.NewWriter(context.Background(), path)
+	must(err)
+	syms := map[string]struct{}{}
+	for _, ls := range lsets {
+		ls.Range(func(l labels.Label) { syms[l.Name] = struct{}{}; syms[l.Value] = struct{}{} })
+	}
+	var symList []string
+	for s := range syms {
+		symList = append(symList, s)
+	}
+	sort.Strings(symList)
+	for _, s := range symList {
+		must(iw.AddSymbol(s))
+	}
+	for i, ls := range lsets {
+		must(iw.AddSeries(storage.SeriesRef(i+1), ls, metas[i]...))
+	}
+	must(iw.Close())
+}
+
+func largeIndexContent() ([]labels.Labels, [][]chunks.Meta) {
+	var lsets []labels.Labels
+	for i := 0; i < 3000; i++ {
+		lsets = append(lsets, labels.FromStrings(
+			"__name__", fmt.Sprintf("syn_%d", i%3),
+			"a", fmt.Sprintf("ü-%d", i%37),
+			"b", fmt.Sprintf("%05d", i),
+			"c", fmt.Sprintf("日本%d", i%5),
+		))
+	}
+	sort.Slice(lsets, func(i, j int) bool { return labels.Compare(lsets[i], lsets[j]) < 0 })
+	metas := make([][]chunks.Meta, len(lsets))
+	for i := range lsets {
+		for k := 0; k < 1+i%4; k++ {
+			mint := -1_000_000_000_000 + int64(i)*1000 + int64(k)*100
+			metas[i] = append(metas[i], chunks.Meta{Ref: chunks.ChunkRef(1<<41 + uint64(i)*1000 + uint64(k)*8), MinTime: mint, MaxTime: mint + 50})
+		}
+	}
+	return lsets, metas
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Dump.
 
@@ -421,39 +450,55 @@ func lstr(ls labels.Labels) string {
 func dump(dir string) (string, error) {
 	var out strings.Builder
 	p := func(format string, args ...any) { fmt.Fprintf(&out, format+"\n", args...) }
-	ctx := context.Background()
 
 	// Index and block chunks.
-	ir, err := index.NewFileReader(filepath.Join(dir, "index"), index.DecodePostingsRaw)
+	cr, err := chunks.NewDirReader(filepath.Join(dir, "chunks"), nil)
 	if err != nil {
-		return "", fmt.Errorf("open index: %w", err)
+		return "", fmt.Errorf("open chunks: %w", err)
 	}
-	p("index version %d", ir.Version())
+	if err := dumpIndex(p, filepath.Join(dir, "index"), cr); err != nil {
+		return "", err
+	}
+	must(cr.Close())
+	if err := dumpIndex(p, filepath.Join(dir, "index-large"), nil); err != nil {
+		return "", err
+	}
+	return dumpRest(p, &out, dir)
+}
+
+// dumpIndex dumps the index at path; with a chunk reader it also dumps the chunks of every series.
+func dumpIndex(p func(string, ...any), path string, cr *chunks.Reader) error {
+	ctx := context.Background()
+	ir, err := index.NewFileReader(path, index.DecodePostingsRaw)
+	if err != nil {
+		return fmt.Errorf("open index: %w", err)
+	}
+	p("index %s version %d", filepath.Base(path), ir.Version())
 	it := ir.Symbols()
 	for it.Next() {
 		p("symbol %s", it.At())
 	}
 	if it.Err() != nil {
-		return "", it.Err()
+		return it.Err()
 	}
 	names, err := ir.LabelNames(ctx)
 	if err != nil {
-		return "", err
+		return err
 	}
 	p("labelnames %s", strings.Join(names, " "))
 	for _, n := range names {
 		vals, err := ir.SortedLabelValues(ctx, n, nil)
 		if err != nil {
-			return "", err
+			return err
 		}
 		for _, v := range vals {
 			pp, err := ir.Postings(ctx, n, v)
 			if err != nil {
-				return "", err
+				return err
 			}
 			refs, err := index.ExpandPostings(pp)
 			if err != nil {
-				return "", err
+				return err
 			}
 			var rs []string
 			for _, r := range refs {
@@ -462,20 +507,16 @@ func dump(dir string) (string, error) {
 			p("postings %s\t%s\t%s", n, v, strings.Join(rs, " "))
 		}
 	}
-	cr, err := chunks.NewDirReader(filepath.Join(dir, "chunks"), nil)
-	if err != nil {
-		return "", fmt.Errorf("open chunks: %w", err)
-	}
 	k, v := index.AllPostingsKey()
 	all, err := ir.Postings(ctx, k, v)
 	if err != nil {
-		return "", err
+		return err
 	}
 	var b labels.ScratchBuilder
 	var metas []chunks.Meta
 	for all.Next() {
 		if err := ir.Series(all.At(), &b, &metas); err != nil {
-			return "", err
+			return err
 		}
 		var cs []string
 		for _, m := range metas {
@@ -483,22 +524,27 @@ func dump(dir string) (string, error) {
 		}
 		p("series %d\t%s\t%s", all.At(), lstr(b.Labels()), strings.Join(cs, " "))
 		for _, m := range metas {
+			if cr == nil {
+				break
+			}
 			c, iterable, err := cr.ChunkOrIterable(m)
 			if err != nil {
-				return "", err
+				return err
 			}
 			if iterable != nil {
-				return "", errors.New("unexpected iterable")
+				return errors.New("unexpected iterable")
 			}
 			p("chunk %d %d %s", m.Ref, c.Encoding(), hex.EncodeToString(c.Bytes()))
 		}
 	}
 	if all.Err() != nil {
-		return "", all.Err()
+		return all.Err()
 	}
-	must(cr.Close())
-	must(ir.Close())
+	return ir.Close()
+}
 
+// dumpRest dumps the head chunks, WALs, checkpoints and tombstones of dir.
+func dumpRest(p func(string, ...any), out *strings.Builder, dir string) (string, error) {
 	// Head chunks.
 	cdm, err := chunks.NewChunkDiskMapper(nil, filepath.Join(dir, "chunks_head"), chunkenc.NewPool(), chunks.DefaultWriteBufferSize, chunks.DefaultWriteQueueSize)
 	if err != nil {
@@ -637,7 +683,7 @@ func verify(root string) error {
 	// Byte-identical files (deterministic formats). Snappy and zstd segments depend on the compressor
 	// implementation, so they are reported but not required.
 	gdir, rdir := filepath.Join(root, "go"), filepath.Join(root, "rust")
-	required := []string{"index", "chunks", "chunks_head", "wal-none"}
+	required := []string{"index", "index-large", "chunks", "chunks_head", "wal-none"}
 	optional := []string{"wal-snappy", "wal-zstd"}
 	for _, group := range [][]string{required, optional} {
 		for _, name := range group {
@@ -718,4 +764,3 @@ func listFiles(dir string) ([]string, error) {
 	sort.Strings(out)
 	return out, err
 }
-
