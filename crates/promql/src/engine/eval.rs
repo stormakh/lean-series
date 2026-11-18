@@ -13,13 +13,14 @@ use model::schema::{self, METRIC_TYPE_LABEL, METRIC_UNIT_LABEL};
 use model::value::is_stale_nan;
 use storage::annotations as annos;
 use storage::{
-    Annotations, BoxSeriesSet, BufferedSeriesIterator, Context, Error, MemoizedSeriesIterator, Querier, SeriesArc,
-    new_buffer, new_memoized_empty_iterator, new_memoized_iterator,
+    Annotations, BoxSeriesSet, Context, Error, MemoizedSeriesIterator, Querier, SeriesArc,
+    new_memoized_empty_iterator, new_memoized_iterator,
 };
 use util::stats::{QuerySamples, QueryTiming, SubqueryConsumer};
 
 use super::*;
 use super::fasthash::{FxMap, HashKeyMap};
+use super::guard::{GuardFailure, MatrixIter, guard_error};
 use crate::functions::{self, FunctionCall};
 use crate::histogram_stats_iterator::HistogramStatsIterator;
 use crate::parser::{
@@ -1087,6 +1088,9 @@ impl<'a> Evaluator<'a> {
             let mut ts = self.start_timestamp;
             let mut step = 0usize;
             while ts <= self.end_timestamp {
+                if self.budget.is_some() {
+                    self.check_ctx(ENV)?;
+                }
                 let lookup = at_timestamp.unwrap_or(ts);
                 if let Some((_, orig_t, f, h)) = self.vector_selector_single(&mut it, offset_ns, lookup)? {
                     match h {
@@ -1218,7 +1222,7 @@ impl<'a> Evaluator<'a> {
         pos: storage::annotations::PositionRange,
     ) -> EvalResult<(Matrix, Annotations)> {
         let dur = self.end_timestamp - self.start_timestamp;
-        let mut it = new_buffer(dur + 2 * self.lookback_ms());
+        let mut it = self.new_matrix_iterator(dur + 2 * self.lookback_ms());
         let off_ms = dur_ms(offset_ns);
         let lb = self.lookback_ms();
         let mut mat = Vec::with_capacity(series.len());
@@ -1315,7 +1319,7 @@ impl<'a> Evaluator<'a> {
             retrieve_sts = true;
         }
         let (series, ws) = self.check_and_expand_series_set(vs)?;
-        let mut it = new_buffer(buffer_range);
+        let mut it = self.new_matrix_iterator(buffer_range);
         let mut matrix = Vec::with_capacity(series.len());
         for s in series.iter() {
             self.check_ctx("expression evaluation")?;
@@ -1346,12 +1350,31 @@ impl<'a> Evaluator<'a> {
         Ok((matrix, ws))
     }
 
+    /// Go `newMatrixIterator`.
+    pub(crate) fn new_matrix_iterator(&self, delta: i64) -> MatrixIter<'a> {
+        MatrixIter::new(self.ctx, self.budget, delta)
+    }
+
+    /// Go `matrixIterator.checkContext`: fails when the guard saw a cancellation or an exceeded budget.
+    #[inline]
+    pub(crate) fn guard_check(&mut self, it: &MatrixIter<'_>) -> EvalResult<()> {
+        let Some(g) = &it.guard else { return Ok(()) };
+        let failure = match g.failed.borrow_mut().take() {
+            Some(f) => Some(f),
+            None => context_done(self.ctx, ENV).err().map(GuardFailure::Context),
+        };
+        match failure {
+            None => Ok(()),
+            Some(f) => Err(guard_error(g, f, &mut |n, step| self.consume_matrix_samples(n, step))),
+        }
+    }
+
     /// Go `matrixIterSlice`: fills `floats` and `histograms` with the points in `(mint, maxt]`, keeping the
     /// points of the previous step that are still in range.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn matrix_iter_slice(
         &mut self,
-        it: &mut BufferedSeriesIterator<'_>,
+        it: &mut MatrixIter<'_>,
         mint: i64,
         maxt: i64,
         floats: &mut Vec<FPoint>,
@@ -1359,6 +1382,10 @@ impl<'a> Evaluator<'a> {
         mut sts: Option<&mut StartTimestamps>,
         read_step: isize,
     ) -> EvalResult<()> {
+        if let Some(g) = &it.guard {
+            g.begin_frame(read_step);
+        }
+        self.guard_check(it)?;
         let mut mint_floats = mint;
         let mut mint_histograms = mint;
 
@@ -1401,16 +1428,18 @@ impl<'a> Evaluator<'a> {
             return Ok(());
         }
 
-        let sought = it.seek(maxt);
+        let sought = it.seek(mint_floats, mint_histograms, maxt);
+        self.guard_check(it)?;
         if sought == VT::None {
-            if let Some(e) = it.err() {
+            if let Some(e) = it.buf.err() {
                 return Err(Error::Chunk(e.clone()));
             }
         }
 
         {
-            let mut buf = it.buffer();
+            let mut buf = it.buf.buffer();
             loop {
+                self.guard_check(it)?;
                 match buf.next() {
                     VT::None => break,
                     VT::FloatHistogram | VT::Histogram => {
@@ -1457,10 +1486,11 @@ impl<'a> Evaluator<'a> {
             }
         }
 
+        self.guard_check(it)?;
         match sought {
             VT::FloatHistogram | VT::Histogram => {
-                if it.at_t() == maxt {
-                    let (t, fh) = it.at_float_histogram(None);
+                if it.buf.at_t() == maxt {
+                    let (t, fh) = it.buf.at_float_histogram(None);
                     if !is_stale_nan(fh.sum) {
                         let p = HPoint { t, h: Arc::new(fh) };
                         let size = p.size();
@@ -1469,13 +1499,13 @@ impl<'a> Evaluator<'a> {
                         self.check_samples()?;
                         histograms.push(p);
                         if let Some(s) = sts.as_deref_mut() {
-                            s.histograms.push(it.at_st());
+                            s.histograms.push(it.buf.at_st());
                         }
                     }
                 }
             }
             VT::Float => {
-                let (t, f) = it.at();
+                let (t, f) = it.buf.at();
                 if t == maxt && !is_stale_nan(f) {
                     self.consume_matrix_samples(1, read_step)?;
                     self.current_samples += 1;
@@ -1485,7 +1515,7 @@ impl<'a> Evaluator<'a> {
                     }
                     floats.push(FPoint { t, f });
                     if let Some(s) = sts.as_deref_mut() {
-                        s.floats.push(it.at_st());
+                        s.floats.push(it.buf.at_st());
                     }
                 }
             }
@@ -1758,7 +1788,7 @@ impl<'a> Evaluator<'a> {
         enh.offset = arg.offset;
         enh.anchored = arg.anchored;
         enh.smoothed = arg.smoothed;
-        let mut it = new_buffer(buffer_range);
+        let mut it = self.new_matrix_iterator(buffer_range);
         let use_sts = self.use_start_timestamps && matches!(name, "rate" | "irate" | "increase" | "resets");
         if use_sts {
             enh.start_timestamps = Some(StartTimestamps::default());

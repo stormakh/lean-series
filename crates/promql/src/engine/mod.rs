@@ -10,6 +10,8 @@
 mod aggregate;
 mod binop;
 pub(crate) mod fasthash;
+mod guard;
+pub use guard::MatrixIter;
 pub(crate) mod eval;
 mod preprocess;
 
