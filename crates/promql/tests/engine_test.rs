@@ -470,3 +470,248 @@ fn test_query_logger_error() {
     assert!(f1.close().is_ok());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// -----------------------------------------------------------------------------------------------------------------
+// Query statistics and max samples.
+
+use promql::promqltest::{self, TestStorage};
+
+struct StatsCase {
+    query: &'static str,
+    skip_max_check: bool,
+    total_samples: i64,
+    total_samples_per_step: Vec<(i64, i64)>,
+    samples_read: i64,
+    samples_read_per_step: Vec<(i64, i64)>,
+    peak_samples: usize,
+    start: i64,
+    end: i64,
+    interval: i64,
+}
+
+fn run_stats_query(
+    engine: &Engine,
+    st: &TestStorage,
+    opts: &promql::QueryOpts,
+    query: &str,
+    start: i64,
+    end: i64,
+    interval: i64,
+) -> (Option<Error>, util::stats::Statistics) {
+    let ctx = Context::background();
+    let q: Arc<dyn storage::Queryable> = Arc::new(st.clone());
+    let mut qry = if interval == 0 {
+        engine.new_instant_query(&ctx, q, Some(opts), query, start).unwrap()
+    } else {
+        engine.new_range_query(&ctx, q, Some(opts), query, start, end, interval).unwrap()
+    };
+    let res = qry.exec(&ctx);
+    (res.err, qry.stats())
+}
+
+fn is_too_many_samples(e: &Option<Error>) -> bool {
+    matches!(e.as_ref().and_then(PromqlError::find), Some(PromqlError::TooManySamples(env)) if env == "query execution")
+}
+
+fn to_map(v: &[(i64, i64)]) -> std::collections::HashMap<i64, i64> {
+    v.iter().copied().collect()
+}
+
+#[test]
+fn test_query_statistics() {
+    let st = promqltest::loaded_storage(
+        r#"
+load 10s
+  metricWith1SampleEvery10Seconds 1+1x100
+  metricWith3SampleEvery10Seconds{a="1",b="1"} 1+1x100
+  metricWith3SampleEvery10Seconds{a="2",b="2"} 1+1x100
+  metricWith3SampleEvery10Seconds{a="3",b="2"} 1+1x100
+  metricWith1HistogramEvery10Seconds {{schema:1 count:5 sum:20 buckets:[1 2 1 1]}}+{{schema:1 count:10 sum:5 buckets:[1 2 3 4]}}x100
+"#,
+    )
+    .unwrap();
+    let mut failures = Vec::new();
+    for c in stats_cases() {
+        // Per-step stats enabled.
+        let opts = promql::QueryOpts::new(true, Duration::ZERO, None);
+        let engine = promqltest::new_test_engine(true, Duration::ZERO, promqltest::DEFAULT_MAX_SAMPLES_PER_QUERY);
+        let (err, stats) = run_stats_query(&engine, &st, &opts, c.query, c.start, c.end, c.interval);
+        let s = stats.samples.unwrap();
+        let mut check = |what: &str, ok: bool, detail: String| {
+            if !ok {
+                failures.push(format!("{}: {}: {}", c.query, what, detail));
+            }
+        };
+        check("error", err.is_none(), format!("{:?}", err));
+        check("Total samples mismatch", c.total_samples == s.total_samples, format!("{} != {}", c.total_samples, s.total_samples));
+        check(
+            "Total samples per time mismatch",
+            Some(to_map(&c.total_samples_per_step)) == s.total_samples_per_step_map(),
+            format!("{:?} != {:?}", c.total_samples_per_step, s.total_samples_per_step_map()),
+        );
+        check("Samples read mismatch", c.samples_read == s.samples_read, format!("{} != {}", c.samples_read, s.samples_read));
+        check(
+            "Samples read per step mismatch",
+            Some(to_map(&c.samples_read_per_step)) == s.samples_read_per_step_map(),
+            format!("{:?} != {:?}", c.samples_read_per_step, s.samples_read_per_step_map()),
+        );
+        check("Peak samples mismatch", c.peak_samples == s.peak_samples, format!("{} != {}", c.peak_samples, s.peak_samples));
+        if c.interval != 0 {
+            for &(ts, total) in &c.total_samples_per_step {
+                let (_, is) = run_stats_query(&engine, &st, &opts, c.query, ts, 0, 0);
+                let got = is.samples.unwrap().total_samples;
+                check("Instant query total", total == got, format!("at {}: {} != {}", ts, total, got));
+            }
+        }
+        if !c.skip_max_check {
+            let engine = promqltest::new_test_engine(true, Duration::ZERO, s.peak_samples.saturating_sub(1));
+            let (err, _) = run_stats_query(&engine, &st, &opts, c.query, c.start, c.end, c.interval);
+            check("max samples", is_too_many_samples(&err), format!("{:?}", err));
+        }
+
+        // Per-step stats disabled.
+        let opts = promql::QueryOpts::new(false, Duration::ZERO, None);
+        let engine = promqltest::new_test_engine(false, Duration::ZERO, promqltest::DEFAULT_MAX_SAMPLES_PER_QUERY);
+        let (err, stats) = run_stats_query(&engine, &st, &opts, c.query, c.start, c.end, c.interval);
+        let s = stats.samples.unwrap();
+        check("error (per step disabled)", err.is_none(), format!("{:?}", err));
+        check("TotalSamples (per step disabled)", c.total_samples == s.total_samples, format!("{} != {}", c.total_samples, s.total_samples));
+        check("SamplesRead (per step disabled)", c.samples_read == s.samples_read, format!("{} != {}", c.samples_read, s.samples_read));
+    }
+    assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.join("\n"));
+}
+
+#[test]
+fn test_max_query_samples() {
+    let st = promqltest::loaded_storage(
+        r#"
+load 10s
+  metric 1+1x100
+  bigmetric{a="1"} 1+1x100
+  bigmetric{a="2"} 1+1x100
+  metricWith1HistogramEvery10Seconds {{schema:1 count:5 sum:20 buckets:[1 2 1 1]}}+{{schema:1 count:10 sum:5 buckets:[1 2 3 4]}}x100
+"#,
+    )
+    .unwrap();
+    let mut failures = Vec::new();
+    for (query, max_samples, start, end, interval) in max_samples_cases() {
+        let opts = promql::QueryOpts::default();
+        let engine = promqltest::new_test_engine(false, Duration::ZERO, max_samples);
+        let (err, stats) = run_stats_query(&engine, &st, &opts, query, start, end, interval);
+        if err.is_some() {
+            failures.push(format!("{}: unexpected error {:?}", query, err));
+        } else if stats.samples.as_ref().unwrap().peak_samples != max_samples {
+            failures.push(format!(
+                "{}: peak samples mismatch: want {} got {}",
+                query,
+                max_samples,
+                stats.samples.as_ref().unwrap().peak_samples
+            ));
+        }
+        let engine = promqltest::new_test_engine(false, Duration::ZERO, max_samples - 1);
+        let (err, _) = run_stats_query(&engine, &st, &opts, query, start, end, interval);
+        if !is_too_many_samples(&err) {
+            failures.push(format!("{}: expected too many samples, got {:?}", query, err));
+        }
+    }
+    assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.join("\n"));
+}
+
+// Generated from upstream TestQueryStatistics.
+fn stats_cases() -> Vec<StatsCase> {
+    vec![
+        StatsCase { query: r#""literal string""#, skip_max_check: true, total_samples: 0, total_samples_per_step: vec![(21000, 0)], samples_read: 0, samples_read_per_step: vec![(21000, 0)], peak_samples: 0, start: 21000, end: 0, interval: 0 },
+        StatsCase { query: "1", skip_max_check: false, total_samples: 0, total_samples_per_step: vec![(21000, 0)], samples_read: 0, samples_read_per_step: vec![(21000, 0)], peak_samples: 1, start: 21000, end: 0, interval: 0 },
+        StatsCase { query: "metricWith1SampleEvery10Seconds", skip_max_check: false, total_samples: 1, total_samples_per_step: vec![(21000, 1)], samples_read: 1, samples_read_per_step: vec![(21000, 1)], peak_samples: 1, start: 21000, end: 0, interval: 0 },
+        StatsCase { query: "metricWith1HistogramEvery10Seconds", skip_max_check: false, total_samples: 13, total_samples_per_step: vec![(21000, 13)], samples_read: 13, samples_read_per_step: vec![(21000, 13)], peak_samples: 13, start: 21000, end: 0, interval: 0 },
+        StatsCase { query: "timestamp(metricWith1SampleEvery10Seconds)", skip_max_check: false, total_samples: 1, total_samples_per_step: vec![(21000, 1)], samples_read: 1, samples_read_per_step: vec![(21000, 1)], peak_samples: 2, start: 21000, end: 0, interval: 0 },
+        StatsCase { query: "timestamp(metricWith1HistogramEvery10Seconds)", skip_max_check: false, total_samples: 1, total_samples_per_step: vec![(21000, 1)], samples_read: 1, samples_read_per_step: vec![(21000, 1)], peak_samples: 2, start: 21000, end: 0, interval: 0 },
+        StatsCase { query: "metricWith1SampleEvery10Seconds", skip_max_check: false, total_samples: 1, total_samples_per_step: vec![(22000, 1)], samples_read: 1, samples_read_per_step: vec![(22000, 1)], peak_samples: 1, start: 22000, end: 0, interval: 0 },
+        StatsCase { query: "metricWith1SampleEvery10Seconds offset 10s", skip_max_check: false, total_samples: 1, total_samples_per_step: vec![(21000, 1)], samples_read: 1, samples_read_per_step: vec![(21000, 1)], peak_samples: 1, start: 21000, end: 0, interval: 0 },
+        StatsCase { query: "metricWith1SampleEvery10Seconds @ 15", skip_max_check: false, total_samples: 1, total_samples_per_step: vec![(21000, 1)], samples_read: 1, samples_read_per_step: vec![(21000, 1)], peak_samples: 1, start: 21000, end: 0, interval: 0 },
+        StatsCase { query: r#"metricWith3SampleEvery10Seconds{a="1"}"#, skip_max_check: false, total_samples: 1, total_samples_per_step: vec![(21000, 1)], samples_read: 1, samples_read_per_step: vec![(21000, 1)], peak_samples: 1, start: 21000, end: 0, interval: 0 },
+        StatsCase { query: r#"metricWith3SampleEvery10Seconds{a="1"} @ 19"#, skip_max_check: false, total_samples: 1, total_samples_per_step: vec![(21000, 1)], samples_read: 1, samples_read_per_step: vec![(21000, 1)], peak_samples: 1, start: 21000, end: 0, interval: 0 },
+        StatsCase { query: r#"metricWith3SampleEvery10Seconds{a="1"}[20s] @ 19"#, skip_max_check: false, total_samples: 2, total_samples_per_step: vec![(21000, 2)], samples_read: 2, samples_read_per_step: vec![(21000, 2)], peak_samples: 2, start: 21000, end: 0, interval: 0 },
+        StatsCase { query: "metricWith3SampleEvery10Seconds", skip_max_check: false, total_samples: 3, total_samples_per_step: vec![(21000, 3)], samples_read: 3, samples_read_per_step: vec![(21000, 3)], peak_samples: 3, start: 21000, end: 0, interval: 0 },
+        StatsCase { query: "metricWith1SampleEvery10Seconds[60s]", skip_max_check: false, total_samples: 6, total_samples_per_step: vec![(201000, 6)], samples_read: 6, samples_read_per_step: vec![(201000, 6)], peak_samples: 6, start: 201000, end: 0, interval: 0 },
+        StatsCase { query: "metricWith1HistogramEvery10Seconds[60s]", skip_max_check: false, total_samples: 78, total_samples_per_step: vec![(201000, 78)], samples_read: 78, samples_read_per_step: vec![(201000, 78)], peak_samples: 78, start: 201000, end: 0, interval: 0 },
+        StatsCase { query: "max_over_time(metricWith1SampleEvery10Seconds[60s])[20s:5s]", skip_max_check: false, total_samples: 24, total_samples_per_step: vec![(201000, 24)], samples_read: 8, samples_read_per_step: vec![(201000, 8)], peak_samples: 10, start: 201000, end: 0, interval: 0 },
+        StatsCase { query: "max_over_time(metricWith1SampleEvery10Seconds[61s])[20s:5s]", skip_max_check: false, total_samples: 26, total_samples_per_step: vec![(201000, 26)], samples_read: 8, samples_read_per_step: vec![(201000, 8)], peak_samples: 11, start: 201000, end: 0, interval: 0 },
+        StatsCase { query: "max_over_time(metricWith1HistogramEvery10Seconds[60s])[20s:5s]", skip_max_check: false, total_samples: 312, total_samples_per_step: vec![(201000, 312)], samples_read: 104, samples_read_per_step: vec![(201000, 104)], peak_samples: 78, start: 201000, end: 0, interval: 0 },
+        StatsCase { query: "metricWith1SampleEvery10Seconds[60s] @ 30", skip_max_check: false, total_samples: 4, total_samples_per_step: vec![(201000, 4)], samples_read: 4, samples_read_per_step: vec![(201000, 4)], peak_samples: 4, start: 201000, end: 0, interval: 0 },
+        StatsCase { query: "metricWith1HistogramEvery10Seconds[60s] @ 30", skip_max_check: false, total_samples: 52, total_samples_per_step: vec![(201000, 52)], samples_read: 52, samples_read_per_step: vec![(201000, 52)], peak_samples: 52, start: 201000, end: 0, interval: 0 },
+        StatsCase { query: "sum(max_over_time(metricWith3SampleEvery10Seconds[60s] @ 30))", skip_max_check: false, total_samples: 12, total_samples_per_step: vec![(201000, 12)], samples_read: 12, samples_read_per_step: vec![(201000, 12)], peak_samples: 7, start: 201000, end: 0, interval: 0 },
+        StatsCase { query: "sum by (b) (max_over_time(metricWith3SampleEvery10Seconds[60s] @ 30))", skip_max_check: false, total_samples: 12, total_samples_per_step: vec![(201000, 12)], samples_read: 12, samples_read_per_step: vec![(201000, 12)], peak_samples: 7, start: 201000, end: 0, interval: 0 },
+        StatsCase { query: "metricWith1SampleEvery10Seconds[60s] offset 10s", skip_max_check: false, total_samples: 6, total_samples_per_step: vec![(201000, 6)], samples_read: 6, samples_read_per_step: vec![(201000, 6)], peak_samples: 6, start: 201000, end: 0, interval: 0 },
+        StatsCase { query: "metricWith3SampleEvery10Seconds[60s]", skip_max_check: false, total_samples: 18, total_samples_per_step: vec![(201000, 18)], samples_read: 18, samples_read_per_step: vec![(201000, 18)], peak_samples: 18, start: 201000, end: 0, interval: 0 },
+        StatsCase { query: "max_over_time(metricWith1SampleEvery10Seconds[60s])", skip_max_check: false, total_samples: 6, total_samples_per_step: vec![(201000, 6)], samples_read: 6, samples_read_per_step: vec![(201000, 6)], peak_samples: 7, start: 201000, end: 0, interval: 0 },
+        StatsCase { query: "absent_over_time(metricWith1SampleEvery10Seconds[60s])", skip_max_check: false, total_samples: 6, total_samples_per_step: vec![(201000, 6)], samples_read: 6, samples_read_per_step: vec![(201000, 6)], peak_samples: 7, start: 201000, end: 0, interval: 0 },
+        StatsCase { query: "max_over_time(metricWith3SampleEvery10Seconds[60s])", skip_max_check: false, total_samples: 18, total_samples_per_step: vec![(201000, 18)], samples_read: 18, samples_read_per_step: vec![(201000, 18)], peak_samples: 9, start: 201000, end: 0, interval: 0 },
+        StatsCase { query: "metricWith1SampleEvery10Seconds[60s:5s]", skip_max_check: false, total_samples: 12, total_samples_per_step: vec![(201000, 12)], samples_read: 12, samples_read_per_step: vec![(201000, 12)], peak_samples: 12, start: 201000, end: 0, interval: 0 },
+        StatsCase { query: "metricWith1SampleEvery10Seconds[60s:5s] offset 10s", skip_max_check: false, total_samples: 12, total_samples_per_step: vec![(201000, 12)], samples_read: 12, samples_read_per_step: vec![(201000, 12)], peak_samples: 12, start: 201000, end: 0, interval: 0 },
+        StatsCase { query: "max_over_time(metricWith3SampleEvery10Seconds[60s:5s])", skip_max_check: false, total_samples: 36, total_samples_per_step: vec![(201000, 36)], samples_read: 36, samples_read_per_step: vec![(201000, 36)], peak_samples: 51, start: 201000, end: 0, interval: 0 },
+        StatsCase { query: "sum(max_over_time(metricWith3SampleEvery10Seconds[60s:5s])) + sum(max_over_time(metricWith3SampleEvery10Seconds[60s:5s]))", skip_max_check: false, total_samples: 72, total_samples_per_step: vec![(201000, 72)], samples_read: 72, samples_read_per_step: vec![(201000, 72)], peak_samples: 52, start: 201000, end: 0, interval: 0 },
+        StatsCase { query: r#"metricWith3SampleEvery10Seconds{a="1"}"#, skip_max_check: false, total_samples: 4, total_samples_per_step: vec![(201000, 1), (206000, 1), (211000, 1), (216000, 1)], samples_read: 4, samples_read_per_step: vec![(201000, 1), (206000, 1), (211000, 1), (216000, 1)], peak_samples: 4, start: 201000, end: 220000, interval: 5000 },
+        StatsCase { query: r#"metricWith3SampleEvery10Seconds{a="1"}"#, skip_max_check: false, total_samples: 4, total_samples_per_step: vec![(204000, 1), (209000, 1), (214000, 1), (219000, 1)], samples_read: 4, samples_read_per_step: vec![(204000, 1), (209000, 1), (214000, 1), (219000, 1)], peak_samples: 4, start: 204000, end: 223000, interval: 5000 },
+        StatsCase { query: r#"metricWith1HistogramEvery10Seconds"#, skip_max_check: false, total_samples: 52, total_samples_per_step: vec![(204000, 13), (209000, 13), (214000, 13), (219000, 13)], samples_read: 52, samples_read_per_step: vec![(204000, 13), (209000, 13), (214000, 13), (219000, 13)], peak_samples: 52, start: 204000, end: 223000, interval: 5000 },
+        StatsCase { query: "timestamp(metricWith1SampleEvery10Seconds)", skip_max_check: false, total_samples: 4, total_samples_per_step: vec![(201000, 1), (206000, 1), (211000, 1), (216000, 1)], samples_read: 4, samples_read_per_step: vec![(201000, 1), (206000, 1), (211000, 1), (216000, 1)], peak_samples: 5, start: 201000, end: 220000, interval: 5000 },
+        StatsCase { query: "timestamp(metricWith1HistogramEvery10Seconds)", skip_max_check: false, total_samples: 4, total_samples_per_step: vec![(201000, 1), (206000, 1), (211000, 1), (216000, 1)], samples_read: 4, samples_read_per_step: vec![(201000, 1), (206000, 1), (211000, 1), (216000, 1)], peak_samples: 5, start: 201000, end: 220000, interval: 5000 },
+        StatsCase { query: r#"max_over_time(metricWith3SampleEvery10Seconds{a="1"}[10s])"#, skip_max_check: false, total_samples: 2, total_samples_per_step: vec![(991000, 1), (1001000, 1), (1011000, 0), (1021000, 0)], samples_read: 2, samples_read_per_step: vec![(991000, 1), (1001000, 1), (1011000, 0), (1021000, 0)], peak_samples: 2, start: 991000, end: 1021000, interval: 10000 },
+        StatsCase { query: r#"metricWith3SampleEvery10Seconds{a="1"} offset 10s"#, skip_max_check: false, total_samples: 4, total_samples_per_step: vec![(201000, 1), (206000, 1), (211000, 1), (216000, 1)], samples_read: 4, samples_read_per_step: vec![(201000, 1), (206000, 1), (211000, 1), (216000, 1)], peak_samples: 4, start: 201000, end: 220000, interval: 5000 },
+        StatsCase { query: "max_over_time(metricWith3SampleEvery10Seconds[60s] @ 30)", skip_max_check: false, total_samples: 48, total_samples_per_step: vec![(201000, 12), (206000, 12), (211000, 12), (216000, 12)], samples_read: 12, samples_read_per_step: vec![(201000, 12), (206000, 0), (211000, 0), (216000, 0)], peak_samples: 12, start: 201000, end: 220000, interval: 5000 },
+        StatsCase { query: r#"metricWith3SampleEvery10Seconds"#, skip_max_check: false, total_samples: 12, total_samples_per_step: vec![(201000, 3), (206000, 3), (211000, 3), (216000, 3)], samples_read: 12, samples_read_per_step: vec![(201000, 3), (206000, 3), (211000, 3), (216000, 3)], peak_samples: 12, start: 201000, end: 220000, interval: 5000 },
+        StatsCase { query: r#"max_over_time(metricWith3SampleEvery10Seconds[60s])"#, skip_max_check: false, total_samples: 72, total_samples_per_step: vec![(201000, 18), (206000, 18), (211000, 18), (216000, 18)], samples_read: 21, samples_read_per_step: vec![(201000, 18), (206000, 0), (211000, 3), (216000, 0)], peak_samples: 18, start: 201000, end: 220000, interval: 5000 },
+        StatsCase { query: "sum_over_time(metricWith1SampleEvery10Seconds[60s])", skip_max_check: false, total_samples: 24, total_samples_per_step: vec![(201000, 6), (211000, 6), (221000, 6), (231000, 6)], samples_read: 9, samples_read_per_step: vec![(201000, 6), (211000, 1), (221000, 1), (231000, 1)], peak_samples: 10, start: 201000, end: 231000, interval: 10000 },
+        StatsCase { query: "last_over_time(sum_over_time(metricWith1SampleEvery10Seconds[60s])[10s:10s])", skip_max_check: false, total_samples: 24, total_samples_per_step: vec![(201000, 6), (211000, 6), (221000, 6), (231000, 6)], samples_read: 9, samples_read_per_step: vec![(201000, 6), (211000, 1), (221000, 1), (231000, 1)], peak_samples: 10, start: 201000, end: 231000, interval: 10000 },
+        StatsCase { query: "last_over_time(last_over_time(sum_over_time(metricWith1SampleEvery10Seconds[60s])[10s:10s])[10s:10s])", skip_max_check: false, total_samples: 24, total_samples_per_step: vec![(201000, 6), (211000, 6), (221000, 6), (231000, 6)], samples_read: 9, samples_read_per_step: vec![(201000, 6), (211000, 1), (221000, 1), (231000, 1)], peak_samples: 10, start: 201000, end: 231000, interval: 10000 },
+        StatsCase { query: "max_over_time(metricWith3SampleEvery10Seconds[60s:5s])", skip_max_check: false, total_samples: 144, total_samples_per_step: vec![(201000, 36), (206000, 36), (211000, 36), (216000, 36)], samples_read: 45, samples_read_per_step: vec![(201000, 36), (206000, 3), (211000, 3), (216000, 3)], peak_samples: 69, start: 201000, end: 216000, interval: 5000 },
+        StatsCase { query: "max_over_time(metricWith3SampleEvery10Seconds[60s:5s])", skip_max_check: false, total_samples: 144, total_samples_per_step: vec![(201000, 36), (206000, 36), (211000, 36), (216000, 36)], samples_read: 45, samples_read_per_step: vec![(201000, 36), (206000, 3), (211000, 3), (216000, 3)], peak_samples: 69, start: 201000, end: 220000, interval: 5000 },
+        StatsCase { query: "max_over_time(metricWith1SampleEvery10Seconds[60s:5s])", skip_max_check: false, total_samples: 48, total_samples_per_step: vec![(201000, 12), (206000, 12), (211000, 12), (216000, 12)], samples_read: 15, samples_read_per_step: vec![(201000, 12), (206000, 1), (211000, 1), (216000, 1)], peak_samples: 31, start: 201000, end: 220000, interval: 5000 },
+        StatsCase { query: "sum by (b) (max_over_time(metricWith1SampleEvery10Seconds[60s:5s]))", skip_max_check: false, total_samples: 48, total_samples_per_step: vec![(201000, 12), (206000, 12), (211000, 12), (216000, 12)], samples_read: 15, samples_read_per_step: vec![(201000, 12), (206000, 1), (211000, 1), (216000, 1)], peak_samples: 31, start: 201000, end: 220000, interval: 5000 },
+        StatsCase { query: "sum(max_over_time(metricWith3SampleEvery10Seconds[60s:5s])) + sum(max_over_time(metricWith3SampleEvery10Seconds[60s:5s]))", skip_max_check: false, total_samples: 288, total_samples_per_step: vec![(201000, 72), (206000, 72), (211000, 72), (216000, 72)], samples_read: 90, samples_read_per_step: vec![(201000, 72), (206000, 6), (211000, 6), (216000, 6)], peak_samples: 73, start: 201000, end: 220000, interval: 5000 },
+        StatsCase { query: "sum(max_over_time(metricWith3SampleEvery10Seconds[60s:5s])) + sum(max_over_time(metricWith1SampleEvery10Seconds[60s:5s]))", skip_max_check: false, total_samples: 192, total_samples_per_step: vec![(201000, 48), (206000, 48), (211000, 48), (216000, 48)], samples_read: 60, samples_read_per_step: vec![(201000, 48), (206000, 4), (211000, 4), (216000, 4)], peak_samples: 69, start: 201000, end: 216000, interval: 5000 },
+        StatsCase { query: "sum(max_over_time(metricWith3SampleEvery10Seconds[60s:5s])) + sum(max_over_time(metricWith1SampleEvery10Seconds[60s:5s]))", skip_max_check: false, total_samples: 192, total_samples_per_step: vec![(201000, 48), (206000, 48), (211000, 48), (216000, 48)], samples_read: 60, samples_read_per_step: vec![(201000, 48), (206000, 4), (211000, 4), (216000, 4)], peak_samples: 69, start: 201000, end: 220000, interval: 5000 },
+        StatsCase { query: "quantile_over_time(time() / 1000, metricWith1SampleEvery10Seconds[20s:10s] @ 200)", skip_max_check: false, total_samples: 8, total_samples_per_step: vec![(250000, 2), (260000, 2), (270000, 2), (280000, 2)], samples_read: 2, samples_read_per_step: vec![(250000, 2), (260000, 0), (270000, 0), (280000, 0)], peak_samples: 16, start: 250000, end: 280000, interval: 10000 },
+        StatsCase { query: "quantile_over_time(time() / 1000, metricWith1SampleEvery10Seconds[20s:10s] @ 200)", skip_max_check: false, total_samples: 2, total_samples_per_step: vec![(250000, 2)], samples_read: 2, samples_read_per_step: vec![(250000, 2)], peak_samples: 7, start: 250000, end: 0, interval: 0 },
+        StatsCase { query: "max_over_time(metricWith1SampleEvery10Seconds[20s:10s])", skip_max_check: false, total_samples: 2, total_samples_per_step: vec![(201000, 2)], samples_read: 2, samples_read_per_step: vec![(201000, 2)], peak_samples: 5, start: 201000, end: 0, interval: 0 },
+        StatsCase { query: "sum_over_time(metricWith1SampleEvery10Seconds[30s:30s])", skip_max_check: false, total_samples: 1, total_samples_per_step: vec![(90000, 1)], samples_read: 1, samples_read_per_step: vec![(90000, 1)], peak_samples: 3, start: 90000, end: 0, interval: 0 },
+        StatsCase { query: "max_over_time(metricWith1SampleEvery10Seconds[30s:2m])", skip_max_check: false, total_samples: 1, total_samples_per_step: vec![(240000, 1)], samples_read: 1, samples_read_per_step: vec![(240000, 1)], peak_samples: 3, start: 240000, end: 0, interval: 0 },
+        StatsCase { query: "max_over_time(metricWith1SampleEvery10Seconds[30s:10s])", skip_max_check: false, total_samples: 6, total_samples_per_step: vec![(201000, 3), (231000, 3)], samples_read: 6, samples_read_per_step: vec![(201000, 3), (231000, 3)], peak_samples: 11, start: 201000, end: 231000, interval: 30000 },
+        StatsCase { query: "max_over_time(metricWith1SampleEvery10Seconds[20s:10s])", skip_max_check: false, total_samples: 14, total_samples_per_step: vec![(201000, 2), (211000, 2), (221000, 2), (231000, 2), (241000, 2), (251000, 2), (261000, 2)], samples_read: 8, samples_read_per_step: vec![(201000, 2), (211000, 1), (221000, 1), (231000, 1), (241000, 1), (251000, 1), (261000, 1)], peak_samples: 17, start: 201000, end: 261000, interval: 10000 },
+        StatsCase { query: "max_over_time(metricWith1SampleEvery10Seconds[30s:10s])", skip_max_check: false, total_samples: 6, total_samples_per_step: vec![(201000, 3), (261000, 3)], samples_read: 6, samples_read_per_step: vec![(201000, 3), (261000, 3)], peak_samples: 14, start: 201000, end: 261000, interval: 60000 },
+        StatsCase { query: "histogram_count(max_over_time(metricWith1HistogramEvery10Seconds[20s:10s]))", skip_max_check: false, total_samples: 26, total_samples_per_step: vec![(201000, 26)], samples_read: 26, samples_read_per_step: vec![(201000, 26)], peak_samples: 52, start: 201000, end: 0, interval: 0 },
+        StatsCase { query: "avg_over_time(metricWith1HistogramEvery10Seconds[2m:1m])", skip_max_check: false, total_samples: 78, total_samples_per_step: vec![(120000, 26), (180000, 26), (240000, 26)], samples_read: 52, samples_read_per_step: vec![(120000, 26), (180000, 13), (240000, 13)], peak_samples: 117, start: 120000, end: 240000, interval: 60000 },
+        StatsCase { query: "max_over_time(metricWith3SampleEvery10Seconds[60s:10s])", skip_max_check: false, total_samples: 126, total_samples_per_step: vec![(200000, 18), (230000, 18), (260000, 18), (290000, 18), (320000, 18), (350000, 18), (380000, 18)], samples_read: 72, samples_read_per_step: vec![(200000, 18), (230000, 9), (260000, 9), (290000, 9), (320000, 9), (350000, 9), (380000, 9)], peak_samples: 99, start: 200000, end: 400000, interval: 30000 },
+        StatsCase { query: "predict_linear(metricWith1SampleEvery10Seconds[60s] @ 100, 60)", skip_max_check: false, total_samples: 18, total_samples_per_step: vec![(100000, 6), (200000, 6), (300000, 6)], samples_read: 6, samples_read_per_step: vec![(100000, 6), (200000, 0), (300000, 0)], peak_samples: 12, start: 100000, end: 300000, interval: 100000 },
+        StatsCase { query: "sum_over_time(metricWith3SampleEvery10Seconds[20s:10s] @ 200)", skip_max_check: false, total_samples: 6, total_samples_per_step: vec![(250000, 6)], samples_read: 6, samples_read_per_step: vec![(250000, 6)], peak_samples: 11, start: 250000, end: 0, interval: 0 },
+        StatsCase { query: "sum_over_time(metricWith1SampleEvery10Seconds[20s:10s] offset 1m)", skip_max_check: false, total_samples: 2, total_samples_per_step: vec![(240000, 2)], samples_read: 2, samples_read_per_step: vec![(240000, 2)], peak_samples: 5, start: 240000, end: 0, interval: 0 },
+        StatsCase { query: "sum_over_time(metricWith1SampleEvery10Seconds[20s:10s] offset 1m)", skip_max_check: false, total_samples: 8, total_samples_per_step: vec![(240000, 2), (250000, 2), (260000, 2), (270000, 2)], samples_read: 5, samples_read_per_step: vec![(240000, 2), (250000, 1), (260000, 1), (270000, 1)], peak_samples: 11, start: 240000, end: 270000, interval: 10000 },
+        StatsCase { query: "sum_over_time(metricWith3SampleEvery10Seconds[1m:10s] @ 200 offset 1m)", skip_max_check: false, total_samples: 18, total_samples_per_step: vec![(300000, 18)], samples_read: 18, samples_read_per_step: vec![(300000, 18)], peak_samples: 27, start: 300000, end: 0, interval: 0 },
+        StatsCase { query: "sum_over_time(max_over_time(metricWith3SampleEvery10Seconds[60s] @ 300)[5m:1m] @ 600)[10m:2m]", skip_max_check: false, total_samples: 450, total_samples_per_step: vec![(800000, 450)], samples_read: 18, samples_read_per_step: vec![(800000, 18)], peak_samples: 23, start: 800000, end: 0, interval: 0 },
+        StatsCase { query: "rate(sum_over_time(metricWith1SampleEvery10Seconds[30s])[1m:30s])", skip_max_check: false, total_samples: 6, total_samples_per_step: vec![(240000, 6)], samples_read: 6, samples_read_per_step: vec![(240000, 6)], peak_samples: 5, start: 240000, end: 0, interval: 0 },
+    ]
+}
+
+// Generated from upstream TestMaxQuerySamples: (query, max samples, start, end, interval).
+fn max_samples_cases() -> Vec<(&'static str, usize, i64, i64, i64)> {
+    vec![
+        ("1", 1, 1000, 0, 0),
+        ("metric", 1, 1000, 0, 0),
+        ("metric[20s]", 2, 10000, 0, 0),
+        ("rate(metric[20s])", 3, 10000, 0, 0),
+        ("metric[20s:5s]", 3, 10000, 0, 0),
+        ("metric[20s] @ 10", 2, 0, 0, 0),
+        ("1", 3, 0, 2000, 1000),
+        ("1", 3, 0, 2000, 1000),
+        ("metric", 3, 0, 2000, 1000),
+        ("metric", 3, 0, 10000, 5000),
+        ("rate(bigmetric[1s])", 1, 0, 10000, 5000),
+        ("metric @ 10", 3, 0, 10000, 5000),
+        (r#"rate(bigmetric[10s:1s] @ 10)"#, 32, 0, 10000, 5000),
+        (r#"rate(bigmetric[10s:1s] @ 10) + rate(bigmetric[10s:1s] @ 30)"#, 34, 0, 10000, 5000),
+        (r#"rate(bigmetric[10s:1s]) + rate(bigmetric[10s:1s] @ 30)"#, 56, 10000, 20000, 5000),
+        (r#"rate(rate(bigmetric[10:1s] @ 10)[100s:25s] @ 1000)[100s:20s] @ 2000"#, 32, 10000, 0, 0),
+        (r#"rate(rate(bigmetric[10s:1s] @ 10)[100s:25s] @ 1000)[17s:1s] @ 2000"#, 34, 10000, 0, 0),
+        ("max_over_time(metricWith1HistogramEvery10Seconds[61s])[20s:5s]", 91, 201000, 0, 0),
+    ]
+}
