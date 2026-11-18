@@ -229,6 +229,11 @@ pub fn block_dirs(dir: &Path) -> Result<Vec<PathBuf>, Error> {
 }
 
 impl LeveledCompactor {
+    /// The block ranges of the compactor (Go `ranges`).
+    pub fn ranges(&self) -> &[i64] {
+        &self.ranges
+    }
+
     /// The metrics of the compactor.
     pub fn metrics(&self) -> &Arc<CompactorMetrics> {
         &self.metrics

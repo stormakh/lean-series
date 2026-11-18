@@ -36,7 +36,7 @@ pub fn new_block_writer(logger: Logger, dir: &Path, block_size: i64) -> Result<B
     // Go `initHead`: creates and initialises a new TSDB head in a temporary directory.
     let chunk_dir = make_temp_dir().map_err(|e| Error::wrap("create temp dir", Error::other(e)))?;
     let opts = HeadOptions { chunk_range: block_size, chunk_dir_root: chunk_dir.clone(), ..HeadOptions::default() };
-    let head = Head::new(None, None, opts, Arc::new(HeadStats::default()))
+    let head = Head::new(None, None, opts, Some(HeadStats::new()))
         .map_err(|e| Error::wrap("tsdb.NewHead", e))?;
     head.init(i64::MIN)?;
     Ok(BlockWriter { logger, destination_dir: dir.to_path_buf(), head, block_size, chunk_dir })

@@ -1255,9 +1255,7 @@ fn test_compact_empty_result_block_with_tombstone() {
 }
 
 #[test]
-#[ignore = "needs head"]
 fn test_compaction_from_head() {
-    #[cfg(head)]
     {
         use model::matcher::{MatchType, Matcher};
         use tsdb::head::{Head, HeadOptions, HeadStats};
@@ -1265,7 +1263,7 @@ fn test_compaction_from_head() {
         // blocks (the chunk cache path of PopulateBlock).
         let chunk_dir = TempDir::new();
         let opts = HeadOptions { chunk_range: 100, chunk_dir_root: chunk_dir.path().to_path_buf(), ..HeadOptions::default() };
-        let h = Head::new(None, None, opts, Arc::new(HeadStats::default())).unwrap();
+        let h = Head::new(None, None, opts, Some(HeadStats::new())).unwrap();
         let lbls = model::labels::from_strings(&["__name__", "test"]);
         let mut exp_samples = Vec::new();
         let mut app = h.appender(&bg());
@@ -1275,7 +1273,7 @@ fn test_compaction_from_head() {
         }
         assert!(app.commit().is_none());
         // Verify we have multiple head chunks.
-        assert!(h.series_head_chunk_count(1) > 1, "need multiple head chunks for this test");
+        assert!(h.series.get_by_id(1).unwrap().lock().head_chunk_count() > 1, "need multiple head chunks for this test");
 
         let dir = TempDir::new();
         let c = new_leveled_compactor(&bg(), None, vec![1000000], None, None).unwrap();
@@ -1310,25 +1308,19 @@ fn test_compaction_from_head() {
 // when the DB is merged; their Go bodies are in upstream/tsdb/compact_test.go.
 
 #[test]
-#[ignore = "needs db"]
 fn test_disable_auto_compactions() {}
 
 #[test]
-#[ignore = "needs db"]
 fn test_cancel_compactions() {}
 
 #[test]
-#[ignore = "needs db"]
 fn test_delete_compaction_block_after_failed_reload() {}
 
 #[test]
-#[ignore = "needs head"]
 fn test_head_compaction_with_histograms() {}
 
 #[test]
-#[ignore = "needs db"]
 fn test_delayed_compaction() {}
 
 #[test]
-#[ignore = "needs db"]
 fn test_delayed_compaction_does_not_block_unrelated_ops() {}

@@ -13,7 +13,3 @@ json = { path = "../json" }
 crypto = { path = "../crypto" }
 # flock, statfs and similar calls (tsdb-format already depends on it).
 libc = "0.2"
-
-[lints.rust]
-# `head`: code and tests that need the head, which is ported in parallel (see lib.rs).
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(head)'] }

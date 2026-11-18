@@ -360,6 +360,12 @@ impl Block {
         r.map(|_| ())
     }
 
+    /// Marks the block deletable in memory only (Go `pb.meta.Compaction.Deletable = true` in
+    /// `DB.CleanTombstones`).
+    pub(crate) fn set_deletable_in_memory(&self) {
+        self.inner.lock().meta.compaction.deletable = true;
+    }
+
     /// Go `Delete`: deletes the matching series between mint and maxt in the block.
     pub fn delete(&self, ctx: &Context, mint: i64, maxt: i64, ms: &[Matcher]) -> Result<(), Error> {
         let mut s = self.inner.lock();

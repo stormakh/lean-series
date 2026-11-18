@@ -2,8 +2,6 @@
 //! bodies compile with `--cfg head` and the tests are ignored until the head is merged.
 
 mod common;
-
-#[cfg(head)]
 fn check_block(output_dir: &std::path::Path, id: tsdb::Ulid) {
     use common::*;
     use model::matcher::{MatchType, Matcher};
@@ -19,9 +17,7 @@ fn check_block(output_dir: &std::path::Path, id: tsdb::Ulid) {
 }
 
 #[test]
-#[ignore = "needs head"]
 fn test_block_writer() {
-    #[cfg(head)]
     {
         use common::*;
         use model::labels;
@@ -45,9 +41,7 @@ fn test_block_writer() {
 }
 
 #[test]
-#[ignore = "needs head"]
 fn test_block_writer_appender_v2() {
-    #[cfg(head)]
     {
         use common::*;
         use model::labels;
