@@ -8,7 +8,8 @@ use net::HttpClientConfig;
 use yaml::{Decoder, Error as YError, Node, Unmarshal};
 
 use super::client::{self, Client, ClientConfig};
-use super::ec2::{is_api_error, join_host_port, sanitize_label_name};
+use super::ec2::is_api_error;
+use crate::util::{join_host_port, sanitize_label_name};
 use crate::cancel::CancelToken;
 use crate::chan::Sender;
 use crate::metrics::Registry;
@@ -241,7 +242,7 @@ impl LightsailRefresher {
             if let Some(v) = jstr(inst, "supportCode")? {
                 set(LIGHTSAIL_LABEL_INSTANCE_SUPPORT_CODE, v);
             }
-            set("__address__", &join_host_port(private_ip, self.cfg.port));
+            set("__address__", &join_host_port(private_ip, &self.cfg.port.to_string()));
             if let Some(v) = jstr(inst, "publicIpAddress")? {
                 set(LIGHTSAIL_LABEL_PUBLIC_IP, v);
             }

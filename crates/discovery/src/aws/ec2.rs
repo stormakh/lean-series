@@ -19,6 +19,7 @@ use crate::log::Logger;
 use crate::metrics::Registry;
 use crate::refresh::{self, Refresher};
 use crate::targetgroup::Group;
+use crate::util::{join_host_port, sanitize_label_name};
 use crate::{Config, Discoverer, DiscovererMetrics, DiscovererOptions, RefreshMetricsInstantiator, SdConfigType};
 
 const EC2_LABEL: &str = "__meta_ec2_";
@@ -276,17 +277,6 @@ fn parse_instance(e: &Element) -> Result<Instance, String> {
     })
 }
 
-/// Go `net.JoinHostPort`.
-pub(crate) fn join_host_port(host: &str, port: i64) -> String {
-    if host.contains(':') { format!("[{host}]:{port}") } else { format!("{host}:{port}") }
-}
-
-/// Go `strutil.SanitizeLabelName`: every character outside `[a-zA-Z0-9_]` becomes `_` (an invalid UTF-8 byte
-/// too, one `_` per byte, as Go's regexp replaces each).
-pub(crate) fn sanitize_label_name(name: &str) -> String {
-    name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }).collect()
-}
-
 /// Whether an SDK error is the API error `code` (Go `errors.As(err, &smithy.APIError)` and `ErrorCode()`).
 pub(crate) fn is_api_error(err: &str, code: &str) -> bool {
     err.contains(&format!("api error {code}: "))
@@ -449,9 +439,9 @@ impl Ec2Refresher {
         match (&inst.private_ip_address, &default_ipv6) {
             (Some(ip), _) => {
                 set(EC2_LABEL_PRIVATE_IP, ip);
-                set("__address__", &join_host_port(ip, self.cfg.port));
+                set("__address__", &join_host_port(ip, &self.cfg.port.to_string()));
             }
-            (None, Some(ip6)) => set("__address__", &join_host_port(ip6, self.cfg.port)),
+            (None, Some(ip6)) => set("__address__", &join_host_port(ip6, &self.cfg.port.to_string())),
             (None, None) => {}
         }
         if let Some(v) = &inst.private_dns_name {
