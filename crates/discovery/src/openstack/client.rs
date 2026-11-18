@@ -456,6 +456,8 @@ impl ProviderClient {
         }
         let data = body.map(|b| b.stringify().into_bytes()).unwrap_or_default();
         let mut req = net::Request::new(method, url, data).map_err(|e| e.to_string())?;
+        // Go's transport asks for gzip and decompresses.
+        req.decompress = true;
         if body.is_some() {
             req.header.set("Content-Type", "application/json");
         }
