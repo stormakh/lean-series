@@ -1,4 +1,6 @@
 //! Request, response, header map and error types (the parts of Go net/http the client needs).
+use std::net::TcpStream;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use yaml::url::GoUrl;
@@ -89,13 +91,80 @@ pub struct Request {
     pub decompress: bool,
     /// Hostnames of the earlier requests in a redirect chain, original first (Go's `req.Response` chain).
     pub redirect_hosts: Vec<String>,
+    /// Lets another thread close the connection of this request while it is in flight (Go: cancelling the
+    /// request's context).
+    pub abort: Option<Abort>,
+    /// Receives the body of a 2xx response piece by piece as it arrives instead of `Response::body` (Go:
+    /// reading `resp.Body` while the server still sends, as watches do).
+    pub body_sink: Option<BodySink>,
+}
+
+#[derive(Default)]
+struct AbortState {
+    aborted: bool,
+    conn: Option<TcpStream>,
+}
+
+/// Aborts a request in flight from another thread: the connection is shut down, so a blocked read returns.
+#[derive(Clone, Default)]
+pub struct Abort(Arc<Mutex<AbortState>>);
+
+impl std::fmt::Debug for Abort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Abort(aborted={})", self.is_aborted())
+    }
+}
+
+impl Abort {
+    pub fn new() -> Abort {
+        Abort::default()
+    }
+    /// Closes the current connection (if any) and makes later requests with this handle fail at once.
+    pub fn abort(&self) {
+        let mut s = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        s.aborted = true;
+        if let Some(c) = s.conn.take() {
+            let _ = c.shutdown(std::net::Shutdown::Both);
+        }
+    }
+    pub fn is_aborted(&self) -> bool {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).aborted
+    }
+    /// The transport registers the socket of the exchange; false when already aborted.
+    pub(crate) fn register(&self, s: Option<TcpStream>) -> bool {
+        let mut st = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if st.aborted {
+            return false;
+        }
+        st.conn = s;
+        true
+    }
+}
+
+/// A receiver of body bytes: called with each piece; returning false stops reading (the connection closes).
+#[derive(Clone)]
+pub struct BodySink(pub Arc<Mutex<dyn FnMut(&[u8]) -> bool + Send>>);
+
+impl BodySink {
+    pub fn new(f: impl FnMut(&[u8]) -> bool + Send + 'static) -> BodySink {
+        BodySink(Arc::new(Mutex::new(f)))
+    }
+    pub(crate) fn call(&self, b: &[u8]) -> bool {
+        (self.0.lock().unwrap_or_else(|e| e.into_inner()))(b)
+    }
+}
+
+impl std::fmt::Debug for BodySink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("BodySink")
+    }
 }
 
 impl Request {
     /// Go `http.NewRequest`.
     pub fn new(method: &str, url: &str, body: Vec<u8>) -> Result<Request, Error> {
         let u = yaml::url::parse(url).map_err(Error::other)?;
-        Ok(Request { method: method.to_string(), url: u, header: Header::new(), host: String::new(), body, timeout: None, max_body_bytes: None, decompress: false, redirect_hosts: Vec::new() })
+        Ok(Request { method: method.to_string(), url: u, header: Header::new(), host: String::new(), body, timeout: None, max_body_bytes: None, decompress: false, redirect_hosts: Vec::new(), abort: None, body_sink: None })
     }
     pub fn get(url: &str) -> Result<Request, Error> {
         Request::new("GET", url, Vec::new())

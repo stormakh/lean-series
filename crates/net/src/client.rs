@@ -242,7 +242,7 @@ impl Client {
             let mut redirect_hosts = std::mem::take(&mut req.redirect_hosts);
             redirect_hosts.push(url.hostname().to_string());
             let body = if include_body { initial.body.clone() } else { Vec::new() };
-            req = Request { method: redirect_method, url: next_url, header, host, body, timeout: req.timeout, max_body_bytes: req.max_body_bytes, decompress: req.decompress, redirect_hosts };
+            req = Request { method: redirect_method, url: next_url, header, host, body, timeout: req.timeout, max_body_bytes: req.max_body_bytes, decompress: req.decompress, redirect_hosts, abort: req.abort.clone(), body_sink: req.body_sink.clone() };
         }
     }
 }
