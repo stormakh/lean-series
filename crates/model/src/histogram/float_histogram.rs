@@ -1577,7 +1577,8 @@ fn compute_zero_bucket_trim(zb: &Bucket<f64>, rhs: f64, has_negative: bool, has_
     if has_positive && !has_negative {
         lower = 0.0;
     }
-    let (fraction, midpoint);
+    let fraction;
+    let midpoint;
     if is_upper_trim {
         if rhs <= lower {
             return (0.0, 0.0);

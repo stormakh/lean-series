@@ -17,7 +17,8 @@ const STALE_NAN: u64 = 0x7ff0000000000002;
 pub fn classic_bucket_counts(nhcb: Option<HistogramRef<'_>>, mut buf: Vec<f64>) -> Result<(Vec<f64>, f64, f64), Error> {
     let mut idx: usize = 0; // Tracks buckets in the classic histogram.
     let mut curr_idx: usize = 0; // Tracks buckets in the native histogram.
-    let (count, sum);
+    let count;
+    let sum;
     match nhcb {
         Some(HistogramRef::Int(h)) => {
             if !is_custom_buckets_schema(h.schema) {

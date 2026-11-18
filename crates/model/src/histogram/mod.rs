@@ -619,14 +619,14 @@ pub fn compact_buckets<I: InternalBucketCount>(
         let l = spans[i_span].length as usize;
         spans[i_span - 1].length = spans[i_span - 1].length.wrapping_add(offset as u32).wrapping_add(spans[i_span].length);
         spans.remove(i_span);
-        primary.splice(i_bucket..i_bucket, std::iter::repeat_n(I::ZERO, offset));
+        insert_zeros(primary, i_bucket, offset, I::ZERO);
         if delta_buckets {
             // Go: new[iBucket] = -current (overwrites), new[iBucket+offset] += current.
             primary[i_bucket] = current.neg();
             primary[i_bucket + offset] = primary[i_bucket + offset].add(current);
         }
         if let Some(c) = compensation.as_deref_mut() {
-            c.splice(i_bucket..i_bucket, std::iter::repeat_n(0.0, offset));
+            insert_zeros(c, i_bucket, offset, 0.0);
         }
         i_bucket += offset;
         // The buckets of the merged span are now part of the previous span.
@@ -637,6 +637,16 @@ pub fn compact_buckets<I: InternalBucketCount>(
             }
         }
         i_bucket += l;
+    }
+}
+
+/// Inserts `n` copies of `zero` at position `at`.
+fn insert_zeros<T: Copy>(v: &mut Vec<T>, at: usize, n: usize, zero: T) {
+    let len = v.len();
+    v.resize(len + n, zero);
+    v.copy_within(at..len, at + n);
+    for x in &mut v[at..at + n] {
+        *x = zero;
     }
 }
 
