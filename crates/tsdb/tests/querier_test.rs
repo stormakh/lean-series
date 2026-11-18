@@ -13,7 +13,7 @@ use model::labels::{self, Labels};
 use model::matcher::{MatchType, Matcher};
 use storage::tsdbutil as tu;
 use storage::{
-    BoxChunkSeriesSet, BoxSeriesSet, ChunkQuerier, Context, Error, LabelQuerier, Meta, MetaIterator, Querier, Sample,
+    ChunkQuerier, Context, Error, LabelQuerier, Meta, MetaIterator, Querier, Sample,
     SelectHints,
 };
 use tsdb::querier::{
