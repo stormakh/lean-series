@@ -364,13 +364,11 @@ pub(crate) fn lossy<'s>(b: &'s [u8], scratch: &'s mut String) -> &'s str {
 /// else a lossy UTF-8 copy.
 #[inline]
 fn part<'s>(b: &'s [u8], whole: Option<&'s str>, s0: usize, a: usize, z: usize, scratch: &'s mut String) -> &'s str {
-    if let Some(w) = whole {
-        if a >= s0 {
-            if let Some(t) = w.get(a - s0..z - s0) {
+    if let Some(w) = whole
+        && a >= s0
+            && let Some(t) = w.get(a - s0..z - s0) {
                 return t;
             }
-        }
-    }
     lossy(&b[a..z], scratch)
 }
 

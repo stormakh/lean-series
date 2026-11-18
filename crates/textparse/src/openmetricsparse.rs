@@ -441,14 +441,13 @@ impl<'a> OpenMetricsParser<'a> {
         let from = if is_exemplar { 0 } else { offsets.len() };
         self.l.hi = 0;
         let mut r = self.parse_lvals_into(&mut offsets, is_exemplar);
-        if r.is_err() || (self.l.hi >= 0x80 && std::str::from_utf8(&self.b[self.start..self.l.i]).is_err()) {
-            if let Some((e, start, end)) = check_label_values(self.b, &offsets, from, !is_exemplar) {
+        if (r.is_err() || (self.l.hi >= 0x80 && std::str::from_utf8(&self.b[self.start..self.l.i]).is_err()))
+            && let Some((e, start, end)) = check_label_values(self.b, &offsets, from, !is_exemplar) {
                 self.l.start = start;
                 self.l.i = end;
                 self.l.state = if is_exemplar { S_EXEMPLAR } else { S_LABELS };
                 r = Err(e);
             }
-        }
         if r.is_err() {
             offsets.clear();
         }

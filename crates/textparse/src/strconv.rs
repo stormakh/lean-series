@@ -80,11 +80,10 @@ fn special(s: &[u8]) -> Option<(f64, usize)> {
                 return Some((f64::INFINITY * sign, nsign + n));
             }
         }
-        b'n' | b'N' => {
-            if common_prefix_len_ignore_case(s, b"nan") == 3 {
+        b'n' | b'N'
+            if common_prefix_len_ignore_case(s, b"nan") == 3 => {
                 return Some((f64::from_bits(0x7FF8000000000001), 3));
             }
-        }
         _ => {}
     }
     None
@@ -281,7 +280,7 @@ fn atof64_exact(mantissa: u64, mut exp: i64, neg: bool) -> Option<f64> {
         }
         return Some(f * FLOAT64_POW10[exp as usize]);
     }
-    if exp < 0 && exp >= -22 {
+    if (-22..0).contains(&exp) {
         return Some(f / FLOAT64_POW10[(-exp) as usize]);
     }
     None
@@ -369,11 +368,10 @@ pub fn parse_float(s: &[u8]) -> Result<f64, FloatErr> {
         let (f, range) = atof_hex(r.mantissa, r.exp, r.neg, r.trunc);
         return if range { Err(FloatErr { kind: NumErrKind::Range, value: f }) } else { Ok(f) };
     }
-    if !r.trunc {
-        if let Some(f) = atof64_exact(r.mantissa, r.exp, r.neg) {
+    if !r.trunc
+        && let Some(f) = atof64_exact(r.mantissa, r.exp, r.neg) {
             return Ok(f);
         }
-    }
     // Correctly rounded slow path (Go's Eisel-Lemire and decimal fallbacks are correctly rounded too).
     let f = if r.underscores {
         let mut buf = Vec::with_capacity(s.len());
@@ -390,10 +388,7 @@ pub fn parse_float(s: &[u8]) -> Result<f64, FloatErr> {
 
 fn slow_parse(s: &[u8]) -> f64 {
     // The syntax was validated by read_float; Rust's parser accepts the same decimal forms.
-    match std::str::from_utf8(s).ok().and_then(|t| t.parse::<f64>().ok()) {
-        Some(f) => f,
-        None => 0.0,
-    }
+    std::str::from_utf8(s).ok().and_then(|t| t.parse::<f64>().ok()).unwrap_or(0.0)
 }
 
 /// Go `strconv.ParseInt(s, 10, 64)`.
@@ -471,7 +466,7 @@ pub fn append_quote_bytes(dst: &mut String, b: &[u8]) {
 /// out of range (Rust's `as` saturates instead).
 #[inline]
 pub fn go_f64_to_i64(f: f64) -> i64 {
-    if f.is_nan() || !(-9.223372036854775808e18..9.223372036854775808e18).contains(&f) {
+    if f.is_nan() || !(-9.223_372_036_854_776e18..9.223_372_036_854_776e18).contains(&f) {
         return i64::MIN;
     }
     f as i64
