@@ -846,24 +846,22 @@ pub fn expected_conf() -> Config {
             },
             ScrapeConfig {
                 service_discovery_configs: sd(vec![
-                    // waits for ovhcloud:
-                    // &ovhcloud.SDConfig{
-                    //     Endpoint:          "ovh-eu",
-                    //     ApplicationKey:    "testAppKey",
-                    //     ApplicationSecret: "testAppSecret",
-                    //     ConsumerKey:       "testConsumerKey",
-                    //     RefreshInterval:   model.Duration(60 * time.Second),
-                    //     Service:           "vps",
-                    // },
-                    // waits for ovhcloud:
-                    // &ovhcloud.SDConfig{
-                    //     Endpoint:          "ovh-eu",
-                    //     ApplicationKey:    "testAppKey",
-                    //     ApplicationSecret: "testAppSecret",
-                    //     ConsumerKey:       "testConsumerKey",
-                    //     RefreshInterval:   model.Duration(60 * time.Second),
-                    //     Service:           "dedicated_server",
-                    // },
+                    Box::new(discovery::ovhcloud::SdConfig {
+                        endpoint: s("ovh-eu"),
+                        application_key: s("testAppKey"),
+                        application_secret: Secret::new("testAppSecret"),
+                        consumer_key: Secret::new("testConsumerKey"),
+                        refresh_interval: Duration::from_secs(60),
+                        service: s("vps"),
+                    }),
+                    Box::new(discovery::ovhcloud::SdConfig {
+                        endpoint: s("ovh-eu"),
+                        application_key: s("testAppKey"),
+                        application_secret: Secret::new("testAppSecret"),
+                        consumer_key: Secret::new("testConsumerKey"),
+                        refresh_interval: Duration::from_secs(60),
+                        service: s("dedicated_server"),
+                    }),
                 ]),
                 ..job("ovhcloud")
             },
@@ -915,23 +913,21 @@ pub fn expected_conf() -> Config {
             },
             ScrapeConfig {
                 service_discovery_configs: sd(vec![
-                    // waits for stackit:
-                    // &stackit.SDConfig{
-                    //     Project:           "11111111-1111-1111-1111-111111111111",
-                    //     ServiceAccountKey: "mysecret_sa_key",
-                    //     PrivateKey:        "mysecret_private_key",
-                    //     Region:            "eu01",
-                    //     HTTPClientConfig: config.HTTPClientConfig{
-                    //         Authorization: &config.Authorization{
-                    //             Type:        "Bearer",
-                    //             Credentials: "abcdef",
-                    //         },
-                    //         FollowRedirects: true,
-                    //         EnableHTTP2:     true,
-                    //     },
-                    //     Port:            80,
-                    //     RefreshInterval: model.Duration(60 * time.Second),
-                    // },
+                    Box::new(discovery::stackit::SdConfig {
+                        project: s("11111111-1111-1111-1111-111111111111"),
+                        service_account_key: Secret::new("mysecret_sa_key"),
+                        private_key: Secret::new("mysecret_private_key"),
+                        region: s("eu01"),
+                        http_client_config: HttpClientConfig {
+                            authorization: Some(Authorization { type_: s("Bearer"), credentials: Secret::new("abcdef"), ..Default::default() }),
+                            follow_redirects: true,
+                            enable_http2: true,
+                            ..Default::default()
+                        },
+                        port: 80,
+                        refresh_interval: Duration::from_secs(60),
+                        ..Default::default()
+                    }),
                 ]),
                 ..job("stackit-servers")
             },
@@ -951,17 +947,18 @@ pub fn expected_conf() -> Config {
             },
             ScrapeConfig {
                 service_discovery_configs: sd(vec![
-                    // waits for ionos:
-                    // &ionos.SDConfig{
-                    //     DatacenterID: "8feda53f-15f0-447f-badf-ebe32dad2fc0",
-                    //     HTTPClientConfig: config.HTTPClientConfig{
-                    //         Authorization:   &config.Authorization{Type: "Bearer", Credentials: "abcdef"},
-                    //         FollowRedirects: true,
-                    //         EnableHTTP2:     true,
-                    //     },
-                    //     Port:            80,
-                    //     RefreshInterval: model.Duration(60 * time.Second),
-                    // },
+                    Box::new(discovery::ionos::SdConfig {
+                        datacenter_id: s("8feda53f-15f0-447f-badf-ebe32dad2fc0"),
+                        http_client_config: HttpClientConfig {
+                            authorization: Some(Authorization { type_: s("Bearer"), credentials: Secret::new("abcdef"), ..Default::default() }),
+                            follow_redirects: true,
+                            enable_http2: true,
+                            ..Default::default()
+                        },
+                        port: 80,
+                        refresh_interval: Duration::from_secs(60),
+                        ..Default::default()
+                    }),
                 ]),
                 ..job("ionos")
             },
@@ -982,16 +979,16 @@ pub fn expected_conf() -> Config {
             },
             ScrapeConfig {
                 service_discovery_configs: sd(vec![
-                    // waits for outscale:
-                    // &outscale.SDConfig{
-                    //     Endpoint:         "https://api.eu-west-2.outscale.com/api/v1",
-                    //     Region:           "eu-west-2",
-                    //     AccessKey:        "A1B2C3D4E5F6G7H8I9J0",
-                    //     SecretKey:        "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
-                    //     Port:             80,
-                    //     RefreshInterval:  model.Duration(60 * time.Second),
-                    //     HTTPClientConfig: config.DefaultHTTPClientConfig,
-                    // },
+                    Box::new(discovery::outscale::SdConfig {
+                        endpoint: s("https://api.eu-west-2.outscale.com/api/v1"),
+                        region: s("eu-west-2"),
+                        access_key: s("A1B2C3D4E5F6G7H8I9J0"),
+                        secret_key: Secret::new("XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"),
+                        port: 80,
+                        refresh_interval: Duration::from_secs(60),
+                        http_client_config: HttpClientConfig::default_config(),
+                        ..Default::default()
+                    }),
                 ]),
                 ..job("outscale")
             },
