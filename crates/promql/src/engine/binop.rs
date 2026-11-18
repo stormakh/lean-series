@@ -364,7 +364,7 @@ pub(crate) fn vector_binop(
     for (i, rs) in rhs.iter().enumerate() {
         let sig = rhsh[i].sig_ordinal;
         if enh.sigs_present[sig] {
-            let dupl = enh.right_sigs[sig].as_ref().unwrap();
+            let dupl = &rhs[enh.right_sigs[sig]];
             let one_side = if one_to_many { "left" } else { "right" };
             let matched = match_labels(&rs.metric, matching.on, &matching.matching_labels);
             let (mut d1, mut d2) = (rs.metric.to_string(), dupl.metric.to_string());
@@ -376,7 +376,7 @@ pub(crate) fn vector_binop(
                 matched, one_side, d1, d2
             )));
         }
-        enh.right_sigs[sig] = Some(rs.clone());
+        enh.right_sigs[sig] = i;
         enh.sigs_present[sig] = true;
     }
     let one_to_one = matching.card == VectorMatchCardinality::OneToOne;
@@ -431,8 +431,8 @@ pub(crate) fn vector_binop(
     for (i, ls) in lhs.iter().enumerate() {
         let sig = lhsh[i].sig_ordinal;
         if enh.sigs_present[sig] {
-            let rs = enh.right_sigs[sig].clone().unwrap();
-            do_bin_op(ls, &rs, sig, enh, true)?;
+            let rs = &rhs[enh.right_sigs[sig]];
+            do_bin_op(ls, rs, sig, enh, true)?;
         } else {
             let Some(fill) = fill_rhs else { continue };
             let rs = Sample { metric: match_labels(&ls.metric, matching.on, &matching.matching_labels), f: fill, ..Default::default() };

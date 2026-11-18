@@ -131,7 +131,8 @@ pub struct EvalNodeHelper {
     pub(crate) lbl_result_buf: Vec<u8>,
 
     // Binary vector matching.
-    pub(crate) right_sigs: Vec<Option<Sample>>,
+    /// The index in the right-hand side vector of each signature, `usize::MAX` for none.
+    pub(crate) right_sigs: Vec<usize>,
     pub(crate) sigs_present: Vec<bool>,
     pub(crate) matched_sigs: Vec<HashSet<u64>>,
     pub(crate) matched_sigs_present: Vec<bool>,
@@ -167,9 +168,9 @@ impl EvalNodeHelper {
 
     pub(crate) fn reset_right_sigs(&mut self) {
         if self.right_sigs.is_empty() {
-            self.right_sigs = vec![None; self.num_sigs];
+            self.right_sigs = vec![usize::MAX; self.num_sigs];
         } else {
-            self.right_sigs.iter_mut().for_each(|s| *s = None);
+            self.right_sigs.iter_mut().for_each(|s| *s = usize::MAX);
         }
     }
 
