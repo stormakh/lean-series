@@ -4,6 +4,8 @@
 //! caller that reuses its buffers allocates nothing per sample.
 
 mod buffers;
+#[cfg(test)]
+mod go_golden;
 
 pub use buffers::BuffersPool;
 
