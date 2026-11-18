@@ -36,6 +36,8 @@ pub(crate) struct OmLexer {
     pub(crate) i: usize,
     pub(crate) start: usize,
     pub(crate) state: u8,
+    /// OR of the bytes of the quoted strings scanned since it was reset (>= 0x80: maybe not ASCII).
+    pub(crate) hi: u8,
 }
 
 impl OmLexer {
@@ -60,7 +62,7 @@ impl OmLexer {
     /// Quoted string after the opening quote. `newline` allows unescaped newlines. Returns false on abort.
     #[inline]
     fn quoted(&mut self, b: &[u8], newline: bool) -> bool {
-        match lexutil::scan_quoted(b, self.i, self.state == S_LVALUE, newline) {
+        match lexutil::scan_quoted(b, self.i, self.state == S_LVALUE, newline, &mut self.hi) {
             Ok(close) => {
                 self.i = close;
                 self.next(b);
@@ -437,8 +439,9 @@ impl<'a> OpenMetricsParser<'a> {
     fn parse_lvals(&mut self, is_exemplar: bool) -> Result<(), Error> {
         let mut offsets = std::mem::take(if is_exemplar { &mut self.e_offsets } else { &mut self.offsets });
         let from = if is_exemplar { 0 } else { offsets.len() };
+        self.l.hi = 0;
         let mut r = self.parse_lvals_into(&mut offsets, is_exemplar);
-        if r.is_err() || std::str::from_utf8(&self.b[self.start..self.l.i]).is_err() {
+        if r.is_err() || (self.l.hi >= 0x80 && std::str::from_utf8(&self.b[self.start..self.l.i]).is_err()) {
             if let Some((e, start, end)) = check_label_values(self.b, &offsets, from, !is_exemplar) {
                 self.l.start = start;
                 self.l.i = end;
