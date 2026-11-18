@@ -28,11 +28,11 @@ use crate::engine::{EvalNodeHelper, Evaluator};
 use crate::gosort;
 use crate::parser::{self, Expr, FunctionId};
 use crate::quantile::{self, Bucket, MetricWithBuckets, EXCLUDED_LABELS};
-use crate::value::{FPoint, HPoint, Sample, Series, Value, Vector};
+use crate::value::{FPoint, HPoint, Sample, Series, SeriesView, Value, Vector};
 
 /// A function implementation (Go `FunctionCall`).
 pub type FunctionCall =
-    fn(vals: &[Vector], matrix: &[Series], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error>;
+    fn(vals: &[Vector], matrix: &[SeriesView<'_>], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error>;
 
 /// The functions supported by PromQL (Go `FunctionCalls`); `None` for the functions the engine evaluates itself
 /// (label_replace, label_join, info) or folds (start, end, range, step).
@@ -278,7 +278,7 @@ thread_local! {
 // time, interpolation and rates.
 
 /// === time() float64 ===
-fn func_time(_: &[Vector], _: &[Series], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_time(_: &[Vector], _: &[SeriesView<'_>], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     let f = enh.ts as f64 / 1000.0;
     push_float(enh, f);
     Ok(Annotations::new())
@@ -691,7 +691,7 @@ fn correct_for_counter_resets_histogram(
 
 /// Go `extendedRate`: anchored/smoothed rate/increase/delta of floats.
 fn extended_rate(
-    samples: &Series,
+    samples: &SeriesView<'_>,
     _args: &[Expr],
     enh: &mut EvalNodeHelper,
     is_counter: bool,
@@ -785,7 +785,7 @@ fn extended_rate(
 
 /// Go `extendedHistogramRate`: anchored/smoothed rate/increase/delta of native histograms.
 fn extended_histogram_rate(
-    samples: &Series,
+    samples: &SeriesView<'_>,
     args: &[Expr],
     enh: &mut EvalNodeHelper,
     is_counter: bool,
@@ -882,7 +882,7 @@ fn extended_histogram_rate(
 
 /// Go `extrapolatedRate`: rate/increase/delta with extrapolation to the range boundaries.
 fn extrapolated_rate(
-    matrix: &[Series],
+    matrix: &[SeriesView<'_>],
     args: &[Expr],
     enh: &mut EvalNodeHelper,
     is_counter: bool,
@@ -948,7 +948,19 @@ fn extrapolated_rate(
                 start_timestamps = &sts.floats;
             }
             let mut overlap_detected = false;
-            for i in 0..num_samples_minus_one {
+            if start_timestamps.is_empty() {
+                // Without start timestamps only value drops are resets: a tight loop the compiler vectorizes.
+                // Same summation order as Go, so the result is bit for bit the same.
+                // Resets are rare: search them first, so that the additions do not form a dependency chain.
+                let mut r = result_float;
+                let mut i = 0;
+                while let Some(p) = floats[i..].windows(2).position(|w| w[1].f < w[0].f) {
+                    r += floats[i + p].f;
+                    i += p + 1;
+                }
+                result_float = r;
+            }
+            for i in 0..if start_timestamps.is_empty() { 0 } else { num_samples_minus_one } {
                 let prev_point = floats[i];
                 let curr_point = floats[i + 1];
                 // Warn once per series if start timestamp overlap detected.
@@ -1256,27 +1268,27 @@ pub fn check_start_time_overlap(prev_start_timestamp: i64, prev_timestamp: i64, 
 }
 
 /// === delta(Matrix parser.ValueTypeMatrix) (Vector, Annotations) ===
-fn func_delta(_: &[Vector], m: &[Series], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_delta(_: &[Vector], m: &[SeriesView<'_>], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     extrapolated_rate(m, args, enh, false, false)
 }
 
 /// === rate(node parser.ValueTypeMatrix) (Vector, Annotations) ===
-fn func_rate(_: &[Vector], m: &[Series], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_rate(_: &[Vector], m: &[SeriesView<'_>], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     extrapolated_rate(m, args, enh, true, true)
 }
 
 /// === increase(node parser.ValueTypeMatrix) (Vector, Annotations) ===
-fn func_increase(_: &[Vector], m: &[Series], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_increase(_: &[Vector], m: &[SeriesView<'_>], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     extrapolated_rate(m, args, enh, true, false)
 }
 
 /// === irate(node parser.ValueTypeMatrix) (Vector, Annotations) ===
-fn func_irate(_: &[Vector], m: &[Series], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_irate(_: &[Vector], m: &[SeriesView<'_>], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     instant_value(m, args, enh, true)
 }
 
 /// === idelta(node model.ValMatrix) (Vector, Annotations) ===
-fn func_idelta(_: &[Vector], m: &[Series], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_idelta(_: &[Vector], m: &[SeriesView<'_>], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     instant_value(m, args, enh, false)
 }
 
@@ -1289,7 +1301,7 @@ struct SampleWithSt<'a> {
 }
 
 /// Go `instantValue`: irate and idelta.
-fn instant_value(vals: &[Series], args: &[Expr], enh: &mut EvalNodeHelper, is_rate: bool) -> Result<Annotations, Error> {
+fn instant_value(vals: &[SeriesView<'_>], args: &[Expr], enh: &mut EvalNodeHelper, is_rate: bool) -> Result<Annotations, Error> {
     let samples = &vals[0];
     let mut annos = Annotations::new();
 
@@ -1445,7 +1457,7 @@ fn calc_trend_value(i: usize, tf: f64, s0: f64, s1: f64, b: f64) -> f64 {
 /// Go `funcDoubleExponentialSmoothing`.
 fn func_double_exponential_smoothing(
     vals: &[Vector],
-    matrix: &[Series],
+    matrix: &[SeriesView<'_>],
     args: &[Expr],
     enh: &mut EvalNodeHelper,
 ) -> Result<Annotations, Error> {
@@ -1510,7 +1522,7 @@ fn push_floats(enh: &mut EvalNodeHelper, v: &[Sample]) {
 }
 
 /// === sort(node parser.ValueTypeVector) (Vector, Annotations) ===
-fn func_sort(vals: &[Vector], _: &[Series], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_sort(vals: &[Vector], _: &[SeriesView<'_>], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     // NaN should sort to the bottom, so take descending sort with NaN first and reverse it.
     push_floats(enh, &vals[0]);
     gosort::sort(&mut enh.out, |a, b| b.f.is_nan() || b.f > a.f);
@@ -1518,7 +1530,7 @@ fn func_sort(vals: &[Vector], _: &[Series], _: &[Expr], enh: &mut EvalNodeHelper
 }
 
 /// === sortDesc(node parser.ValueTypeVector) (Vector, Annotations) ===
-fn func_sort_desc(vals: &[Vector], _: &[Series], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_sort_desc(vals: &[Vector], _: &[SeriesView<'_>], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     // NaN should sort to the bottom, so take ascending sort with NaN first and reverse it.
     push_floats(enh, &vals[0]);
     gosort::sort(&mut enh.out, |a, b| b.f.is_nan() || b.f < a.f);
@@ -1613,14 +1625,14 @@ fn sort_by_label(vals: &[Vector], args: &[Expr], enh: &mut EvalNodeHelper, desc:
 }
 
 /// === sort_by_label(vector parser.ValueTypeVector, label parser.ValueTypeString...) (Vector, Annotations) ===
-fn func_sort_by_label(vals: &[Vector], _: &[Series], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_sort_by_label(vals: &[Vector], _: &[SeriesView<'_>], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     sort_by_label(vals, args, enh, false)
 }
 
 /// === sort_by_label_desc(vector parser.ValueTypeVector, label parser.ValueTypeString...) (Vector, Annotations) ===
 fn func_sort_by_label_desc(
     vals: &[Vector],
-    _: &[Series],
+    _: &[SeriesView<'_>],
     args: &[Expr],
     enh: &mut EvalNodeHelper,
 ) -> Result<Annotations, Error> {
@@ -1644,22 +1656,22 @@ fn clamp(vec: &[Sample], min_val: f64, max_val: f64, enh: &mut EvalNodeHelper) -
 }
 
 /// === clamp(Vector parser.ValueTypeVector, min, max Scalar) (Vector, Annotations) ===
-fn func_clamp(vals: &[Vector], _: &[Series], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_clamp(vals: &[Vector], _: &[SeriesView<'_>], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     clamp(&vals[0], vals[1][0].f, vals[2][0].f, enh)
 }
 
 /// === clamp_max(Vector parser.ValueTypeVector, max Scalar) (Vector, Annotations) ===
-fn func_clamp_max(vals: &[Vector], _: &[Series], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_clamp_max(vals: &[Vector], _: &[SeriesView<'_>], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     clamp(&vals[0], f64::NEG_INFINITY, vals[1][0].f, enh)
 }
 
 /// === clamp_min(Vector parser.ValueTypeVector, min Scalar) (Vector, Annotations) ===
-fn func_clamp_min(vals: &[Vector], _: &[Series], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_clamp_min(vals: &[Vector], _: &[SeriesView<'_>], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     clamp(&vals[0], vals[1][0].f, f64::INFINITY, enh)
 }
 
 /// === round(Vector parser.ValueTypeVector, toNearest=1 Scalar) (Vector, Annotations) ===
-fn func_round(vals: &[Vector], _: &[Series], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_round(vals: &[Vector], _: &[SeriesView<'_>], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     // round returns a number rounded to toNearest. Ties are solved by rounding up.
     let mut to_nearest = 1.0;
     if args.len() >= 2 {
@@ -1672,7 +1684,7 @@ fn func_round(vals: &[Vector], _: &[Series], args: &[Expr], enh: &mut EvalNodeHe
 }
 
 /// === Scalar(node parser.ValueTypeVector) Scalar ===
-fn func_scalar(vals: &[Vector], _: &[Series], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_scalar(vals: &[Vector], _: &[SeriesView<'_>], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     let mut value = 0.0;
     let mut found = false;
     for s in &vals[0] {
@@ -1696,7 +1708,7 @@ fn func_scalar(vals: &[Vector], _: &[Series], _: &[Expr], enh: &mut EvalNodeHelp
 
 /// Go `aggrOverTime`.
 #[inline]
-fn aggr_over_time(matrix: &[Series], enh: &mut EvalNodeHelper, aggr_fn: impl FnOnce(&Series) -> f64) {
+fn aggr_over_time(matrix: &[SeriesView<'_>], enh: &mut EvalNodeHelper, aggr_fn: impl FnOnce(&SeriesView<'_>) -> f64) {
     if let Some(el) = matrix.first() {
         let f = aggr_fn(el);
         push_float(enh, f);
@@ -1732,7 +1744,7 @@ impl HistAggrTracker {
 }
 
 /// The histogram average of avg_over_time.
-fn avg_histograms(s: &Series, tr: &mut HistAggrTracker) -> Result<FloatHistogram, model::histogram::Error> {
+fn avg_histograms(s: &SeriesView<'_>, tr: &mut HistAggrTracker) -> Result<FloatHistogram, model::histogram::Error> {
     let mut sum = s.histograms[0].h.copy();
     let mut mean: Option<FloatHistogram> = None;
     let mut kahan_c: Option<FloatHistogram> = None;
@@ -1797,7 +1809,7 @@ fn avg_histograms(s: &Series, tr: &mut HistAggrTracker) -> Result<FloatHistogram
 fn finish_hist_over_time(
     res: Result<FloatHistogram, model::histogram::Error>,
     tr: &HistAggrTracker,
-    first_series: &Series,
+    first_series: &SeriesView<'_>,
     args: &[Expr],
     enh: &mut EvalNodeHelper,
 ) -> Result<Annotations, Error> {
@@ -1823,7 +1835,7 @@ fn finish_hist_over_time(
 }
 
 /// === avg_over_time(Matrix parser.ValueTypeMatrix) (Vector, Annotations)  ===
-fn func_avg_over_time(_: &[Vector], matrix: &[Series], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_avg_over_time(_: &[Vector], matrix: &[SeriesView<'_>], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     let Some(first_series) = matrix.first() else { return Ok(Annotations::new()) };
     if !first_series.floats.is_empty() && !first_series.histograms.is_empty() {
         return Ok(Annotations::new().with(annos::new_mixed_floats_histograms_warning(
@@ -1874,13 +1886,13 @@ fn kahan_inc(inc: f64, sum: f64, c: f64) -> (f64, f64) {
 }
 
 /// === count_over_time(Matrix parser.ValueTypeMatrix) (Vector, Notes)  ===
-fn func_count_over_time(_: &[Vector], matrix: &[Series], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_count_over_time(_: &[Vector], matrix: &[SeriesView<'_>], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     aggr_over_time(matrix, enh, |s| (s.floats.len() + s.histograms.len()) as f64);
     Ok(Annotations::new())
 }
 
 /// === first_over_time(Matrix parser.ValueTypeMatrix) (Vector, Notes)  ===
-fn func_first_over_time(_: &[Vector], matrix: &[Series], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_first_over_time(_: &[Vector], matrix: &[SeriesView<'_>], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     let Some(el) = matrix.first() else { return Ok(Annotations::new()) };
     let f = el.floats.first().copied().unwrap_or_default();
     // If a float data point exists and is older than any histogram data points, return it.
@@ -1894,7 +1906,7 @@ fn func_first_over_time(_: &[Vector], matrix: &[Series], _: &[Expr], enh: &mut E
 }
 
 /// === last_over_time(Matrix parser.ValueTypeMatrix) (Vector, Notes)  ===
-fn func_last_over_time(_: &[Vector], matrix: &[Series], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_last_over_time(_: &[Vector], matrix: &[SeriesView<'_>], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     let Some(el) = matrix.first() else { return Ok(Annotations::new()) };
     let f = el.floats.last().copied().unwrap_or_default();
     match el.histograms.last() {
@@ -1907,7 +1919,7 @@ fn func_last_over_time(_: &[Vector], matrix: &[Series], _: &[Expr], enh: &mut Ev
 }
 
 /// === mad_over_time(Matrix parser.ValueTypeMatrix) (Vector, Annotations) ===
-fn func_mad_over_time(_: &[Vector], matrix: &[Series], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_mad_over_time(_: &[Vector], matrix: &[SeriesView<'_>], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     let Some(samples) = matrix.first() else { return Ok(Annotations::new()) };
     let mut annos = Annotations::new();
     if samples.floats.is_empty() {
@@ -1920,7 +1932,7 @@ fn func_mad_over_time(_: &[Vector], matrix: &[Series], args: &[Expr], enh: &mut 
         FLOAT_BUF.with(|buf| {
             let mut values = buf.borrow_mut();
             values.clear();
-            for f in &s.floats {
+            for f in s.floats.iter() {
                 // A NaN sample makes the median, and therefore the deviation, undefined.
                 if f.f.is_nan() {
                     return f64::NAN;
@@ -1938,7 +1950,7 @@ fn func_mad_over_time(_: &[Vector], matrix: &[Series], args: &[Expr], enh: &mut 
 }
 
 /// === ts_of_first_over_time(Matrix parser.ValueTypeMatrix) (Vector, Notes)  ===
-fn func_ts_of_first_over_time(_: &[Vector], matrix: &[Series], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_ts_of_first_over_time(_: &[Vector], matrix: &[SeriesView<'_>], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     let Some(el) = matrix.first() else { return Ok(Annotations::new()) };
     let tf = el.floats.first().map_or(i64::MAX, |p| p.t);
     let th = el.histograms.first().map_or(i64::MAX, |p| p.t);
@@ -1947,7 +1959,7 @@ fn func_ts_of_first_over_time(_: &[Vector], matrix: &[Series], _: &[Expr], enh: 
 }
 
 /// === ts_of_last_over_time(Matrix parser.ValueTypeMatrix) (Vector, Notes)  ===
-fn func_ts_of_last_over_time(_: &[Vector], matrix: &[Series], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_ts_of_last_over_time(_: &[Vector], matrix: &[SeriesView<'_>], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     let Some(el) = matrix.first() else { return Ok(Annotations::new()) };
     let tf = el.floats.last().map_or(i64::MIN, |p| p.t);
     let th = el.histograms.last().map_or(i64::MIN, |p| p.t);
@@ -1956,18 +1968,18 @@ fn func_ts_of_last_over_time(_: &[Vector], matrix: &[Series], _: &[Expr], enh: &
 }
 
 /// === ts_of_max_over_time(Matrix parser.ValueTypeMatrix) (Vector, Annotations) ===
-fn func_ts_of_max_over_time(_: &[Vector], m: &[Series], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_ts_of_max_over_time(_: &[Vector], m: &[SeriesView<'_>], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     compare_over_time(m, args, enh, |cur, max_val| cur >= max_val || max_val.is_nan(), true)
 }
 
 /// === ts_of_min_over_time(Matrix parser.ValueTypeMatrix) (Vector, Annotations) ===
-fn func_ts_of_min_over_time(_: &[Vector], m: &[Series], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_ts_of_min_over_time(_: &[Vector], m: &[SeriesView<'_>], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     compare_over_time(m, args, enh, |cur, max_val| cur <= max_val || max_val.is_nan(), true)
 }
 
 /// Go `compareOverTime`, used by max_over_time, min_over_time and the ts_of_ variants.
 fn compare_over_time(
-    matrix: &[Series],
+    matrix: &[SeriesView<'_>],
     args: &[Expr],
     enh: &mut EvalNodeHelper,
     compare_fn: impl Fn(f64, f64) -> bool,
@@ -1984,7 +1996,7 @@ fn compare_over_time(
     aggr_over_time(matrix, enh, |s| {
         let mut max_val = s.floats[0].f;
         let mut ts_of_max = s.floats[0].t;
-        for f in &s.floats {
+        for f in s.floats.iter() {
             if compare_fn(f.f, max_val) {
                 max_val = f.f;
                 ts_of_max = f.t;
@@ -1999,17 +2011,17 @@ fn compare_over_time(
 }
 
 /// === max_over_time(Matrix parser.ValueTypeMatrix) (Vector, Annotations) ===
-fn func_max_over_time(_: &[Vector], m: &[Series], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_max_over_time(_: &[Vector], m: &[SeriesView<'_>], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     compare_over_time(m, args, enh, |cur, max_val| cur > max_val || max_val.is_nan(), false)
 }
 
 /// === min_over_time(Matrix parser.ValueTypeMatrix) (Vector, Annotations) ===
-fn func_min_over_time(_: &[Vector], m: &[Series], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_min_over_time(_: &[Vector], m: &[SeriesView<'_>], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     compare_over_time(m, args, enh, |cur, max_val| cur < max_val || max_val.is_nan(), false)
 }
 
 /// The histogram sum of sum_over_time.
-fn sum_histograms(s: &Series, tr: &mut HistAggrTracker) -> Result<FloatHistogram, model::histogram::Error> {
+fn sum_histograms(s: &SeriesView<'_>, tr: &mut HistAggrTracker) -> Result<FloatHistogram, model::histogram::Error> {
     let mut sum = s.histograms[0].h.copy();
     tr.track(&sum);
     let mut comp: Option<FloatHistogram> = None;
@@ -2031,7 +2043,7 @@ fn sum_histograms(s: &Series, tr: &mut HistAggrTracker) -> Result<FloatHistogram
 }
 
 /// === sum_over_time(Matrix parser.ValueTypeMatrix) (Vector, Annotations) ===
-fn func_sum_over_time(_: &[Vector], matrix: &[Series], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_sum_over_time(_: &[Vector], matrix: &[SeriesView<'_>], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     let Some(first_series) = matrix.first() else { return Ok(Annotations::new()) };
     if !first_series.floats.is_empty() && !first_series.histograms.is_empty() {
         return Ok(Annotations::new().with(annos::new_mixed_floats_histograms_warning(
@@ -2047,7 +2059,7 @@ fn func_sum_over_time(_: &[Vector], matrix: &[Series], args: &[Expr], enh: &mut 
     }
     aggr_over_time(matrix, enh, |s| {
         let (mut sum, mut c) = (0.0, 0.0);
-        for f in &s.floats {
+        for f in s.floats.iter() {
             (sum, c) = kahan_inc(f.f, sum, c);
         }
         if sum.is_infinite() {
@@ -2063,7 +2075,7 @@ const INTEGRAL_RIGHT_POINT: i64 = 1;
 const INTEGRAL_TRAPEZOIDAL: i64 = 2;
 
 /// === integral(Matrix parser.ValueTypeMatrix, strategy=2 Scalar) (Vector, Annotations) ===
-fn func_integral(vals: &[Vector], matrix: &[Series], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_integral(vals: &[Vector], matrix: &[SeriesView<'_>], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     let Some(samples) = matrix.first() else { return Ok(Annotations::new()) };
     let mut annos = Annotations::new();
     if samples.floats.is_empty() {
@@ -2133,7 +2145,7 @@ fn func_integral(vals: &[Vector], matrix: &[Series], args: &[Expr], enh: &mut Ev
 }
 
 /// === quantile_over_time(Matrix parser.ValueTypeMatrix) (Vector, Annotations) ===
-fn func_quantile_over_time(vals: &[Vector], matrix: &[Series], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_quantile_over_time(vals: &[Vector], matrix: &[SeriesView<'_>], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     if vals.is_empty() || vals[0].is_empty() || matrix.is_empty() {
         return Ok(Annotations::new());
     }
@@ -2161,7 +2173,7 @@ fn func_quantile_over_time(vals: &[Vector], matrix: &[Series], args: &[Expr], en
 
 /// Go `varianceOverTime`.
 fn variance_over_time(
-    matrix: &[Series],
+    matrix: &[SeriesView<'_>],
     args: &[Expr],
     enh: &mut EvalNodeHelper,
     variance_to_result: Option<fn(f64) -> f64>,
@@ -2178,7 +2190,7 @@ fn variance_over_time(
         let mut count = 0.0;
         let (mut mean, mut c_mean) = (0.0, 0.0);
         let (mut aux, mut c_aux) = (0.0, 0.0);
-        for f in &s.floats {
+        for f in s.floats.iter() {
             count += 1.0;
             let delta = f.f - (mean + c_mean);
             (mean, c_mean) = kahan_inc(delta / count, mean, c_mean);
@@ -2194,17 +2206,17 @@ fn variance_over_time(
 }
 
 /// === stddev_over_time(Matrix parser.ValueTypeMatrix) (Vector, Annotations) ===
-fn func_stddev_over_time(_: &[Vector], m: &[Series], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_stddev_over_time(_: &[Vector], m: &[SeriesView<'_>], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     variance_over_time(m, args, enh, Some(f64::sqrt))
 }
 
 /// === stdvar_over_time(Matrix parser.ValueTypeMatrix) (Vector, Annotations) ===
-fn func_stdvar_over_time(_: &[Vector], m: &[Series], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_stdvar_over_time(_: &[Vector], m: &[SeriesView<'_>], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     variance_over_time(m, args, enh, None)
 }
 
 /// === absent(Vector parser.ValueTypeVector) (Vector, Annotations) ===
-fn func_absent(vals: &[Vector], _: &[Series], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_absent(vals: &[Vector], _: &[SeriesView<'_>], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     if !vals[0].is_empty() {
         return Ok(Annotations::new());
     }
@@ -2214,13 +2226,13 @@ fn func_absent(vals: &[Vector], _: &[Series], args: &[Expr], enh: &mut EvalNodeH
 
 /// === absent_over_time(Vector parser.ValueTypeMatrix) (Vector, Annotations) ===
 /// Returns 1 if the matrix has at least one element; the engine post-processes the results.
-fn func_absent_over_time(_: &[Vector], _: &[Series], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_absent_over_time(_: &[Vector], _: &[SeriesView<'_>], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     push_float(enh, 1.0);
     Ok(Annotations::new())
 }
 
 /// === present_over_time(Vector parser.ValueTypeMatrix) (Vector, Annotations) ===
-fn func_present_over_time(_: &[Vector], m: &[Series], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_present_over_time(_: &[Vector], m: &[SeriesView<'_>], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     aggr_over_time(m, enh, |_| 1.0);
     Ok(Annotations::new())
 }
@@ -2244,7 +2256,7 @@ fn simple_float_func(vals: &[Vector], enh: &mut EvalNodeHelper, f: impl Fn(f64) 
 macro_rules! simple_funcs {
     ($($name:ident => $f:expr;)*) => {
         $(
-            fn $name(vals: &[Vector], _: &[Series], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+            fn $name(vals: &[Vector], _: &[SeriesView<'_>], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
                 simple_float_func(vals, enh, $f);
                 Ok(Annotations::new())
             }
@@ -2279,25 +2291,25 @@ simple_funcs! {
 }
 
 /// === max_of(a, b parser.ValueTypeScalar) Scalar ===
-fn func_max_of(vals: &[Vector], _: &[Series], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_max_of(vals: &[Vector], _: &[SeriesView<'_>], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     push_float(enh, go_max(vals[0][0].f, vals[1][0].f));
     Ok(Annotations::new())
 }
 
 /// === min_of(a, b parser.ValueTypeScalar) Scalar ===
-fn func_min_of(vals: &[Vector], _: &[Series], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_min_of(vals: &[Vector], _: &[SeriesView<'_>], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     push_float(enh, go_min(vals[0][0].f, vals[1][0].f));
     Ok(Annotations::new())
 }
 
 /// === pi() Scalar ===
-fn func_pi(_: &[Vector], _: &[Series], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_pi(_: &[Vector], _: &[SeriesView<'_>], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     push_float(enh, std::f64::consts::PI);
     Ok(Annotations::new())
 }
 
 /// === timestamp(Vector parser.ValueTypeVector) (Vector, Annotations) ===
-fn func_timestamp(vals: &[Vector], _: &[Series], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_timestamp(vals: &[Vector], _: &[SeriesView<'_>], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     let delayed = enh.enable_delayed_name_removal;
     for el in &vals[0] {
         let metric = if !delayed { drop_metadata(&el.metric) } else { el.metric.clone() };
@@ -2307,7 +2319,7 @@ fn func_timestamp(vals: &[Vector], _: &[Series], _: &[Expr], enh: &mut EvalNodeH
 }
 
 /// === start_timestamp(Vector parser.ValueTypeVector) (Vector, Annotations) ===
-fn func_start_timestamp(vals: &[Vector], _: &[Series], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_start_timestamp(vals: &[Vector], _: &[SeriesView<'_>], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     let delayed = enh.enable_delayed_name_removal;
     let sts = enh.start_timestamps.take();
     let floats: &[i64] = match &sts {
@@ -2368,7 +2380,7 @@ fn linear_regression(samples: &[FPoint], intercept_time: i64) -> (f64, f64) {
 }
 
 /// === deriv(node parser.ValueTypeMatrix) (Vector, Annotations) ===
-fn func_deriv(_: &[Vector], matrix: &[Series], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_deriv(_: &[Vector], matrix: &[SeriesView<'_>], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     let Some(samples) = matrix.first() else { return Ok(Annotations::new()) };
     // No sense in trying to compute a derivative without at least two float points.
     if samples.floats.len() < 2 {
@@ -2394,7 +2406,7 @@ fn func_deriv(_: &[Vector], matrix: &[Series], args: &[Expr], enh: &mut EvalNode
 }
 
 /// === predict_linear(node parser.ValueTypeMatrix, k parser.ValueTypeScalar) (Vector, Annotations) ===
-fn func_predict_linear(vals: &[Vector], matrix: &[Series], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_predict_linear(vals: &[Vector], matrix: &[SeriesView<'_>], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     if vals.is_empty() || vals[0].is_empty() || matrix.is_empty() {
         return Ok(Annotations::new());
     }
@@ -2437,19 +2449,19 @@ fn simple_histogram_func(vals: &[Vector], enh: &mut EvalNodeHelper, f: impl Fn(&
 }
 
 /// === histogram_count(Vector parser.ValueTypeVector) (Vector, Annotations) ===
-fn func_histogram_count(vals: &[Vector], _: &[Series], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_histogram_count(vals: &[Vector], _: &[SeriesView<'_>], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     simple_histogram_func(vals, enh, |h| h.count);
     Ok(Annotations::new())
 }
 
 /// === histogram_sum(Vector parser.ValueTypeVector) (Vector, Annotations) ===
-fn func_histogram_sum(vals: &[Vector], _: &[Series], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_histogram_sum(vals: &[Vector], _: &[SeriesView<'_>], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     simple_histogram_func(vals, enh, |h| h.sum);
     Ok(Annotations::new())
 }
 
 /// === histogram_avg(Vector parser.ValueTypeVector) (Vector, Annotations) ===
-fn func_histogram_avg(vals: &[Vector], _: &[Series], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_histogram_avg(vals: &[Vector], _: &[SeriesView<'_>], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     simple_histogram_func(vals, enh, |h| h.sum / h.count);
     Ok(Annotations::new())
 }
@@ -2491,12 +2503,12 @@ fn histogram_variance(vals: &[Vector], enh: &mut EvalNodeHelper, variance_to_res
 }
 
 /// === histogram_stddev(Vector parser.ValueTypeVector) (Vector, Annotations)  ===
-fn func_histogram_stddev(vals: &[Vector], _: &[Series], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_histogram_stddev(vals: &[Vector], _: &[SeriesView<'_>], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     histogram_variance(vals, enh, Some(f64::sqrt))
 }
 
 /// === histogram_stdvar(Vector parser.ValueTypeVector) (Vector, Annotations) ===
-fn func_histogram_stdvar(vals: &[Vector], _: &[Series], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_histogram_stdvar(vals: &[Vector], _: &[SeriesView<'_>], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     histogram_variance(vals, enh, None)
 }
 
@@ -2605,7 +2617,7 @@ fn get_or_create_lbls_with_quantile(
 }
 
 /// === histogram_fraction(lower, upper parser.ValueTypeScalar, Vector parser.ValueTypeVector) (Vector, Annotations) ===
-fn func_histogram_fraction(vals: &[Vector], _: &[Series], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_histogram_fraction(vals: &[Vector], _: &[SeriesView<'_>], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     if vals.len() < 3 || vals[0].is_empty() || vals[1].is_empty() {
         return Ok(Annotations::new());
     }
@@ -2648,7 +2660,7 @@ fn func_histogram_fraction(vals: &[Vector], _: &[Series], args: &[Expr], enh: &m
 }
 
 /// === histogram_quantile(k parser.ValueTypeScalar, Vector parser.ValueTypeVector) (Vector, Annotations) ===
-fn func_histogram_quantile(vals: &[Vector], _: &[Series], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_histogram_quantile(vals: &[Vector], _: &[SeriesView<'_>], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     if vals.len() < 2 || vals[0].is_empty() {
         return Ok(Annotations::new());
     }
@@ -2709,7 +2721,7 @@ fn validate_quantile(q: f64, arg: &Expr) -> Option<Error> {
 }
 
 /// === histogram_quantiles(Vector parser.ValueTypeVector, label parser.ValueTypeString, q0 parser.ValueTypeScalar, qs parser.ValueTypeScalar...) (Vector, Annotations) ===
-fn func_histogram_quantiles(vals: &[Vector], _: &[Series], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_histogram_quantiles(vals: &[Vector], _: &[SeriesView<'_>], args: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     let in_vec = &vals[0];
     let quantile_label = string_from_arg(&args[1])?;
     let num_quantiles = vals.len().saturating_sub(2);
@@ -2830,7 +2842,7 @@ fn pick_first_sample_indices(floats: &[FPoint], histograms: &[HPoint], enh: &Eva
 }
 
 /// === resets(Matrix parser.ValueTypeMatrix) (Vector, Annotations) ===
-fn func_resets(_: &[Vector], matrix: &[Series], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_resets(_: &[Vector], matrix: &[SeriesView<'_>], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     let Some(series) = matrix.first() else { return Ok(Annotations::new()) };
     let floats = &series.floats;
     let histograms = &series.histograms;
@@ -2901,7 +2913,7 @@ fn func_resets(_: &[Vector], matrix: &[Series], _: &[Expr], enh: &mut EvalNodeHe
 }
 
 /// === changes(Matrix parser.ValueTypeMatrix) (Vector, Annotations) ===
-fn func_changes(_: &[Vector], matrix: &[Series], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_changes(_: &[Vector], matrix: &[SeriesView<'_>], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     let Some(series) = matrix.first() else { return Ok(Annotations::new()) };
     let floats = &series.floats;
     let histograms = &series.histograms;
@@ -3001,7 +3013,7 @@ pub(crate) fn eval_label_replace(ev: &mut Evaluator<'_>, args: &[Expr]) -> Resul
 }
 
 /// === Vector(s Scalar) (Vector, Annotations) ===
-fn func_vector(vals: &[Vector], _: &[Series], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_vector(vals: &[Vector], _: &[SeriesView<'_>], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     push_float(enh, vals[0][0].f);
     Ok(Annotations::new())
 }
@@ -3169,42 +3181,42 @@ fn date_wrapper(vals: &[Vector], enh: &mut EvalNodeHelper, f: fn(u64) -> i64) ->
 }
 
 /// === days_in_month(v Vector) Scalar ===
-fn func_days_in_month(vals: &[Vector], _: &[Series], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_days_in_month(vals: &[Vector], _: &[SeriesView<'_>], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     date_wrapper(vals, enh, go_days_in_month)
 }
 
 /// === day_of_month(v Vector) Scalar ===
-fn func_day_of_month(vals: &[Vector], _: &[Series], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_day_of_month(vals: &[Vector], _: &[SeriesView<'_>], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     date_wrapper(vals, enh, go_day)
 }
 
 /// === day_of_week(v Vector) Scalar ===
-fn func_day_of_week(vals: &[Vector], _: &[Series], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_day_of_week(vals: &[Vector], _: &[SeriesView<'_>], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     date_wrapper(vals, enh, go_weekday)
 }
 
 /// === day_of_year(v Vector) Scalar ===
-fn func_day_of_year(vals: &[Vector], _: &[Series], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_day_of_year(vals: &[Vector], _: &[SeriesView<'_>], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     date_wrapper(vals, enh, go_year_day)
 }
 
 /// === hour(v Vector) Scalar ===
-fn func_hour(vals: &[Vector], _: &[Series], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_hour(vals: &[Vector], _: &[SeriesView<'_>], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     date_wrapper(vals, enh, |abs| ((abs % SECONDS_PER_DAY) / 3600) as i64)
 }
 
 /// === minute(v Vector) Scalar ===
-fn func_minute(vals: &[Vector], _: &[Series], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_minute(vals: &[Vector], _: &[SeriesView<'_>], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     date_wrapper(vals, enh, |abs| ((abs % 3600) / 60) as i64)
 }
 
 /// === month(v Vector) Scalar ===
-fn func_month(vals: &[Vector], _: &[Series], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_month(vals: &[Vector], _: &[SeriesView<'_>], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     date_wrapper(vals, enh, go_month)
 }
 
 /// === year(v Vector) Scalar ===
-fn func_year(vals: &[Vector], _: &[Series], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
+fn func_year(vals: &[Vector], _: &[SeriesView<'_>], _: &[Expr], enh: &mut EvalNodeHelper) -> Result<Annotations, Error> {
     date_wrapper(vals, enh, go_year)
 }
 

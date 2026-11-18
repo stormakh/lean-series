@@ -163,6 +163,21 @@ impl fmt::Display for Series {
     }
 }
 
+/// A borrowed series: the range-vector argument of a function (the window of one series at one step).
+#[derive(Clone, Copy, Debug)]
+pub struct SeriesView<'a> {
+    pub metric: &'a Labels,
+    pub floats: &'a [FPoint],
+    pub histograms: &'a [HPoint],
+    pub drop_name: bool,
+}
+
+impl<'a> SeriesView<'a> {
+    pub fn of(s: &'a Series) -> SeriesView<'a> {
+        SeriesView { metric: &s.metric, floats: &s.floats, histograms: &s.histograms, drop_name: s.drop_name }
+    }
+}
+
 /// A single sample of a vector (Go `promql.Sample`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Sample {

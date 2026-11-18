@@ -1908,7 +1908,8 @@ impl<'a> Evaluator<'a> {
                 }
                 enh.ts = ts;
                 enh.out.clear();
-                let annos = call(&vector_vals, &in_matrix, &e.args, &mut enh)?;
+                let view = [SeriesView::of(&in_matrix[0])];
+                let annos = call(&vector_vals, &view, &e.args, &mut enh)?;
                 warnings.merge(annos);
                 if !from_subquery {
                     self.samples_stats.increment_samples_at_step(step, full_window_count);
@@ -2038,6 +2039,8 @@ impl<'a> Evaluator<'a> {
         let mut annos = Annotations::new();
         let mut raw = s.iterator(None);
         let mut vt = raw.next();
+        // The window is floats[head..]; the head moves instead of moving the points.
+        let mut head = 0usize;
         let mut ts = self.start_timestamp;
         let mut step = 0usize;
         while ts <= self.end_timestamp {
@@ -2052,10 +2055,17 @@ impl<'a> Evaluator<'a> {
             let mint = maxt - sel_range;
             {
                 let floats = &mut in_matrix[0].floats;
-                let drop = floats.iter().position(|p| p.t > mint).unwrap_or(floats.len());
+                let drop = floats[head..].iter().position(|p| p.t > mint).unwrap_or(floats.len() - head);
                 if drop > 0 {
                     self.current_samples -= drop as i64;
-                    floats.drain(..drop);
+                    head += drop;
+                    if head == floats.len() {
+                        floats.clear();
+                        head = 0;
+                    } else if head >= 64 && head * 2 >= floats.len() {
+                        floats.drain(..head);
+                        head = 0;
+                    }
                 }
                 if mint != maxt {
                     if vt == VT::Float && raw.at_t() <= mint {
@@ -2079,7 +2089,7 @@ impl<'a> Evaluator<'a> {
             }
             if vt == VT::Histogram || vt == VT::FloatHistogram {
                 let floats = &mut in_matrix[0].floats;
-                self.current_samples -= floats.len() as i64;
+                self.current_samples -= (floats.len() - head) as i64;
                 floats.clear();
                 return Ok(None);
             }
@@ -2089,7 +2099,7 @@ impl<'a> Evaluator<'a> {
                 }
             }
             self.update_peak();
-            let floats = &in_matrix[0].floats;
+            let floats = &in_matrix[0].floats[head..];
             if floats.is_empty() {
                 ts += self.interval;
                 step += 1;
@@ -2106,7 +2116,13 @@ impl<'a> Evaluator<'a> {
             }
             enh.ts = ts;
             enh.out.clear();
-            let a = call(vector_vals, in_matrix, args, enh)?;
+            let view = [SeriesView {
+                metric: &in_matrix[0].metric,
+                floats: &in_matrix[0].floats[head..],
+                histograms: &[],
+                drop_name: in_matrix[0].drop_name,
+            }];
+            let a = call(vector_vals, &view, args, enh)?;
             if !a.is_empty() {
                 annos.merge(a);
             }
@@ -2136,6 +2152,8 @@ impl<'a> Evaluator<'a> {
             ts += self.interval;
             step += 1;
         }
+        // Leave only the window in the buffer; the caller accounts for its samples.
+        in_matrix[0].floats.drain(..head);
         if tracking {
             for (st, t, r) in step_stats {
                 if !from_subquery {
