@@ -1,0 +1,5 @@
+tls_config:
+  min_version: TLS12
+  max_version: TLS13
+  insecure_skip_verify: true
+  server_name: foo

@@ -1,0 +1,22 @@
+basic_auth:
+  username: u
+  password: p
+tls_config:
+  ca_file: /x/ca.pem
+  cert: |
+    -----BEGIN CERT-----
+    abc
+  key: secret
+proxy_url: http://user:pass@proxy:3128/x
+no_proxy: a.b,c
+proxy_connect_header:
+  X-B: [b1]
+  A: [a1, a2]
+follow_redirects: false
+http_headers:
+  X-Z:
+    values: [v]
+    secrets: [s]
+    files: [f]
+  X-A:
+    values: ["needs: quoting", "true", ""]

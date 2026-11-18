@@ -1,0 +1,19 @@
+
+a: |
+  line1
+  line2
+b: |-
+  no trailing
+c: |+
+  keep
+
+d: "x\ny"
+e: "x\n"
+f: "x \ny"
+g: "\nlead"
+h: "  indented\nnext"
+i: ">fold\n"
+k:
+  - |
+    in list
+    two

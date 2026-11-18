@@ -1,0 +1,10 @@
+[package]
+name = "rcmp"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[dependencies]
+yaml = { path = "../../../../crates/yaml" }
+net = { path = "../../../../crates/net" }

@@ -1,0 +1,3 @@
+authorization:
+  type: '  Token '
+  credentials_file: /t

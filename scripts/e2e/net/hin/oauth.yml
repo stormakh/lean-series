@@ -1,0 +1,14 @@
+oauth2:
+  client_id: id
+  client_secret: s
+  scopes: [a, b]
+  token_url: http://t/token
+  endpoint_params: {z: 1, a: "2"}
+  claims:
+    n: 1
+    s: x
+    l: [1, two]
+  tls_config:
+    insecure_skip_verify: true
+  proxy_url: http://p
+enable_http2: false
