@@ -9,6 +9,7 @@ pub mod histogram_stats_iterator;
 pub mod info;
 pub mod parser;
 pub mod quantile;
+pub mod query_logger;
 pub mod value;
 
 pub use engine::*;
