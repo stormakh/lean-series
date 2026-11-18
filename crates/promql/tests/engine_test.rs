@@ -941,3 +941,166 @@ fn test_query_lookback_delta() {
         assert_eq!(expect, !v.is_empty(), "{}", name);
     }
 }
+
+// -----------------------------------------------------------------------------------------------------------------
+// Query cost.
+
+fn new_query_cost_engine() -> Engine {
+    Engine::new(EngineOpts {
+        max_samples: 1_000_000,
+        timeout: Duration::from_secs(100),
+        no_step_subquery_interval_fn: Some(Arc::new(|_| 60_000)),
+        enable_at_modifier: true,
+        enable_negative_offset: true,
+        enable_delayed_name_removal: true,
+        enable_query_cost: true,
+        enable_per_step_stats: true,
+        parser: Some(promql::parser::Parser::new(promqltest::test_parser_opts())),
+        ..Default::default()
+    })
+}
+
+fn exec_instant(engine: &Engine, st: &TestStorage, opts: Option<&promql::QueryOpts>, q: &str, ts: i64) -> Option<Error> {
+    let ctx = Context::background();
+    let mut qry = engine.new_instant_query(&ctx, Arc::new(st.clone()), opts, q, ts).unwrap();
+    qry.exec(&ctx).err
+}
+
+fn err_is(e: &Option<Error>, want: &PromqlError) -> bool {
+    e.as_ref().and_then(PromqlError::find) == Some(want)
+}
+
+fn env() -> String {
+    "query execution".to_string()
+}
+
+#[test]
+fn test_query_cost_max_series() {
+    let st = promqltest::loaded_storage(
+        "load 10s\n  bigmetric{a=\"1\"} 1+1x100\n  bigmetric{a=\"2\"} 1+1x100\n  bigmetric{a=\"3\"} 1+1x100\n",
+    )
+    .unwrap();
+    let engine = new_query_cost_engine();
+    engine.set_query_limits(3, 0, Duration::ZERO);
+    assert!(exec_instant(&engine, &st, None, "bigmetric", 0).is_none());
+    engine.set_query_limits(2, 0, Duration::ZERO);
+    assert!(err_is(&exec_instant(&engine, &st, None, "bigmetric", 0), &PromqlError::TooManySeries(env())));
+    engine.set_query_limits(10, 0, Duration::ZERO);
+    let opts = promql::QueryOpts::with_limits(false, Duration::ZERO, 2, 0, Duration::ZERO, None);
+    assert!(err_is(&exec_instant(&engine, &st, Some(&opts), "bigmetric", 0), &PromqlError::TooManySeries(env())));
+    engine.set_query_limits(2, 0, Duration::ZERO);
+    let opts = promql::QueryOpts::with_limits(false, Duration::ZERO, 100, 0, Duration::ZERO, None);
+    let err = engine
+        .new_instant_query(&Context::background(), Arc::new(st.clone()), Some(&opts), "bigmetric", 0)
+        .err()
+        .unwrap();
+    match PromqlError::find(&err) {
+        Some(PromqlError::LimitAboveCeiling { limit, .. }) => assert_eq!("max_series", limit),
+        other => panic!("{:?}", other),
+    }
+}
+
+#[test]
+fn test_query_cost_max_samples_read() {
+    let st = promqltest::loaded_storage("load 10s\n  bigmetric{a=\"1\"} 1+1x100\n  bigmetric{a=\"2\"} 1+1x100\n").unwrap();
+    let engine = new_query_cost_engine();
+    let q = "sum_over_time(bigmetric[100s])";
+    engine.set_query_limits(0, 1_000_000, Duration::ZERO);
+    assert!(exec_instant(&engine, &st, None, q, 1_000_000).is_none());
+    engine.set_query_limits(0, 1, Duration::ZERO);
+    assert!(err_is(&exec_instant(&engine, &st, None, q, 1_000_000), &PromqlError::TooManySamplesRead(env())));
+}
+
+#[test]
+fn test_query_cost_disabled_feature() {
+    let st = promqltest::loaded_storage("load 10s\n  bigmetric{a=\"1\"} 1+1x100\n  bigmetric{a=\"2\"} 1+1x100\n").unwrap();
+    let engine = promqltest::new_test_engine(false, Duration::ZERO, 1_000_000);
+    engine.set_query_limits(1, 1, Duration::ZERO);
+    let opts = promql::QueryOpts::with_limits(false, Duration::ZERO, 1, 1, Duration::ZERO, None);
+    assert!(exec_instant(&engine, &st, Some(&opts), "bigmetric", 0).is_none());
+}
+
+#[test]
+fn test_query_cost_samples_accounting() {
+    let st = promqltest::loaded_storage("load 10s\n  bigmetric{a=\"1\"} 1+1x100\n  bigmetric{a=\"2\"} 1+1x100\n").unwrap();
+    for (name, engine) in [
+        ("feature disabled", promqltest::new_test_engine(false, Duration::ZERO, 1_000_000)),
+        ("feature enabled", new_query_cost_engine()),
+    ] {
+        let ctx = Context::background();
+        let mut qry = engine.new_instant_query(&ctx, Arc::new(st.clone()), None, "bigmetric", 0).unwrap();
+        assert!(qry.exec(&ctx).err.is_none(), "{}", name);
+        let s = qry.stats().samples.unwrap();
+        assert_eq!(2, s.total_series, "{}: series touched must be accounted", name);
+        assert_eq!(2, s.samples_read, "{}: samples read must be accounted", name);
+        assert!(s.peak_samples > 0, "{}: peak samples must be accounted", name);
+    }
+}
+
+#[test]
+fn test_query_cost_limit_resolution() {
+    let st = promqltest::loaded_storage(
+        "load 10s\n  bigmetric{a=\"1\"} 1+1x100\n  bigmetric{a=\"2\"} 1+1x100\n  bigmetric{a=\"3\"} 1+1x100\n",
+    )
+    .unwrap();
+    let ts = 1_000_000;
+    // (name, query, tight, loose, rejection)
+    let limits: [(&str, &str, u64, u64, PromqlError); 2] = [
+        ("max_series", "bigmetric", 2, 1000, PromqlError::TooManySeries(env())),
+        ("max_samples_read", "sum_over_time(bigmetric[100s])", 1, 1_000_000, PromqlError::TooManySamplesRead(env())),
+    ];
+    // (name, ceiling, requested, want construct error, want rejected); 0 unset, 1 tight, 2 loose.
+    let cases: [(&str, u8, u8, bool, bool); 7] = [
+        ("request below the ceiling tightens it", 2, 1, false, true),
+        ("request equal to the ceiling is accepted", 1, 1, false, true),
+        ("request above the ceiling is rejected", 1, 2, true, false),
+        ("no request falls back to the ceiling", 1, 0, false, true),
+        ("no request and a generous ceiling allows the query", 2, 0, false, false),
+        ("unlimited ceiling applies the request", 0, 1, false, true),
+        ("unlimited ceiling applies a large request", 0, 2, false, false),
+    ];
+    for (lname, query, tight, loose, rejected) in &limits {
+        let value = |w: u8| match w {
+            1 => *tight,
+            2 => *loose,
+            _ => 0,
+        };
+        for (cname, ceiling, requested, want_construct, want_rejected) in cases {
+            let name = format!("{}/{}", lname, cname);
+            let engine = new_query_cost_engine();
+            if *lname == "max_series" {
+                engine.set_query_limits(value(ceiling), 0, Duration::ZERO);
+            } else {
+                engine.set_query_limits(0, value(ceiling), Duration::ZERO);
+            }
+            let opts = (value(requested) > 0).then(|| {
+                if *lname == "max_series" {
+                    promql::QueryOpts::with_limits(false, Duration::ZERO, value(requested), 0, Duration::ZERO, None)
+                } else {
+                    promql::QueryOpts::with_limits(false, Duration::ZERO, 0, value(requested), Duration::ZERO, None)
+                }
+            });
+            let ctx = Context::background();
+            let r = engine.new_instant_query(&ctx, Arc::new(st.clone()), opts.as_ref(), query, ts);
+            if want_construct {
+                let err = r.err().expect(&name);
+                match PromqlError::find(&err) {
+                    Some(PromqlError::LimitAboveCeiling { limit, requested: rq, ceiling: cl }) => {
+                        assert_eq!(lname, limit, "{}", name);
+                        assert_eq!(&value(requested).to_string(), rq, "{}", name);
+                        assert_eq!(&value(ceiling).to_string(), cl, "{}", name);
+                    }
+                    other => panic!("{}: {:?}", name, other),
+                }
+                continue;
+            }
+            let mut qry = r.expect(&name);
+            let err = qry.exec(&ctx).err;
+            if want_rejected {
+                assert!(err_is(&err, rejected), "{}: {:?}", name, err);
+            } else {
+                assert!(err.is_none(), "{}: {:?}", name, err);
+            }
+        }
+    }
+}
