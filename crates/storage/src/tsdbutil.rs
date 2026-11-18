@@ -1,9 +1,20 @@
 //! Port of `tsdb/tsdbutil/histogram.go`: test histograms that the storage, TSDB and PromQL tests share.
 
-use model::histogram::{CUSTOM_BUCKETS_SCHEMA, CounterResetHint, FloatHistogram, Histogram, Span, custom_values};
+use model::histogram::{
+    CUSTOM_BUCKETS_SCHEMA, CounterResetHint, FloatHistogram, Histogram, Span, custom_values,
+};
 
 fn spans() -> Vec<Span> {
-    vec![Span { offset: 0, length: 2 }, Span { offset: 1, length: 2 }]
+    vec![
+        Span {
+            offset: 0,
+            length: 2,
+        },
+        Span {
+            offset: 1,
+            length: 2,
+        },
+    ]
 }
 
 /// Go `GenerateTestHistograms`: `n` histograms; all but the first are marked as not a counter reset.
@@ -70,7 +81,9 @@ pub fn generate_test_custom_buckets_histogram(i: i64) -> Histogram {
 
 /// Go `GenerateTestGaugeHistograms`.
 pub fn generate_test_gauge_histograms(n: usize) -> Vec<Histogram> {
-    (0..n).map(|x| generate_test_gauge_histogram(((x as f64).sin() * 100.0) as i64 + 100)).collect()
+    (0..n)
+        .map(|x| generate_test_gauge_histogram(((x as f64).sin() * 100.0) as i64 + 100))
+        .collect()
 }
 
 /// Go `GenerateTestGaugeHistogram`.
@@ -139,7 +152,9 @@ pub fn generate_test_custom_buckets_float_histogram(i: i64) -> FloatHistogram {
 
 /// Go `GenerateTestGaugeFloatHistograms`.
 pub fn generate_test_gauge_float_histograms(n: usize) -> Vec<FloatHistogram> {
-    (0..n).map(|x| generate_test_gauge_float_histogram(((x as f64).sin() * 100.0) as i64 + 100)).collect()
+    (0..n)
+        .map(|x| generate_test_gauge_float_histogram(((x as f64).sin() * 100.0) as i64 + 100))
+        .collect()
 }
 
 /// Go `GenerateTestGaugeFloatHistogram`.

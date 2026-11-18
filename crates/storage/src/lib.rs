@@ -33,13 +33,13 @@ pub use context::{CancelToken, Context, ERR_CANCELED, ERR_DEADLINE_EXCEEDED};
 pub use error::*;
 pub use fanout::*;
 pub use generic::{
-    apply_search_hints, compare_search_results, empty_search_result_set, err_search_result_set, linear_result_cap,
-    merge_search_result_sets, new_lazy_search_result_set, new_search_result_set_from_slice,
-    new_search_result_set_from_slice_and_error, MIN_LINEAR_ALLOC_CAP,
+    MIN_LINEAR_ALLOC_CAP, apply_search_hints, compare_search_results, empty_search_result_set,
+    err_search_result_set, linear_result_cap, merge_search_result_sets, new_lazy_search_result_set,
+    new_search_result_set_from_slice, new_search_result_set_from_slice_and_error,
 };
 pub use interface::*;
 pub use memoized::*;
 pub use merge::*;
 pub use noop::*;
-pub use secondary::ERR_SECONDARY_SEARCH_UNSUPPORTED;
+pub use secondary::{ERR_SECONDARY_SEARCH_UNSUPPORTED, warnings_on_error_search_result_set};
 pub use series::*;

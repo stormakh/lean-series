@@ -129,7 +129,10 @@ impl LabelHints {
 
     /// Go `ApplyLimit`: at most `limit` values, the smallest ones with `limit_smallest`, else the leading ones.
     /// The bool tells whether the result is a new allocation (`Cow::Owned`).
-    pub fn apply_limit<'a>(h: Option<&LabelHints>, values: &'a [String]) -> (Cow<'a, [String]>, bool) {
+    pub fn apply_limit<'a>(
+        h: Option<&LabelHints>,
+        values: &'a [String],
+    ) -> (Cow<'a, [String]>, bool) {
         let Some(h) = h else {
             return (Cow::Borrowed(values), false);
         };
@@ -137,7 +140,10 @@ impl LabelHints {
             return (Cow::Borrowed(values), false);
         }
         if h.limit_smallest {
-            return (Cow::Owned(crate::generic::smallest_n_values(values, h.limit as usize)), true);
+            return (
+                Cow::Owned(crate::generic::smallest_n_values(values, h.limit as usize)),
+                true,
+            );
         }
         (Cow::Borrowed(&values[..h.limit as usize]), false)
     }
@@ -219,10 +225,20 @@ pub type LabelResult = (Vec<String>, Annotations, Option<Error>);
 /// Querying access over labels (Go `storage.LabelQuerier`).
 pub trait LabelQuerier: Send + Sync {
     /// All potential values for a label name, sorted. With matchers, only values of matching series.
-    fn label_values(&self, ctx: &Context, name: &str, hints: Option<&LabelHints>, matchers: &[Matcher])
-    -> LabelResult;
+    fn label_values(
+        &self,
+        ctx: &Context,
+        name: &str,
+        hints: Option<&LabelHints>,
+        matchers: &[Matcher],
+    ) -> LabelResult;
     /// All unique label names, sorted. With matchers, only names of matching series.
-    fn label_names(&self, ctx: &Context, hints: Option<&LabelHints>, matchers: &[Matcher]) -> LabelResult;
+    fn label_names(
+        &self,
+        ctx: &Context,
+        hints: Option<&LabelHints>,
+        matchers: &[Matcher],
+    ) -> LabelResult;
     /// Releases the resources of the querier.
     fn close(&mut self) -> Option<Error>;
 }
@@ -231,8 +247,13 @@ pub trait LabelQuerier: Send + Sync {
 pub trait Querier: LabelQuerier {
     /// The series that match the matchers. Results are not checked against the matchers. `sort_series` asks for
     /// series sorted by labels (prefer not to ask).
-    fn select(&self, ctx: &Context, sort_series: bool, hints: Option<&SelectHints>, matchers: &[Matcher])
-    -> BoxSeriesSet;
+    fn select(
+        &self,
+        ctx: &Context,
+        sort_series: bool,
+        hints: Option<&SelectHints>,
+        matchers: &[Matcher],
+    ) -> BoxSeriesSet;
 
     /// The search capability (Go type assertion `q.(storage.Searcher)`).
     fn as_searcher(&self) -> Option<&dyn Searcher> {
@@ -254,8 +275,13 @@ pub trait Querier: LabelQuerier {
 
 /// Querying access over chunks of a fixed time range (Go `storage.ChunkQuerier`).
 pub trait ChunkQuerier: LabelQuerier {
-    fn select(&self, ctx: &Context, sort_series: bool, hints: Option<&SelectHints>, matchers: &[Matcher])
-    -> BoxChunkSeriesSet;
+    fn select(
+        &self,
+        ctx: &Context,
+        sort_series: bool,
+        hints: Option<&SelectHints>,
+        matchers: &[Matcher],
+    ) -> BoxChunkSeriesSet;
 
     /// The search capability (Go type assertion `q.(storage.Searcher)`).
     fn as_searcher(&self) -> Option<&dyn Searcher> {
@@ -311,7 +337,12 @@ pub trait ExemplarQueryable: Send + Sync {
 /// Reads exemplars (Go `storage.ExemplarQuerier`).
 pub trait ExemplarQuerier {
     /// All exemplars that match the matchers: an intersection within one matcher list, a union between lists.
-    fn select(&self, start: i64, end: i64, matchers: &[Vec<Matcher>]) -> Result<Vec<QueryResult>, Error>;
+    fn select(
+        &self,
+        start: i64,
+        end: i64,
+        matchers: &[Vec<Matcher>],
+    ) -> Result<Vec<QueryResult>, Error>;
 }
 
 /// Exemplar storage (Go `storage.ExemplarStorage`).
@@ -367,7 +398,12 @@ pub trait Appender: AppenderTransaction + Send {
     /// Sets append options such as discarding out-of-order samples.
     fn set_options(&mut self, opts: Option<&AppendOptions>);
     /// Adds an exemplar for the series.
-    fn append_exemplar(&mut self, r: SeriesRef, l: &Labels, e: &Exemplar) -> Result<SeriesRef, Error>;
+    fn append_exemplar(
+        &mut self,
+        r: SeriesRef,
+        l: &Labels,
+        e: &Exemplar,
+    ) -> Result<SeriesRef, Error>;
     /// Adds a histogram (`h`) or a float histogram (`fh`).
     fn append_histogram(
         &mut self,
@@ -388,9 +424,20 @@ pub trait Appender: AppenderTransaction + Send {
         fh: Option<&FloatHistogram>,
     ) -> Result<SeriesRef, Error>;
     /// Updates the metadata of a series. Fails if the series does not exist.
-    fn update_metadata(&mut self, r: SeriesRef, l: &Labels, m: &Metadata) -> Result<SeriesRef, Error>;
+    fn update_metadata(
+        &mut self,
+        r: SeriesRef,
+        l: &Labels,
+        m: &Metadata,
+    ) -> Result<SeriesRef, Error>;
     /// Adds a synthetic zero sample at the start timestamp `st`, before the sample at `t`.
-    fn append_st_zero_sample(&mut self, r: SeriesRef, l: &Labels, t: i64, st: i64) -> Result<SeriesRef, Error>;
+    fn append_st_zero_sample(
+        &mut self,
+        r: SeriesRef,
+        l: &Labels,
+        t: i64,
+        st: i64,
+    ) -> Result<SeriesRef, Error>;
 
     /// The optional `GetRef` capability (Go type assertion).
     fn as_get_ref(&mut self) -> Option<&mut dyn GetRef> {
@@ -400,7 +447,12 @@ pub trait Appender: AppenderTransaction + Send {
 
 /// Adds exemplars (Go `storage.ExemplarAppender`).
 pub trait ExemplarAppender {
-    fn append_exemplar(&mut self, r: SeriesRef, l: &Labels, e: &Exemplar) -> Result<SeriesRef, Error>;
+    fn append_exemplar(
+        &mut self,
+        r: SeriesRef,
+        l: &Labels,
+        e: &Exemplar,
+    ) -> Result<SeriesRef, Error>;
 }
 
 /// Gives the reference of a series (Go `storage.GetRef`): 0 if unknown, with labels that will not be copied
@@ -461,7 +513,12 @@ pub trait AppenderV2: AppenderTransaction + Send {
 pub trait ExemplarAppenderV2 {
     /// Appends exemplars (sorted by timestamp) for an existing series; `ERR_NOT_FOUND` if it does not exist.
     /// Every exemplar is attempted; failures give an `AppendPartialError`.
-    fn append_exemplars(&mut self, r: SeriesRef, ls: &Labels, exemplars: &[Exemplar]) -> Result<SeriesRef, Error>;
+    fn append_exemplars(
+        &mut self,
+        r: SeriesRef,
+        ls: &Labels,
+        exemplars: &[Exemplar],
+    ) -> Result<SeriesRef, Error>;
 }
 
 /// An appender of only float and histogram samples (Go `storage.LimitedAppenderV1`), for migration to V2.
@@ -495,7 +552,8 @@ impl AppenderTransaction for LimitedAppenderV1Adapter {
 
 impl LimitedAppenderV1 for LimitedAppenderV1Adapter {
     fn append(&mut self, r: SeriesRef, l: &Labels, t: i64, v: f64) -> Result<SeriesRef, Error> {
-        self.0.append(r, l, 0, t, v, None, None, &AppendV2Options::default())
+        self.0
+            .append(r, l, 0, t, v, None, None, &AppendV2Options::default())
     }
     fn append_histogram(
         &mut self,
@@ -505,7 +563,8 @@ impl LimitedAppenderV1 for LimitedAppenderV1Adapter {
         h: Option<&Histogram>,
         fh: Option<&FloatHistogram>,
     ) -> Result<SeriesRef, Error> {
-        self.0.append(r, l, 0, t, 0.0, h, fh, &AppendV2Options::default())
+        self.0
+            .append(r, l, 0, t, 0.0, h, fh, &AppendV2Options::default())
     }
 }
 
@@ -606,7 +665,12 @@ pub fn mock_series<S: AsRef<str>>(
     values: Vec<f64>,
     label_set: &[S],
 ) -> SeriesArc {
-    Arc::new(MockSeries { start_timestamps, timestamps, values, labels: labels::from_strings(label_set) })
+    Arc::new(MockSeries {
+        start_timestamps,
+        timestamps,
+        values,
+        labels: labels::from_strings(label_set),
+    })
 }
 
 impl Series for MockSeries {
@@ -625,11 +689,18 @@ impl Series for MockSeries {
 /// A querier whose select calls a function (Go `MockQuerier`).
 pub struct MockQuerier {
     #[allow(clippy::type_complexity)]
-    pub select_mock_function: Box<dyn Fn(bool, Option<&SelectHints>, &[Matcher]) -> BoxSeriesSet + Send + Sync>,
+    pub select_mock_function:
+        Box<dyn Fn(bool, Option<&SelectHints>, &[Matcher]) -> BoxSeriesSet + Send + Sync>,
 }
 
 impl LabelQuerier for MockQuerier {
-    fn label_values(&self, _: &Context, _: &str, _: Option<&LabelHints>, _: &[Matcher]) -> LabelResult {
+    fn label_values(
+        &self,
+        _: &Context,
+        _: &str,
+        _: Option<&LabelHints>,
+        _: &[Matcher],
+    ) -> LabelResult {
         (Vec::new(), Annotations::new(), None)
     }
     fn label_names(&self, _: &Context, _: Option<&LabelHints>, _: &[Matcher]) -> LabelResult {
@@ -641,7 +712,13 @@ impl LabelQuerier for MockQuerier {
 }
 
 impl Querier for MockQuerier {
-    fn select(&self, _: &Context, sort_series: bool, hints: Option<&SelectHints>, matchers: &[Matcher]) -> BoxSeriesSet {
+    fn select(
+        &self,
+        _: &Context,
+        sort_series: bool,
+        hints: Option<&SelectHints>,
+        matchers: &[Matcher],
+    ) -> BoxSeriesSet {
         (self.select_mock_function)(sort_series, hints, matchers)
     }
 }

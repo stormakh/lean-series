@@ -58,7 +58,12 @@ impl<'a> MemoizedSeriesIterator<'a> {
         if self.prev_time == i64::MIN {
             return None;
         }
-        Some((self.prev_st, self.prev_time, self.prev_value, self.prev_float_histogram.as_ref()))
+        Some((
+            self.prev_st,
+            self.prev_time,
+            self.prev_value,
+            self.prev_float_histogram.as_ref(),
+        ))
     }
 
     /// Advances to the element at time t or later.
@@ -101,7 +106,10 @@ impl<'a> MemoizedSeriesIterator<'a> {
             ValueType::Histogram | ValueType::FloatHistogram => {
                 self.prev_value = 0.0;
                 self.prev_st = self.it.at_st();
-                let reuse = self.prev_float_histogram.take().or_else(|| self.spare.take());
+                let reuse = self
+                    .prev_float_histogram
+                    .take()
+                    .or_else(|| self.spare.take());
                 let (t, fh) = self.it.at_float_histogram(reuse);
                 self.prev_time = t;
                 self.prev_float_histogram = Some(fh);

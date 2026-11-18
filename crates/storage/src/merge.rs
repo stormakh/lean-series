@@ -26,7 +26,8 @@ pub type VerticalSeriesMergeFunc = Arc<dyn Fn(Vec<SeriesArc>) -> SeriesArc + Sen
 
 /// Merges chunk series with the same labels into one chunk series (Go `VerticalChunkSeriesMergeFunc`). How
 /// chunks are merged (sorted, re-encoded) is up to the implementation.
-pub type VerticalChunkSeriesMergeFunc = Arc<dyn Fn(Vec<ChunkSeriesArc>) -> ChunkSeriesArc + Send + Sync>;
+pub type VerticalChunkSeriesMergeFunc =
+    Arc<dyn Fn(Vec<ChunkSeriesArc>) -> ChunkSeriesArc + Send + Sync>;
 
 type MergeFn<T> = Arc<dyn Fn(Vec<T>) -> T + Send + Sync>;
 
@@ -48,7 +49,8 @@ pub fn new_merge_querier(
     merge_fn: VerticalSeriesMergeFunc,
 ) -> BoxQuerier {
     let mut primaries: Vec<BoxQuerier> = primaries.into_iter().filter(|q| !q.is_noop()).collect();
-    let mut secondaries: Vec<BoxQuerier> = secondaries.into_iter().filter(|q| !q.is_noop()).collect();
+    let mut secondaries: Vec<BoxQuerier> =
+        secondaries.into_iter().filter(|q| !q.is_noop()).collect();
     match (primaries.len(), secondaries.len()) {
         (0, 0) => return Box::new(NoopQuerier),
         (1, 0) => return primaries.pop().expect("one primary"),
@@ -63,7 +65,8 @@ pub fn new_merge_querier(
     }
     let supports_search = primaries.iter().all(|q| q.as_searcher().is_some());
     let concurrent_select = !secondaries.is_empty();
-    let mut queriers: Vec<Box<dyn GenericQuerier<SeriesArc>>> = Vec::with_capacity(primaries.len() + secondaries.len());
+    let mut queriers: Vec<Box<dyn GenericQuerier<SeriesArc>>> =
+        Vec::with_capacity(primaries.len() + secondaries.len());
     for q in primaries {
         queriers.push(Box::new(PlainQuerier(q)));
     }
@@ -71,7 +74,11 @@ pub fn new_merge_querier(
         queriers.push(Box::new(SecondaryQuerier::new(Box::new(PlainQuerier(q)))));
     }
     Box::new(QuerierAdapter {
-        g: Box::new(MergeGenericQuerier { queriers, merge_fn: merge_fn as MergeFn<SeriesArc>, concurrent_select }),
+        g: Box::new(MergeGenericQuerier {
+            queriers,
+            merge_fn: merge_fn as MergeFn<SeriesArc>,
+            concurrent_select,
+        }),
         supports_search,
     })
 }
@@ -82,14 +89,18 @@ pub fn new_merge_chunk_querier(
     secondaries: Vec<BoxChunkQuerier>,
     merge_fn: VerticalChunkSeriesMergeFunc,
 ) -> BoxChunkQuerier {
-    let mut primaries: Vec<BoxChunkQuerier> = primaries.into_iter().filter(|q| !q.is_noop()).collect();
-    let mut secondaries: Vec<BoxChunkQuerier> = secondaries.into_iter().filter(|q| !q.is_noop()).collect();
+    let mut primaries: Vec<BoxChunkQuerier> =
+        primaries.into_iter().filter(|q| !q.is_noop()).collect();
+    let mut secondaries: Vec<BoxChunkQuerier> =
+        secondaries.into_iter().filter(|q| !q.is_noop()).collect();
     match (primaries.len(), secondaries.len()) {
         (0, 0) => return Box::new(NoopChunkQuerier),
         (1, 0) => return primaries.pop().expect("one primary"),
         (0, 1) => {
             let s = secondaries.pop().expect("one secondary");
-            return Box::new(ChunkQuerierAdapter { g: Box::new(SecondaryQuerier::new(Box::new(PlainQuerier(s)))) });
+            return Box::new(ChunkQuerierAdapter {
+                g: Box::new(SecondaryQuerier::new(Box::new(PlainQuerier(s)))),
+            });
         }
         _ => {}
     }
@@ -112,11 +123,20 @@ pub fn new_merge_chunk_querier(
 }
 
 impl<T: GenericItem> GenericQuerier<T> for MergeGenericQuerier<T> {
-    fn select(&self, ctx: &Context, _sort: bool, hints: Option<&SelectHints>, matchers: &[Matcher]) -> GBox<T> {
+    fn select(
+        &self,
+        ctx: &Context,
+        _sort: bool,
+        hints: Option<&SelectHints>,
+        matchers: &[Matcher],
+    ) -> GBox<T> {
         let limit = hints.map_or(0, |h| h.limit);
         // The merge needs sorted sets.
         let series_sets: Vec<GBox<T>> = if !self.concurrent_select || self.queriers.len() < 2 {
-            self.queriers.iter().map(|q| q.select(ctx, true, hints, matchers)).collect()
+            self.queriers
+                .iter()
+                .map(|q| q.select(ctx, true, hints, matchers))
+                .collect()
         } else {
             std::thread::scope(|s| {
                 let handles: Vec<_> = self.queriers[1..]
@@ -141,22 +161,41 @@ impl<T: GenericItem> GenericQuerier<T> for MergeGenericQuerier<T> {
         })))
     }
 
-    fn label_values(&self, ctx: &Context, name: &str, hints: Option<&LabelHints>, m: &[Matcher]) -> LabelResult {
-        let (res, ws, err) = merge_results(&self.queriers, hints, &|q| q.label_values(ctx, name, hints, m));
+    fn label_values(
+        &self,
+        ctx: &Context,
+        name: &str,
+        hints: Option<&LabelHints>,
+        m: &[Matcher],
+    ) -> LabelResult {
+        let (res, ws, err) = merge_results(&self.queriers, hints, &|q| {
+            q.label_values(ctx, name, hints, m)
+        });
         if let Some(err) = err {
             return (
                 Vec::new(),
                 Annotations::new(),
-                Some(Error::wrap(format!("LabelValues() from merge generic querier for label {}", name), err)),
+                Some(Error::wrap(
+                    format!(
+                        "LabelValues() from merge generic querier for label {}",
+                        name
+                    ),
+                    err,
+                )),
             );
         }
         (res, ws, None)
     }
 
     fn label_names(&self, ctx: &Context, hints: Option<&LabelHints>, m: &[Matcher]) -> LabelResult {
-        let (res, ws, err) = merge_results(&self.queriers, hints, &|q| q.label_names(ctx, hints, m));
+        let (res, ws, err) =
+            merge_results(&self.queriers, hints, &|q| q.label_names(ctx, hints, m));
         if let Some(err) = err {
-            return (Vec::new(), Annotations::new(), Some(Error::wrap("LabelNames() from merge generic querier", err)));
+            return (
+                Vec::new(),
+                Annotations::new(),
+                Some(Error::wrap("LabelNames() from merge generic querier", err)),
+            );
         }
         (res, ws, None)
     }
@@ -183,7 +222,11 @@ impl<T: GenericItem> GenericQuerier<T> for MergeGenericQuerier<T> {
 type LabelFn<'f, T> = dyn Fn(&dyn GenericQuerier<T>) -> LabelResult + 'f;
 
 /// Go `mergeResults`: a merge sort of the results of the queriers, split in halves.
-fn merge_results<T>(lq: &[Box<dyn GenericQuerier<T>>], hints: Option<&LabelHints>, f: &LabelFn<'_, T>) -> LabelResult {
+fn merge_results<T>(
+    lq: &[Box<dyn GenericQuerier<T>>],
+    hints: Option<&LabelHints>,
+    f: &LabelFn<'_, T>,
+) -> LabelResult {
     if lq.is_empty() {
         return (Vec::new(), Annotations::new(), None);
     }
@@ -241,9 +284,18 @@ fn truncate_to_limit(mut s: Vec<String>, hints: Option<&LabelHints>) -> Vec<Stri
 
 /// Go `NewMergeSeriesSet`: merges sorted series sets; series with equal labels are merged with `merge_fn`.
 /// `limit` > 0 limits the number of series.
-pub fn new_merge_series_set(sets: Vec<BoxSeriesSet>, limit: i64, merge_fn: VerticalSeriesMergeFunc) -> BoxSeriesSet {
-    let generic: Vec<GBox<SeriesArc>> = sets.into_iter().map(|s| Box::new(s) as GBox<SeriesArc>).collect();
-    Box::new(SeriesSetAdapter(new_generic_merge_series_set(generic, limit, merge_fn)))
+pub fn new_merge_series_set(
+    sets: Vec<BoxSeriesSet>,
+    limit: i64,
+    merge_fn: VerticalSeriesMergeFunc,
+) -> BoxSeriesSet {
+    let generic: Vec<GBox<SeriesArc>> = sets
+        .into_iter()
+        .map(|s| Box::new(s) as GBox<SeriesArc>)
+        .collect();
+    Box::new(SeriesSetAdapter(new_generic_merge_series_set(
+        generic, limit, merge_fn,
+    )))
 }
 
 /// Go `NewMergeChunkSeriesSet`.
@@ -252,8 +304,13 @@ pub fn new_merge_chunk_series_set(
     limit: i64,
     merge_fn: VerticalChunkSeriesMergeFunc,
 ) -> BoxChunkSeriesSet {
-    let generic: Vec<GBox<ChunkSeriesArc>> = sets.into_iter().map(|s| Box::new(s) as GBox<ChunkSeriesArc>).collect();
-    Box::new(ChunkSeriesSetAdapter(new_generic_merge_series_set(generic, limit, merge_fn)))
+    let generic: Vec<GBox<ChunkSeriesArc>> = sets
+        .into_iter()
+        .map(|s| Box::new(s) as GBox<ChunkSeriesArc>)
+        .collect();
+    Box::new(ChunkSeriesSetAdapter(new_generic_merge_series_set(
+        generic, limit, merge_fn,
+    )))
 }
 
 /// Go `genericMergeSeriesSet`.
@@ -273,7 +330,11 @@ fn set_less<T: GenericItem>(sets: &[GBox<T>], a: usize, b: usize) -> bool {
 }
 
 /// Go `newGenericMergeSeriesSet`: each set must be sorted by labels.
-fn new_generic_merge_series_set<T: GenericItem>(mut sets: Vec<GBox<T>>, limit: i64, merge_fn: MergeFn<T>) -> GBox<T> {
+fn new_generic_merge_series_set<T: GenericItem>(
+    mut sets: Vec<GBox<T>>,
+    limit: i64,
+    merge_fn: MergeFn<T>,
+) -> GBox<T> {
     if sets.len() == 1 {
         return sets.pop().expect("one set");
     }
@@ -330,7 +391,11 @@ impl<T: GenericItem> GenericSet<T> for GenericMergeSeriesSet<T> {
             }
         }
         self.merged = if self.current_sets.len() > 1 {
-            let series: Vec<T> = self.current_sets.iter().map(|&i| sets[i].at().clone()).collect();
+            let series: Vec<T> = self
+                .current_sets
+                .iter()
+                .map(|&i| sets[i].at().clone())
+                .collect();
             Some((self.merge_fn)(series))
         } else {
             None
@@ -372,7 +437,10 @@ pub struct ChainedSeries {
 /// timestamps one sample is kept and the others are dropped. Rust note: Go returns nil for no series; this
 /// returns a series without samples and with empty labels.
 pub fn chained_series_merge(series: Vec<SeriesArc>) -> SeriesArc {
-    let lset = series.first().map(|s| s.labels().clone()).unwrap_or_default();
+    let lset = series
+        .first()
+        .map(|s| s.labels().clone())
+        .unwrap_or_default();
     Arc::new(ChainedSeries { lset, series })
 }
 
@@ -406,7 +474,10 @@ pub struct ChainSampleIterator<'a> {
 }
 
 /// Go `ChainSampleIteratorFromSeries`.
-pub fn chain_sample_iterator_from_series<'a>(_reuse: Option<AnyIterator<'a>>, series: &'a [SeriesArc]) -> AnyIterator<'a> {
+pub fn chain_sample_iterator_from_series<'a>(
+    _reuse: Option<AnyIterator<'a>>,
+    series: &'a [SeriesArc],
+) -> AnyIterator<'a> {
     let iterators = series.iter().map(|s| s.iterator(None)).collect();
     AnyIterator::Other(Box::new(ChainSampleIterator::new(iterators)))
 }
@@ -439,7 +510,11 @@ impl<'a> ChainSampleIterator<'a> {
             0 => None,
             1 => Some(errs[0].clone()),
             _ => Some(chunkenc::Error::Msg(
-                errs.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n").into(),
+                errs.iter()
+                    .map(|e| e.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+                    .into(),
             )),
         };
         ValueType::None
@@ -448,7 +523,10 @@ impl<'a> ChainSampleIterator<'a> {
     fn cur(&self, what: &str) -> &AnyIterator<'a> {
         match self.curr {
             Some(c) => &self.iterators[c],
-            None => panic!("chainSampleIterator.{} called before first .Next or after .Next returned false.", what),
+            None => panic!(
+                "chainSampleIterator.{} called before first .Next or after .Next returned false.",
+                what
+            ),
         }
     }
 }
@@ -600,7 +678,9 @@ pub type FloatEncodingFn = Arc<dyn Fn() -> Encoding + Send + Sync>;
 
 /// Go `NewCompactingChunkSeriesMerger`: merges chunk series into one; overlapping chunks are compacted into
 /// time-ordered chunks, merging their samples with `merge_fn`.
-pub fn new_compacting_chunk_series_merger(merge_fn: VerticalSeriesMergeFunc) -> VerticalChunkSeriesMergeFunc {
+pub fn new_compacting_chunk_series_merger(
+    merge_fn: VerticalSeriesMergeFunc,
+) -> VerticalChunkSeriesMergeFunc {
     new_compacting_chunk_series_merger_with_float_encoding(merge_fn, None)
 }
 
@@ -611,7 +691,10 @@ pub fn new_compacting_chunk_series_merger_with_float_encoding(
     float_encoding: Option<FloatEncodingFn>,
 ) -> VerticalChunkSeriesMergeFunc {
     Arc::new(move |series: Vec<ChunkSeriesArc>| -> ChunkSeriesArc {
-        let lset = series.first().map(|s| s.labels().clone()).unwrap_or_default();
+        let lset = series
+            .first()
+            .map(|s| s.labels().clone())
+            .unwrap_or_default();
         Arc::new(CompactingChunkSeries {
             lset,
             series,
@@ -633,7 +716,8 @@ impl ChunkSeries for CompactingChunkSeries {
         &self.lset
     }
     fn iterator<'a>(&'a self, _reuse: Option<BoxMetaIterator<'a>>) -> BoxMetaIterator<'a> {
-        let iterators: Vec<BoxMetaIterator<'a>> = self.series.iter().map(|s| s.iterator(None)).collect();
+        let iterators: Vec<BoxMetaIterator<'a>> =
+            self.series.iter().map(|s| s.iterator(None)).collect();
         let enc = match &self.float_encoding {
             Some(f) => f(),
             None => chunkenc::ENC_XOR,
@@ -712,7 +796,11 @@ impl MetaIterator for CompactChunkIterator<'_> {
             let its = &self.iterators;
             heap::pop(&mut self.h, |a, b| chunk_less(its, *a, *b))
         };
-        self.curr = self.iterators[i].as_ref().expect("live iterator").at().clone();
+        self.curr = self.iterators[i]
+            .as_ref()
+            .expect("live iterator")
+            .at()
+            .clone();
         self.advance(i);
 
         let mut overlapping: Vec<SeriesArc> = Vec::new();
@@ -730,7 +818,10 @@ impl MetaIterator for CompactChunkIterator<'_> {
                 || next.chunk().bytes() != prev.chunk().bytes()
             {
                 // The series is the same, so the labels do not matter here.
-                overlapping.push(Arc::new(ChunkToSeriesDecoder::new(Labels::default(), next.clone())));
+                overlapping.push(Arc::new(ChunkToSeriesDecoder::new(
+                    Labels::default(),
+                    next.clone(),
+                )));
                 if next.max_time > o_max_time {
                     o_max_time = next.max_time;
                 }
@@ -747,7 +838,10 @@ impl MetaIterator for CompactChunkIterator<'_> {
         }
 
         // Add the current chunk, which is not in the overlap list yet.
-        overlapping.push(Arc::new(ChunkToSeriesDecoder::new(Labels::default(), self.curr.clone())));
+        overlapping.push(Arc::new(ChunkToSeriesDecoder::new(
+            Labels::default(),
+            self.curr.clone(),
+        )));
         let merged = (self.merge_fn)(overlapping);
         let chks = match series_to_chunks(&*merged, self.float_encoding) {
             Ok(c) => c,
@@ -771,7 +865,9 @@ impl MetaIterator for CompactChunkIterator<'_> {
     }
 
     fn err(&self) -> Option<Error> {
-        let errs = self.iterators[..self.n_orig].iter().map(|it| it.as_ref().and_then(|it| it.err()));
+        let errs = self.iterators[..self.n_orig]
+            .iter()
+            .map(|it| it.as_ref().and_then(|it| it.err()));
         Error::join(errs.chain(std::iter::once(self.err.clone())))
     }
 }
@@ -780,7 +876,10 @@ impl MetaIterator for CompactChunkIterator<'_> {
 /// be unsorted.
 pub fn new_concatenating_chunk_series_merger() -> VerticalChunkSeriesMergeFunc {
     Arc::new(|series: Vec<ChunkSeriesArc>| -> ChunkSeriesArc {
-        let lset = series.first().map(|s| s.labels().clone()).unwrap_or_default();
+        let lset = series
+            .first()
+            .map(|s| s.labels().clone())
+            .unwrap_or_default();
         Arc::new(ConcatenatingChunkSeries { lset, series })
     })
 }
@@ -795,7 +894,9 @@ impl ChunkSeries for ConcatenatingChunkSeries {
         &self.lset
     }
     fn iterator<'a>(&'a self, _reuse: Option<BoxMetaIterator<'a>>) -> BoxMetaIterator<'a> {
-        Box::new(ConcatenatingChunkIterator::new(self.series.iter().map(|s| s.iterator(None)).collect()))
+        Box::new(ConcatenatingChunkIterator::new(
+            self.series.iter().map(|s| s.iterator(None)).collect(),
+        ))
     }
 }
 
@@ -808,7 +909,11 @@ pub struct ConcatenatingChunkIterator<'a> {
 
 impl<'a> ConcatenatingChunkIterator<'a> {
     pub fn new(iterators: Vec<BoxMetaIterator<'a>>) -> Self {
-        ConcatenatingChunkIterator { iterators, idx: 0, curr: Meta::default() }
+        ConcatenatingChunkIterator {
+            iterators,
+            idx: 0,
+            curr: Meta::default(),
+        }
     }
 }
 

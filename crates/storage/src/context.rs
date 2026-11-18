@@ -38,7 +38,12 @@ impl Inner {
             && Instant::now() >= d
         {
             // Remember it, so later checks are one atomic load.
-            let _ = self.state.compare_exchange(NOT_DONE, DONE_DEADLINE, Ordering::Relaxed, Ordering::Relaxed);
+            let _ = self.state.compare_exchange(
+                NOT_DONE,
+                DONE_DEADLINE,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            );
             return self.state.load(Ordering::Relaxed);
         }
         match &self.parent {
@@ -63,7 +68,12 @@ pub struct CancelToken {
 impl CancelToken {
     /// Cancels the context and its children. Cancelling twice has no effect.
     pub fn cancel(&self) {
-        let _ = self.inner.state.compare_exchange(NOT_DONE, DONE_CANCELED, Ordering::Relaxed, Ordering::Relaxed);
+        let _ = self.inner.state.compare_exchange(
+            NOT_DONE,
+            DONE_CANCELED,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        );
     }
 }
 
@@ -99,8 +109,17 @@ impl Context {
     }
 
     fn child(&self, deadline: Option<Instant>) -> (Context, CancelToken) {
-        let inner = Arc::new(Inner { state: AtomicU8::new(NOT_DONE), deadline, parent: self.inner.clone() });
-        (Context { inner: Some(inner.clone()) }, CancelToken { inner })
+        let inner = Arc::new(Inner {
+            state: AtomicU8::new(NOT_DONE),
+            deadline,
+            parent: self.inner.clone(),
+        });
+        (
+            Context {
+                inner: Some(inner.clone()),
+            },
+            CancelToken { inner },
+        )
     }
 
     /// The deadline of this context or of its nearest parent with one.

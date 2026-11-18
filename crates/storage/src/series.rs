@@ -237,7 +237,10 @@ pub struct ErrChunksIterator {
 
 impl ErrChunksIterator {
     pub fn new(err: Error) -> ErrChunksIterator {
-        ErrChunksIterator { err: Some(err), meta: Meta::default() }
+        ErrChunksIterator {
+            err: Some(err),
+            meta: Meta::default(),
+        }
     }
 }
 
@@ -271,15 +274,26 @@ impl ListChunkSeries {
         for s in samples {
             match chunk_from_samples(s) {
                 Ok(m) => chks.push(m),
-                Err(e) => return ListChunkSeries { lset, chunks: Err(e) },
+                Err(e) => {
+                    return ListChunkSeries {
+                        lset,
+                        chunks: Err(e),
+                    };
+                }
             }
         }
-        ListChunkSeries { lset, chunks: Ok(chks) }
+        ListChunkSeries {
+            lset,
+            chunks: Ok(chks),
+        }
     }
 
     /// A chunk series over the given metas.
     pub fn from_metas(lset: Labels, chunks: Vec<Meta>) -> ListChunkSeries {
-        ListChunkSeries { lset, chunks: Ok(chunks) }
+        ListChunkSeries {
+            lset,
+            chunks: Ok(chunks),
+        }
     }
 }
 
@@ -307,7 +321,11 @@ pub struct ChunkSetToSeriesSet {
 
 /// Go `NewSeriesSetFromChunkSeriesSet`.
 pub fn new_series_set_from_chunk_series_set(chk: BoxChunkSeriesSet) -> BoxSeriesSet {
-    Box::new(ChunkSetToSeriesSet { set: chk, chk_iter_err: None, cur: None })
+    Box::new(ChunkSetToSeriesSet {
+        set: chk,
+        chk_iter_err: None,
+        cur: None,
+    })
 }
 
 impl SeriesSet for ChunkSetToSeriesSet {
@@ -320,7 +338,10 @@ impl SeriesSet for ChunkSetToSeriesSet {
         {
             let mut iter = cs.iterator(None);
             while iter.next() {
-                same_series_chunks.push(Arc::new(ChunkToSeriesDecoder::new(cs.labels().clone(), iter.at().clone())));
+                same_series_chunks.push(Arc::new(ChunkToSeriesDecoder::new(
+                    cs.labels().clone(),
+                    iter.at().clone(),
+                )));
             }
             if let Some(err) = iter.err() {
                 self.chk_iter_err = Some(err);
@@ -328,7 +349,10 @@ impl SeriesSet for ChunkSetToSeriesSet {
             }
         }
         // A series composed of the chunks of the same series.
-        self.cur = Some(Arc::new(ChainedSeries::new(cs.labels().clone(), same_series_chunks)));
+        self.cur = Some(Arc::new(ChainedSeries::new(
+            cs.labels().clone(),
+            same_series_chunks,
+        )));
         true
     }
     fn at(&self) -> &SeriesArc {
@@ -374,7 +398,10 @@ pub struct SeriesSetToChunkSet {
 
 /// Go `NewSeriesSetToChunkSet`.
 pub fn new_series_set_to_chunk_set(chk: BoxSeriesSet) -> BoxChunkSeriesSet {
-    Box::new(SeriesSetToChunkSet { set: chk, cur: None })
+    Box::new(SeriesSetToChunkSet {
+        set: chk,
+        cur: None,
+    })
 }
 
 impl ChunkSeriesSet for SeriesSetToChunkSet {
@@ -413,8 +440,14 @@ pub fn new_series_to_chunk_encoder(series: SeriesArc) -> ChunkSeriesArc {
 
 /// Go `NewSeriesToChunkEncoderWithFloatEncoding`: float samples use `float_encoding` (XOR or XOR2; anything else
 /// is XOR).
-pub fn new_series_to_chunk_encoder_with_float_encoding(series: SeriesArc, float_encoding: Encoding) -> ChunkSeriesArc {
-    Arc::new(SeriesToChunkEncoder { series, float_encoding })
+pub fn new_series_to_chunk_encoder_with_float_encoding(
+    series: SeriesArc,
+    float_encoding: Encoding,
+) -> ChunkSeriesArc {
+    Arc::new(SeriesToChunkEncoder {
+        series,
+        float_encoding,
+    })
 }
 
 impl ChunkSeries for SeriesToChunkEncoder {
@@ -431,7 +464,12 @@ impl ChunkSeries for SeriesToChunkEncoder {
 
 fn append_chunk(chks: &mut Vec<Meta>, mint: i64, maxt: i64, chk: Option<Box<dyn Chunk>>) {
     if let Some(chk) = chk {
-        chks.push(Meta { chunk_ref: 0, chunk: Some(Arc::from(chk)), min_time: mint, max_time: maxt });
+        chks.push(Meta {
+            chunk_ref: 0,
+            chunk: Some(Arc::from(chk)),
+            min_time: mint,
+            max_time: maxt,
+        });
     }
 }
 
@@ -462,7 +500,8 @@ pub fn series_to_chunks(series: &dyn Series, float_encoding: Encoding) -> Result
             if cur != desired {
                 // XOR and XOR2 are append-compatible, so a change of the desired float encoding alone does not cut
                 // the chunk, unless the sample has a start timestamp, which an open XOR chunk cannot store.
-                cut = !chunkenc::compatible_values(cur, desired) || (has_st && cur == chunkenc::ENC_XOR);
+                cut = !chunkenc::compatible_values(cur, desired)
+                    || (has_st && cur == chunkenc::ENC_XOR);
             }
         }
         if cut {
@@ -503,7 +542,8 @@ pub fn series_to_chunks(series: &dyn Series, float_encoding: Encoding) -> Result
                 let (tt, ff) = series_iter.at_float_histogram(Some(std::mem::take(&mut fh)));
                 t = tt;
                 fh = ff;
-                let (new_chk, recoded) = a.append_float_histogram(c, None, st, t, &mut fh, false)?;
+                let (new_chk, recoded) =
+                    a.append_float_histogram(c, None, st, t, &mut fh, false)?;
                 if let Some((nc, na)) = new_chk {
                     if !recoded {
                         append_chunk(&mut chks, mint, maxt, chk.take());
@@ -536,7 +576,9 @@ pub fn expand_samples(iter: &mut dyn ChunkIterator) -> Result<Vec<Sample>, Error
 }
 
 /// Go `ExpandSamplesWithoutReplacingNaNs`.
-pub fn expand_samples_without_replacing_nans(iter: &mut dyn ChunkIterator) -> Result<Vec<Sample>, Error> {
+pub fn expand_samples_without_replacing_nans(
+    iter: &mut dyn ChunkIterator,
+) -> Result<Vec<Sample>, Error> {
     expand(iter, false)
 }
 

@@ -10,7 +10,10 @@ use model::metadata::Metadata;
 use crate::context::Context;
 use crate::error::{AppendPartialError, Error};
 use crate::interface::*;
-use crate::merge::{chained_series_merge, new_compacting_chunk_series_merger, new_merge_chunk_querier, new_merge_querier};
+use crate::merge::{
+    chained_series_merge, new_compacting_chunk_series_merger, new_merge_chunk_querier,
+    new_merge_querier,
+};
 
 /// Logs an error (Go `*slog.Logger` `Error(msg, "err", err)`).
 pub type Logger = Arc<dyn Fn(&str, &Error) + Send + Sync>;
@@ -26,8 +29,16 @@ pub struct Fanout {
 ///
 /// Reads: if the primary querier fails, every querier operation fails; if a secondary fails, its result is
 /// dropped and its error becomes a warning. Prometheus treats all remote storages as secondary.
-pub fn new_fanout(logger: Option<Logger>, primary: Arc<dyn Storage>, secondaries: Vec<Arc<dyn Storage>>) -> Fanout {
-    Fanout { logger, primary, secondaries }
+pub fn new_fanout(
+    logger: Option<Logger>,
+    primary: Arc<dyn Storage>,
+    secondaries: Vec<Arc<dyn Storage>>,
+) -> Fanout {
+    Fanout {
+        logger,
+        primary,
+        secondaries,
+    }
 }
 
 fn log_error(logger: &Option<Logger>, msg: &str, err: &Error) {
@@ -57,7 +68,11 @@ impl Queryable for Fanout {
                 }
             }
         }
-        Ok(new_merge_querier(vec![primary], secondaries, Arc::new(chained_series_merge)))
+        Ok(new_merge_querier(
+            vec![primary],
+            secondaries,
+            Arc::new(chained_series_merge),
+        ))
     }
 }
 
@@ -124,7 +139,11 @@ impl AppendableV2 for Fanout {
         Box::new(FanoutAppenderV2 {
             logger: self.logger.clone(),
             primary: self.primary.appender_v2(ctx),
-            secondaries: self.secondaries.iter().map(|s| s.appender_v2(ctx)).collect(),
+            secondaries: self
+                .secondaries
+                .iter()
+                .map(|s| s.appender_v2(ctx))
+                .collect(),
         })
     }
 }
@@ -195,7 +214,9 @@ impl AppenderTransaction for FanoutAppender {
             let rerr = app.rollback();
             match (&err, rerr) {
                 (None, r) => err = r,
-                (Some(_), Some(r)) => log_error(&self.logger, "Squashed rollback error on rollback", &r),
+                (Some(_), Some(r)) => {
+                    log_error(&self.logger, "Squashed rollback error on rollback", &r)
+                }
                 (Some(_), None) => {}
             }
         }
@@ -216,7 +237,12 @@ impl Appender for FanoutAppender {
         }
     }
 
-    fn append_exemplar(&mut self, r: SeriesRef, l: &Labels, e: &Exemplar) -> Result<SeriesRef, Error> {
+    fn append_exemplar(
+        &mut self,
+        r: SeriesRef,
+        l: &Labels,
+        e: &Exemplar,
+    ) -> Result<SeriesRef, Error> {
         self.each(r, |app, r| app.append_exemplar(r, l, e))
     }
 
@@ -240,14 +266,27 @@ impl Appender for FanoutAppender {
         h: Option<&Histogram>,
         fh: Option<&FloatHistogram>,
     ) -> Result<SeriesRef, Error> {
-        self.each(r, |app, r| app.append_histogram_st_zero_sample(r, l, t, st, h, fh))
+        self.each(r, |app, r| {
+            app.append_histogram_st_zero_sample(r, l, t, st, h, fh)
+        })
     }
 
-    fn update_metadata(&mut self, r: SeriesRef, l: &Labels, m: &Metadata) -> Result<SeriesRef, Error> {
+    fn update_metadata(
+        &mut self,
+        r: SeriesRef,
+        l: &Labels,
+        m: &Metadata,
+    ) -> Result<SeriesRef, Error> {
         self.each(r, |app, r| app.update_metadata(r, l, m))
     }
 
-    fn append_st_zero_sample(&mut self, r: SeriesRef, l: &Labels, t: i64, st: i64) -> Result<SeriesRef, Error> {
+    fn append_st_zero_sample(
+        &mut self,
+        r: SeriesRef,
+        l: &Labels,
+        t: i64,
+        st: i64,
+    ) -> Result<SeriesRef, Error> {
         self.each(r, |app, r| app.append_st_zero_sample(r, l, t, st))
     }
 }
@@ -286,7 +325,9 @@ impl AppenderTransaction for FanoutAppenderV2 {
             let rerr = app.rollback();
             match (&err, rerr) {
                 (None, r) => err = r,
-                (Some(_), Some(r)) => log_error(&self.logger, "Squashed rollback error on rollback", &r),
+                (Some(_), Some(r)) => {
+                    log_error(&self.logger, "Squashed rollback error on rollback", &r)
+                }
                 (Some(_), None) => {}
             }
         }
@@ -338,10 +379,18 @@ fn finish_partial(r: SeriesRef, partial: Option<AppendPartialError>) -> Result<S
 
 impl ExemplarAppenderV2 for FanoutAppenderV2 {
     /// Sends the exemplars to the primary, which must support them, and to the secondaries that do.
-    fn append_exemplars(&mut self, r: SeriesRef, l: &Labels, exemplars: &[Exemplar]) -> Result<SeriesRef, Error> {
+    fn append_exemplars(
+        &mut self,
+        r: SeriesRef,
+        l: &Labels,
+        exemplars: &[Exemplar],
+    ) -> Result<SeriesRef, Error> {
         let type_name = self.primary.type_name();
         let Some(pa) = self.primary.as_exemplar_appender_v2() else {
-            return Err(Error::msg(format!("primary appender {} does not implement ExemplarAppenderV2", type_name)));
+            return Err(Error::msg(format!(
+                "primary appender {} does not implement ExemplarAppenderV2",
+                type_name
+            )));
         };
         let mut partial: Option<AppendPartialError> = None;
         let res = pa.append_exemplars(r, l, exemplars);
@@ -350,7 +399,9 @@ impl ExemplarAppenderV2 for FanoutAppenderV2 {
             return Err(err);
         }
         for app in &mut self.secondaries {
-            let Some(sa) = app.as_exemplar_appender_v2() else { continue };
+            let Some(sa) = app.as_exemplar_appender_v2() else {
+                continue;
+            };
             let sres = sa.append_exemplars(r, l, exemplars);
             if let Some(serr) = AppendPartialError::handle(&mut partial, sres.err()) {
                 return Err(serr);

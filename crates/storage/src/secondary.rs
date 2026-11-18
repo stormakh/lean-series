@@ -12,8 +12,9 @@ use crate::generic::{GBox, GenericQuerier, NoopGenericSet, new_search_result_set
 use crate::interface::*;
 use crate::lazy::{LazyGenericSeriesSet, WarningsOnlySeriesSet};
 
-static SECONDARY_SEARCH_UNSUPPORTED: Sentinel =
-    Sentinel::new("search is not supported by a secondary storage backend; results may be incomplete");
+static SECONDARY_SEARCH_UNSUPPORTED: Sentinel = Sentinel::new(
+    "search is not supported by a secondary storage backend; results may be incomplete",
+);
 /// Go `errSecondarySearchUnsupported`.
 pub const ERR_SECONDARY_SEARCH_UNSUPPORTED: Error = Error::Sentinel(&SECONDARY_SEARCH_UNSUPPORTED);
 
@@ -42,7 +43,14 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 
 impl<T: Send + 'static> SecondaryQuerier<T> {
     pub(crate) fn new(inner: Box<dyn GenericQuerier<T>>) -> Self {
-        SecondaryQuerier { inner, state: Arc::new(Mutex::new(State { once_done: false, done: false, async_sets: Vec::new() })) }
+        SecondaryQuerier {
+            inner,
+            state: Arc::new(Mutex::new(State {
+                once_done: false,
+                done: false,
+                async_sets: Vec::new(),
+            })),
+        }
     }
 }
 
@@ -53,7 +61,9 @@ fn init_sets<T: 'static>(state: &Mutex<State<T>>, curr: usize) -> (GBox<T>, bool
         // On the first init, check that every set's first Next succeeds, for consistent partial failures.
         let n = st.async_sets.len();
         for i in 0..n {
-            let Slot::Set(set) = &mut st.async_sets[i] else { continue };
+            let Slot::Set(set) = &mut st.async_sets[i] else {
+                continue;
+            };
             if set.next() {
                 continue;
             }
@@ -86,21 +96,37 @@ impl<T: Send + 'static> GenericQuerier<T> for SecondaryQuerier<T>
 where
     SecondaryQuerier<T>: Searcher,
 {
-    fn select(&self, ctx: &Context, sort: bool, hints: Option<&SelectHints>, matchers: &[Matcher]) -> GBox<T> {
+    fn select(
+        &self,
+        ctx: &Context,
+        sort: bool,
+        hints: Option<&SelectHints>,
+        matchers: &[Matcher],
+    ) -> GBox<T> {
         let curr = {
             let st = lock(&self.state);
             if st.done {
-                panic!("secondaryQuerier: Select invoked after first Next of any returned SeriesSet was done");
+                panic!(
+                    "secondaryQuerier: Select invoked after first Next of any returned SeriesSet was done"
+                );
             }
             st.async_sets.len()
         };
         let set = self.inner.select(ctx, sort, hints, matchers);
         lock(&self.state).async_sets.push(Slot::Set(set));
         let state = self.state.clone();
-        Box::new(LazyGenericSeriesSet::new(Box::new(move || init_sets(&state, curr))))
+        Box::new(LazyGenericSeriesSet::new(Box::new(move || {
+            init_sets(&state, curr)
+        })))
     }
 
-    fn label_values(&self, ctx: &Context, name: &str, hints: Option<&LabelHints>, m: &[Matcher]) -> LabelResult {
+    fn label_values(
+        &self,
+        ctx: &Context,
+        name: &str,
+        hints: Option<&LabelHints>,
+        m: &[Matcher],
+    ) -> LabelResult {
         let (vals, mut w, err) = self.inner.label_values(ctx, name, hints, m);
         if let Some(err) = err {
             w.add(err);
@@ -139,8 +165,13 @@ impl<T: Send + 'static> Searcher for SecondaryQuerier<T> {
         matchers: &[Matcher],
     ) -> BoxSearchResultSet<'a> {
         match self.inner.searcher() {
-            None => new_search_result_set_from_slice(Vec::new(), Annotations::new().with(ERR_SECONDARY_SEARCH_UNSUPPORTED)),
-            Some(s) => warnings_on_error_search_result_set(s.search_label_names(ctx, hints, matchers)),
+            None => new_search_result_set_from_slice(
+                Vec::new(),
+                Annotations::new().with(ERR_SECONDARY_SEARCH_UNSUPPORTED),
+            ),
+            Some(s) => {
+                warnings_on_error_search_result_set(s.search_label_names(ctx, hints, matchers))
+            }
         }
     }
 
@@ -152,8 +183,13 @@ impl<T: Send + 'static> Searcher for SecondaryQuerier<T> {
         matchers: &[Matcher],
     ) -> BoxSearchResultSet<'a> {
         match self.inner.searcher() {
-            None => new_search_result_set_from_slice(Vec::new(), Annotations::new().with(ERR_SECONDARY_SEARCH_UNSUPPORTED)),
-            Some(s) => warnings_on_error_search_result_set(s.search_label_values(ctx, name, hints, matchers)),
+            None => new_search_result_set_from_slice(
+                Vec::new(),
+                Annotations::new().with(ERR_SECONDARY_SEARCH_UNSUPPORTED),
+            ),
+            Some(s) => warnings_on_error_search_result_set(
+                s.search_label_values(ctx, name, hints, matchers),
+            ),
         }
     }
 }
@@ -164,11 +200,19 @@ struct WarningsOnErrorSearchSet<'a> {
     warnings: Annotations,
 }
 
-fn warnings_on_error_search_result_set(rs: BoxSearchResultSet<'_>) -> BoxSearchResultSet<'_> {
-    Box::new(WarningsOnErrorSearchSet { rs: Some(rs), warnings: Annotations::new() })
+/// Go `warningsOnErrorSearchResultSet`: an iteration error of `rs` becomes a warning (public for tests).
+#[doc(hidden)]
+pub fn warnings_on_error_search_result_set(rs: BoxSearchResultSet<'_>) -> BoxSearchResultSet<'_> {
+    Box::new(WarningsOnErrorSearchSet {
+        rs: Some(rs),
+        warnings: Annotations::new(),
+    })
 }
 
-static EMPTY_RESULT: SearchResult = SearchResult { value: String::new(), score: 0.0 };
+static EMPTY_RESULT: SearchResult = SearchResult {
+    value: String::new(),
+    score: 0.0,
+};
 
 impl SearchResultSet for WarningsOnErrorSearchSet<'_> {
     fn next(&mut self) -> bool {

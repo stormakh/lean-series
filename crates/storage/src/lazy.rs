@@ -15,7 +15,10 @@ pub(crate) struct LazyGenericSeriesSet<T> {
 
 impl<T> LazyGenericSeriesSet<T> {
     pub(crate) fn new(init: LazyInit<T>) -> Self {
-        LazyGenericSeriesSet { init: Some(init), set: None }
+        LazyGenericSeriesSet {
+            init: Some(init),
+            set: None,
+        }
     }
 }
 

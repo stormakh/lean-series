@@ -109,10 +109,26 @@ impl ChunkSeriesSet for ChunkSeriesSetAdapter {
 
 /// Go `genericQuerier`.
 pub(crate) trait GenericQuerier<T>: Send + Sync {
-    fn select(&self, ctx: &Context, sort_series: bool, hints: Option<&SelectHints>, matchers: &[Matcher]) -> GBox<T>;
-    fn label_values(&self, ctx: &Context, name: &str, hints: Option<&LabelHints>, matchers: &[Matcher])
-    -> LabelResult;
-    fn label_names(&self, ctx: &Context, hints: Option<&LabelHints>, matchers: &[Matcher]) -> LabelResult;
+    fn select(
+        &self,
+        ctx: &Context,
+        sort_series: bool,
+        hints: Option<&SelectHints>,
+        matchers: &[Matcher],
+    ) -> GBox<T>;
+    fn label_values(
+        &self,
+        ctx: &Context,
+        name: &str,
+        hints: Option<&LabelHints>,
+        matchers: &[Matcher],
+    ) -> LabelResult;
+    fn label_names(
+        &self,
+        ctx: &Context,
+        hints: Option<&LabelHints>,
+        matchers: &[Matcher],
+    ) -> LabelResult;
     fn close(&mut self) -> Option<Error>;
     /// Go `searcherFromGenericQuerier`.
     fn searcher(&self) -> Option<&dyn Searcher>;
@@ -130,10 +146,22 @@ pub(crate) trait GenericQuerier<T>: Send + Sync {
 pub(crate) struct PlainQuerier<Q>(pub Q);
 
 impl GenericQuerier<SeriesArc> for PlainQuerier<BoxQuerier> {
-    fn select(&self, ctx: &Context, sort: bool, hints: Option<&SelectHints>, matchers: &[Matcher]) -> GBox<SeriesArc> {
+    fn select(
+        &self,
+        ctx: &Context,
+        sort: bool,
+        hints: Option<&SelectHints>,
+        matchers: &[Matcher],
+    ) -> GBox<SeriesArc> {
         Box::new(self.0.select(ctx, sort, hints, matchers))
     }
-    fn label_values(&self, ctx: &Context, name: &str, hints: Option<&LabelHints>, m: &[Matcher]) -> LabelResult {
+    fn label_values(
+        &self,
+        ctx: &Context,
+        name: &str,
+        hints: Option<&LabelHints>,
+        m: &[Matcher],
+    ) -> LabelResult {
         self.0.label_values(ctx, name, hints, m)
     }
     fn label_names(&self, ctx: &Context, hints: Option<&LabelHints>, m: &[Matcher]) -> LabelResult {
@@ -160,7 +188,13 @@ impl GenericQuerier<ChunkSeriesArc> for PlainQuerier<BoxChunkQuerier> {
     ) -> GBox<ChunkSeriesArc> {
         Box::new(self.0.select(ctx, sort, hints, matchers))
     }
-    fn label_values(&self, ctx: &Context, name: &str, hints: Option<&LabelHints>, m: &[Matcher]) -> LabelResult {
+    fn label_values(
+        &self,
+        ctx: &Context,
+        name: &str,
+        hints: Option<&LabelHints>,
+        m: &[Matcher],
+    ) -> LabelResult {
         self.0.label_values(ctx, name, hints, m)
     }
     fn label_names(&self, ctx: &Context, hints: Option<&LabelHints>, m: &[Matcher]) -> LabelResult {
@@ -184,7 +218,13 @@ pub(crate) struct QuerierAdapter {
 }
 
 impl LabelQuerier for QuerierAdapter {
-    fn label_values(&self, ctx: &Context, name: &str, hints: Option<&LabelHints>, m: &[Matcher]) -> LabelResult {
+    fn label_values(
+        &self,
+        ctx: &Context,
+        name: &str,
+        hints: Option<&LabelHints>,
+        m: &[Matcher],
+    ) -> LabelResult {
         self.g.label_values(ctx, name, hints, m)
     }
     fn label_names(&self, ctx: &Context, hints: Option<&LabelHints>, m: &[Matcher]) -> LabelResult {
@@ -196,11 +236,21 @@ impl LabelQuerier for QuerierAdapter {
 }
 
 impl Querier for QuerierAdapter {
-    fn select(&self, ctx: &Context, sort: bool, hints: Option<&SelectHints>, matchers: &[Matcher]) -> BoxSeriesSet {
+    fn select(
+        &self,
+        ctx: &Context,
+        sort: bool,
+        hints: Option<&SelectHints>,
+        matchers: &[Matcher],
+    ) -> BoxSeriesSet {
         Box::new(SeriesSetAdapter(self.g.select(ctx, sort, hints, matchers)))
     }
     fn as_searcher(&self) -> Option<&dyn Searcher> {
-        if self.supports_search { Some(self) } else { None }
+        if self.supports_search {
+            Some(self)
+        } else {
+            None
+        }
     }
     fn children(&self) -> Vec<&dyn Querier> {
         self.g.children()
@@ -217,7 +267,11 @@ impl Searcher for QuerierAdapter {
         let mut searchers = Vec::new();
         self.g.collect_searchers(&mut searchers);
         let (ctx, h, m) = (ctx.clone(), hints.cloned(), matchers.to_vec());
-        merge_search_sets(hints, move |s| s.search_label_names(&ctx, h.as_ref(), &m), searchers)
+        merge_search_sets(
+            hints,
+            move |s| s.search_label_names(&ctx, h.as_ref(), &m),
+            searchers,
+        )
     }
     fn search_label_values<'a>(
         &'a self,
@@ -228,8 +282,17 @@ impl Searcher for QuerierAdapter {
     ) -> BoxSearchResultSet<'a> {
         let mut searchers = Vec::new();
         self.g.collect_searchers(&mut searchers);
-        let (ctx, name, h, m) = (ctx.clone(), name.to_string(), hints.cloned(), matchers.to_vec());
-        merge_search_sets(hints, move |s| s.search_label_values(&ctx, &name, h.as_ref(), &m), searchers)
+        let (ctx, name, h, m) = (
+            ctx.clone(),
+            name.to_string(),
+            hints.cloned(),
+            matchers.to_vec(),
+        );
+        merge_search_sets(
+            hints,
+            move |s| s.search_label_values(&ctx, &name, h.as_ref(), &m),
+            searchers,
+        )
     }
 }
 
@@ -239,7 +302,13 @@ pub(crate) struct ChunkQuerierAdapter {
 }
 
 impl LabelQuerier for ChunkQuerierAdapter {
-    fn label_values(&self, ctx: &Context, name: &str, hints: Option<&LabelHints>, m: &[Matcher]) -> LabelResult {
+    fn label_values(
+        &self,
+        ctx: &Context,
+        name: &str,
+        hints: Option<&LabelHints>,
+        m: &[Matcher],
+    ) -> LabelResult {
         self.g.label_values(ctx, name, hints, m)
     }
     fn label_names(&self, ctx: &Context, hints: Option<&LabelHints>, m: &[Matcher]) -> LabelResult {
@@ -251,7 +320,13 @@ impl LabelQuerier for ChunkQuerierAdapter {
 }
 
 impl ChunkQuerier for ChunkQuerierAdapter {
-    fn select(&self, ctx: &Context, sort: bool, hints: Option<&SelectHints>, m: &[Matcher]) -> BoxChunkSeriesSet {
+    fn select(
+        &self,
+        ctx: &Context,
+        sort: bool,
+        hints: Option<&SelectHints>,
+        m: &[Matcher],
+    ) -> BoxChunkSeriesSet {
         Box::new(ChunkSeriesSetAdapter(self.g.select(ctx, sort, hints, m)))
     }
 }
@@ -277,7 +352,10 @@ impl<T> GenericSet<T> for NoopGenericSet {
 // ---------------------------------------------------------------------------------------------------------------
 // Search result sets.
 
-static EMPTY_RESULT: SearchResult = SearchResult { value: String::new(), score: 0.0 };
+static EMPTY_RESULT: SearchResult = SearchResult {
+    value: String::new(),
+    score: 0.0,
+};
 
 /// Go `emptySearchResultSet` and `errSearchResultSet`.
 struct ErrSearchResultSet {
@@ -305,7 +383,10 @@ impl SearchResultSet for ErrSearchResultSet {
 
 /// Go `EmptySearchResultSet`.
 pub fn empty_search_result_set<'a>() -> BoxSearchResultSet<'a> {
-    Box::new(ErrSearchResultSet { err: None, warnings: Annotations::new() })
+    Box::new(ErrSearchResultSet {
+        err: None,
+        warnings: Annotations::new(),
+    })
 }
 
 /// Go `ErrSearchResultSet`: a set that fails with `err` at once; the warnings are merged and exposed.
@@ -314,7 +395,10 @@ pub fn err_search_result_set<'a>(err: Error, warnings: Vec<Annotations>) -> BoxS
     for w in warnings {
         warns.merge(w);
     }
-    Box::new(ErrSearchResultSet { err: Some(err), warnings: warns })
+    Box::new(ErrSearchResultSet {
+        err: Some(err),
+        warnings: warns,
+    })
 }
 
 /// Go `sliceSearchResultSet` and `errAfterSliceSet`.
@@ -337,7 +421,11 @@ impl SearchResultSet for SliceSearchResultSet {
         self.warnings.clone()
     }
     fn err(&self) -> Option<Error> {
-        if self.idx >= self.results.len() as isize { self.err.clone() } else { None }
+        if self.idx >= self.results.len() as isize {
+            self.err.clone()
+        } else {
+            None
+        }
     }
     fn close(&mut self) -> Option<Error> {
         None
@@ -345,8 +433,16 @@ impl SearchResultSet for SliceSearchResultSet {
 }
 
 /// Go `NewSearchResultSetFromSlice`.
-pub fn new_search_result_set_from_slice<'a>(results: Vec<SearchResult>, warns: Annotations) -> BoxSearchResultSet<'a> {
-    Box::new(SliceSearchResultSet { results, warnings: warns, idx: -1, err: None })
+pub fn new_search_result_set_from_slice<'a>(
+    results: Vec<SearchResult>,
+    warns: Annotations,
+) -> BoxSearchResultSet<'a> {
+    Box::new(SliceSearchResultSet {
+        results,
+        warnings: warns,
+        idx: -1,
+        err: None,
+    })
 }
 
 /// Go `NewSearchResultSetFromSliceAndError`: iterates `results`, then reports `err` once exhausted.
@@ -355,7 +451,12 @@ pub fn new_search_result_set_from_slice_and_error<'a>(
     warns: Annotations,
     err: Option<Error>,
 ) -> BoxSearchResultSet<'a> {
-    Box::new(SliceSearchResultSet { results, warnings: warns, idx: -1, err })
+    Box::new(SliceSearchResultSet {
+        results,
+        warnings: warns,
+        idx: -1,
+        err,
+    })
 }
 
 /// Go `minLinearAllocCap`.
@@ -371,14 +472,20 @@ pub fn apply_search_hints(values: &[String], hints: Option<&SearchHints>) -> Vec
     if hints.limit > 0 {
         match hints.order_by {
             Ordering::ByScoreDesc => return top_k_by_score(values, filter, hints.limit as usize),
-            Ordering::ByValueDesc => return reverse_filter_early_exit(values, filter, hints.limit as usize),
+            Ordering::ByValueDesc => {
+                return reverse_filter_early_exit(values, filter, hints.limit as usize);
+            }
             Ordering::ByValueAsc => {}
         }
     }
     apply_search_hints_linear(values, hints, filter)
 }
 
-fn reverse_filter_early_exit(values: &[String], filter: &dyn Filter, limit: usize) -> Vec<SearchResult> {
+fn reverse_filter_early_exit(
+    values: &[String],
+    filter: &dyn Filter,
+    limit: usize,
+) -> Vec<SearchResult> {
     let mut results = Vec::with_capacity(limit.min(values.len()));
     for v in values.iter().rev() {
         if results.len() >= limit {
@@ -388,7 +495,10 @@ fn reverse_filter_early_exit(values: &[String], filter: &dyn Filter, limit: usiz
         if !accepted {
             continue;
         }
-        results.push(SearchResult { value: v.clone(), score });
+        results.push(SearchResult {
+            value: v.clone(),
+            score,
+        });
     }
     results
 }
@@ -401,25 +511,39 @@ fn apply_search_hints_no_filter(values: &[String], hints: &SearchHints) -> Vec<S
     let mut results = Vec::with_capacity(n);
     if hints.order_by == Ordering::ByValueDesc {
         for v in values.iter().rev().take(n) {
-            results.push(SearchResult { value: v.clone(), score: 1.0 });
+            results.push(SearchResult {
+                value: v.clone(),
+                score: 1.0,
+            });
         }
         return results;
     }
     for v in &values[..n] {
-        results.push(SearchResult { value: v.clone(), score: 1.0 });
+        results.push(SearchResult {
+            value: v.clone(),
+            score: 1.0,
+        });
     }
     results
 }
 
-fn apply_search_hints_linear(values: &[String], hints: &SearchHints, filter: &dyn Filter) -> Vec<SearchResult> {
-    let mut results = Vec::with_capacity(linear_result_cap(values.len() as i64, hints.limit) as usize);
+fn apply_search_hints_linear(
+    values: &[String],
+    hints: &SearchHints,
+    filter: &dyn Filter,
+) -> Vec<SearchResult> {
+    let mut results =
+        Vec::with_capacity(linear_result_cap(values.len() as i64, hints.limit) as usize);
     let early_exit = hints.order_by == Ordering::ByValueAsc && hints.limit > 0;
     for v in values {
         let (accepted, score) = filter.accept(v);
         if !accepted {
             continue;
         }
-        results.push(SearchResult { value: v.clone(), score });
+        results.push(SearchResult {
+            value: v.clone(),
+            score,
+        });
         if early_exit && results.len() as i64 >= hints.limit {
             break;
         }
@@ -497,7 +621,11 @@ fn sift_down_max(h: &mut [String], mut i: usize) {
 fn go_cmp_f64(a: f64, b: f64) -> CmpOrdering {
     let (an, bn) = (a.is_nan(), b.is_nan());
     if an {
-        return if bn { CmpOrdering::Equal } else { CmpOrdering::Less };
+        return if bn {
+            CmpOrdering::Equal
+        } else {
+            CmpOrdering::Less
+        };
     }
     if bn {
         return CmpOrdering::Greater;
@@ -509,7 +637,9 @@ fn go_cmp_f64(a: f64, b: f64) -> CmpOrdering {
 pub fn compare_search_results(o: Ordering) -> fn(&SearchResult, &SearchResult) -> CmpOrdering {
     match o {
         Ordering::ByValueDesc => |a, b| b.value.cmp(&a.value),
-        Ordering::ByScoreDesc => |a, b| go_cmp_f64(b.score, a.score).then_with(|| a.value.cmp(&b.value)),
+        Ordering::ByScoreDesc => {
+            |a, b| go_cmp_f64(b.score, a.score).then_with(|| a.value.cmp(&b.value))
+        }
         Ordering::ByValueAsc => |a, b| a.value.cmp(&b.value),
     }
 }
@@ -562,7 +692,10 @@ fn top_k_by_score(values: &[String], filter: &dyn Filter, limit: usize) -> Vec<S
             continue;
         }
         if h.len() < limit {
-            h.push(SearchResult { value: v.clone(), score });
+            h.push(SearchResult {
+                value: v.clone(),
+                score,
+            });
             let n = h.len() - 1;
             topk_sift_up(&mut h, n);
             continue;
@@ -572,7 +705,10 @@ fn top_k_by_score(values: &[String], filter: &dyn Filter, limit: usize) -> Vec<S
             continue;
         }
         if score > worst.score || *v < worst.value {
-            h[0] = SearchResult { value: v.clone(), score };
+            h[0] = SearchResult {
+                value: v.clone(),
+                score,
+            };
             topk_sift_down(&mut h, 0);
         }
     }
@@ -632,7 +768,15 @@ fn pairwise_merge_search_sets<'a>(
         0 => empty_search_result_set(),
         1 => {
             let s = sets.pop().expect("one set");
-            if limit > 0 { Box::new(LimitSearchResultSet { rs: s, limit, emitted: 0 }) } else { s }
+            if limit > 0 {
+                Box::new(LimitSearchResultSet {
+                    rs: s,
+                    limit,
+                    emitted: 0,
+                })
+            } else {
+                s
+            }
         }
         n => {
             let right = sets.split_off(n / 2);
@@ -648,7 +792,10 @@ pub fn new_lazy_search_result_set<'a, F>(init: F) -> BoxSearchResultSet<'a>
 where
     F: FnOnce() -> BoxSearchResultSet<'a> + 'a,
 {
-    Box::new(LazySearchResultSet { init: Some(Box::new(init)), rs: None })
+    Box::new(LazySearchResultSet {
+        init: Some(Box::new(init)),
+        rs: None,
+    })
 }
 
 type SearchInit<'a> = Box<dyn FnOnce() -> BoxSearchResultSet<'a> + 'a>;
@@ -734,7 +881,12 @@ struct MergingSearchResultSet<'a> {
 }
 
 impl<'a> MergingSearchResultSet<'a> {
-    fn new(a: BoxSearchResultSet<'a>, b: BoxSearchResultSet<'a>, order: Ordering, limit: i64) -> Self {
+    fn new(
+        a: BoxSearchResultSet<'a>,
+        b: BoxSearchResultSet<'a>,
+        order: Ordering,
+        limit: i64,
+    ) -> Self {
         MergingSearchResultSet {
             a,
             b,

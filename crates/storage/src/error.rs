@@ -27,7 +27,10 @@ impl Sentinel {
         Sentinel { msg, parent: None }
     }
     pub const fn wrapping(msg: &'static str, parent: &'static Sentinel) -> Sentinel {
-        Sentinel { msg, parent: Some(parent) }
+        Sentinel {
+            msg,
+            parent: Some(parent),
+        }
     }
 }
 
@@ -58,7 +61,8 @@ pub enum Error {
 /// Go `ErrNotFound`.
 pub static NOT_FOUND: Sentinel = Sentinel::new("not found");
 pub const ERR_NOT_FOUND: Error = Error::Sentinel(&NOT_FOUND);
-static COST_SAMPLING_UNSUPPORTED: Sentinel = Sentinel::new("bounded query cost sampling is unavailable");
+static COST_SAMPLING_UNSUPPORTED: Sentinel =
+    Sentinel::new("bounded query cost sampling is unavailable");
 /// The requested window cannot be sampled incrementally.
 pub const ERR_COST_SAMPLING_UNSUPPORTED: Error = Error::Sentinel(&COST_SAMPLING_UNSUPPORTED);
 static OUT_OF_ORDER_SAMPLE: Sentinel = Sentinel::new("out of order sample");
@@ -72,7 +76,8 @@ static TOO_OLD_SAMPLE: Sentinel = Sentinel::new("too old sample");
 pub const ERR_TOO_OLD_SAMPLE: Error = Error::Sentinel(&TOO_OLD_SAMPLE);
 /// The sample has the same timestamp but a different value (Go `ErrDuplicateSampleForTimestamp`). Every
 /// [`DuplicateSampleError`] `is` this error.
-pub const ERR_DUPLICATE_SAMPLE_FOR_TIMESTAMP: Error = Error::DuplicateSample(DuplicateSampleError::ZERO);
+pub const ERR_DUPLICATE_SAMPLE_FOR_TIMESTAMP: Error =
+    Error::DuplicateSample(DuplicateSampleError::ZERO);
 static OUT_OF_ORDER_EXEMPLAR: Sentinel = Sentinel::new("out of order exemplar");
 pub const ERR_OUT_OF_ORDER_EXEMPLAR: Error = Error::Sentinel(&OUT_OF_ORDER_EXEMPLAR);
 static DUPLICATE_EXEMPLAR: Sentinel = Sentinel::new("duplicate exemplar");
@@ -89,7 +94,8 @@ pub const ERR_NATIVE_HISTOGRAMS_DISABLED: Error = Error::Sentinel(&NATIVE_HISTOG
 static OUT_OF_ORDER_ST: Sentinel = Sentinel::new("start timestamp out of order, ignoring");
 /// A start timestamp older than a newer sample (appender v1 only).
 pub const ERR_OUT_OF_ORDER_ST: Error = Error::Sentinel(&OUT_OF_ORDER_ST);
-static ST_NEWER_THAN_SAMPLE: Sentinel = Sentinel::new("ST is newer or the same as sample's timestamp, ignoring");
+static ST_NEWER_THAN_SAMPLE: Sentinel =
+    Sentinel::new("ST is newer or the same as sample's timestamp, ignoring");
 pub const ERR_ST_NEWER_THAN_SAMPLE: Error = Error::Sentinel(&ST_NEWER_THAN_SAMPLE);
 
 const _: () = assert!(model::exemplar::EXEMPLAR_MAX_LABEL_SET_LENGTH == 128);
@@ -118,7 +124,11 @@ impl Error {
     /// Go `errors.Join(errs...)`: `None` when every error is `None`.
     pub fn join<I: IntoIterator<Item = Option<Error>>>(errs: I) -> Option<Error> {
         let v: Vec<Error> = errs.into_iter().flatten().collect();
-        if v.is_empty() { None } else { Some(Error::Join(v.into())) }
+        if v.is_empty() {
+            None
+        } else {
+            Some(Error::Join(v.into()))
+        }
     }
 
     /// The wrapped error (Go `errors.Unwrap`). Joined errors have more than one; see [`Error::is`].
@@ -208,7 +218,8 @@ impl Error {
 
     /// Downcasts an annotation error to its concrete type.
     pub fn annotation_as<T: Any>(&self) -> Option<&T> {
-        self.as_annotation().and_then(|a| (a as &dyn Any).downcast_ref::<T>())
+        self.as_annotation()
+            .and_then(|a| (a as &dyn Any).downcast_ref::<T>())
     }
 }
 
@@ -248,7 +259,8 @@ impl std::error::Error for Error {}
 /// `reflect.DeepEqual`).
 impl PartialEq for Error {
     fn eq(&self, other: &Error) -> bool {
-        std::mem::discriminant(self) == std::mem::discriminant(other) && self.to_string() == other.to_string()
+        std::mem::discriminant(self) == std::mem::discriminant(other)
+            && self.to_string() == other.to_string()
     }
 }
 
@@ -289,8 +301,12 @@ pub struct DuplicateSampleError {
 
 impl DuplicateSampleError {
     /// The zero value (Go `ErrDuplicateSampleForTimestamp`).
-    pub const ZERO: DuplicateSampleError =
-        DuplicateSampleError { timestamp: 0, existing: 0.0, existing_is_histogram: false, new_value: 0.0 };
+    pub const ZERO: DuplicateSampleError = DuplicateSampleError {
+        timestamp: 0,
+        existing: 0.0,
+        existing_is_histogram: false,
+        new_value: 0.0,
+    };
 
     /// Go `Is`: every duplicate sample error is `ErrDuplicateSampleForTimestamp`; otherwise the values must match.
     fn is(&self, target: &Error) -> bool {
@@ -326,12 +342,22 @@ impl fmt::Display for DuplicateSampleError {
 
 /// Go `NewDuplicateFloatErr`.
 pub fn new_duplicate_float_err(t: i64, existing: f64, new_value: f64) -> Error {
-    Error::DuplicateSample(DuplicateSampleError { timestamp: t, existing, existing_is_histogram: false, new_value })
+    Error::DuplicateSample(DuplicateSampleError {
+        timestamp: t,
+        existing,
+        existing_is_histogram: false,
+        new_value,
+    })
 }
 
 /// Go `NewDuplicateHistogramToFloatErr`: a new float sample for the same timestamp as a previous histogram.
 pub fn new_duplicate_histogram_to_float_err(t: i64, new_value: f64) -> Error {
-    Error::DuplicateSample(DuplicateSampleError { timestamp: t, existing: 0.0, existing_is_histogram: true, new_value })
+    Error::DuplicateSample(DuplicateSampleError {
+        timestamp: t,
+        existing: 0.0,
+        existing_is_histogram: true,
+        new_value,
+    })
 }
 
 /// Why an exemplar was not written (Go `ExemplarError`).
@@ -372,7 +398,9 @@ impl AppendPartialError {
     /// Go `ToError`: `None` if there are no exemplar errors.
     pub fn to_error(this: Option<&AppendPartialError>) -> Option<Error> {
         match this {
-            Some(e) if !e.exemplar_errors.is_empty() => Some(Error::AppendPartial(Arc::new(e.clone()))),
+            Some(e) if !e.exemplar_errors.is_empty() => {
+                Some(Error::AppendPartial(Arc::new(e.clone())))
+            }
             _ => None,
         }
     }

@@ -17,7 +17,13 @@ pub fn noop_querier() -> BoxQuerier {
 }
 
 impl LabelQuerier for NoopQuerier {
-    fn label_values(&self, _: &Context, _: &str, _: Option<&LabelHints>, _: &[Matcher]) -> LabelResult {
+    fn label_values(
+        &self,
+        _: &Context,
+        _: &str,
+        _: Option<&LabelHints>,
+        _: &[Matcher],
+    ) -> LabelResult {
         (Vec::new(), Annotations::new(), None)
     }
     fn label_names(&self, _: &Context, _: Option<&LabelHints>, _: &[Matcher]) -> LabelResult {
@@ -41,7 +47,12 @@ impl Querier for NoopQuerier {
 }
 
 impl Searcher for NoopQuerier {
-    fn search_label_names<'a>(&'a self, _: &Context, _: Option<&SearchHints>, _: &[Matcher]) -> BoxSearchResultSet<'a> {
+    fn search_label_names<'a>(
+        &'a self,
+        _: &Context,
+        _: Option<&SearchHints>,
+        _: &[Matcher],
+    ) -> BoxSearchResultSet<'a> {
         empty_search_result_set()
     }
     fn search_label_values<'a>(
@@ -64,7 +75,13 @@ pub fn noop_chunked_querier() -> BoxChunkQuerier {
 }
 
 impl LabelQuerier for NoopChunkQuerier {
-    fn label_values(&self, _: &Context, _: &str, _: Option<&LabelHints>, _: &[Matcher]) -> LabelResult {
+    fn label_values(
+        &self,
+        _: &Context,
+        _: &str,
+        _: Option<&LabelHints>,
+        _: &[Matcher],
+    ) -> LabelResult {
         (Vec::new(), Annotations::new(), None)
     }
     fn label_names(&self, _: &Context, _: Option<&LabelHints>, _: &[Matcher]) -> LabelResult {
@@ -76,7 +93,13 @@ impl LabelQuerier for NoopChunkQuerier {
 }
 
 impl ChunkQuerier for NoopChunkQuerier {
-    fn select(&self, _: &Context, _: bool, _: Option<&SelectHints>, _: &[Matcher]) -> BoxChunkSeriesSet {
+    fn select(
+        &self,
+        _: &Context,
+        _: bool,
+        _: Option<&SelectHints>,
+        _: &[Matcher],
+    ) -> BoxChunkSeriesSet {
         noop_chunked_series_set()
     }
     fn is_noop(&self) -> bool {

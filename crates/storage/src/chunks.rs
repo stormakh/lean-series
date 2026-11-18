@@ -31,7 +31,12 @@ pub struct Meta {
 impl Meta {
     /// A meta with a chunk and its time range.
     pub fn new(chunk: Arc<dyn Chunk>, min_time: i64, max_time: i64) -> Meta {
-        Meta { chunk_ref: 0, chunk: Some(chunk), min_time, max_time }
+        Meta {
+            chunk_ref: 0,
+            chunk: Some(chunk),
+            min_time,
+            max_time,
+        }
     }
 
     /// The loaded chunk. Panics if the chunk is not loaded (Go dereferences a nil interface).
@@ -88,19 +93,49 @@ pub struct Sample {
 impl Sample {
     /// A float sample (Go `fSample{st, t, f}`).
     pub fn float(st: i64, t: i64, f: f64) -> Sample {
-        Sample { st, t, f, h: None, fh: None }
+        Sample {
+            st,
+            t,
+            f,
+            h: None,
+            fh: None,
+        }
     }
     /// A histogram sample (Go `hSample{st, t, h}`).
     pub fn histogram(st: i64, t: i64, h: Histogram) -> Sample {
-        Sample { st, t, f: 0.0, h: Some(Box::new(h)), fh: None }
+        Sample {
+            st,
+            t,
+            f: 0.0,
+            h: Some(Box::new(h)),
+            fh: None,
+        }
     }
     /// A float histogram sample (Go `fhSample{st, t, fh}`).
     pub fn float_histogram(st: i64, t: i64, fh: FloatHistogram) -> Sample {
-        Sample { st, t, f: 0.0, h: None, fh: Some(Box::new(fh)) }
+        Sample {
+            st,
+            t,
+            f: 0.0,
+            h: None,
+            fh: Some(Box::new(fh)),
+        }
     }
     /// A sample of the given parts (Go `sample{st, t, f, h, fh}`).
-    pub fn new(st: i64, t: i64, f: f64, h: Option<Histogram>, fh: Option<FloatHistogram>) -> Sample {
-        Sample { st, t, f, h: h.map(Box::new), fh: fh.map(Box::new) }
+    pub fn new(
+        st: i64,
+        t: i64,
+        f: f64,
+        h: Option<Histogram>,
+        fh: Option<FloatHistogram>,
+    ) -> Sample {
+        Sample {
+            st,
+            t,
+            f,
+            h: h.map(Box::new),
+            fh: fh.map(Box::new),
+        }
     }
 
     #[inline]
@@ -142,7 +177,9 @@ impl Sample {
 
 /// Go `chunks.GenerateSamples`: `num_samples` float samples with t = v = i, from `start`.
 pub fn generate_samples(start: i64, num_samples: i64) -> Vec<Sample> {
-    (start..start + num_samples).map(|i| Sample::float(0, i, i as f64)).collect()
+    (start..start + num_samples)
+        .map(|i| Sample::float(0, i, i as f64))
+        .collect()
 }
 
 /// Go `chunks.ChunkFromSamples`: one chunk with all samples, which must have the same type. Meant for tests.
@@ -170,14 +207,18 @@ pub fn chunk_from_samples(s: &[Sample]) -> Result<Meta, Error> {
             ValueType::Float => ca.append(&mut *c, x.st, x.t, x.f),
             ValueType::Histogram => {
                 x.h.as_deref().expect("histogram sample").copy_to(&mut h);
-                let (new_chunk, _) = ca.append_histogram(&mut *c, None, x.st, x.t, &mut h, false)?;
+                let (new_chunk, _) =
+                    ca.append_histogram(&mut *c, None, x.st, x.t, &mut h, false)?;
                 if new_chunk.is_some() {
                     return Err(Error::msg("did not expect to start a second chunk"));
                 }
             }
             ValueType::FloatHistogram => {
-                x.fh.as_deref().expect("float histogram sample").copy_to(&mut fh);
-                let (new_chunk, _) = ca.append_float_histogram(&mut *c, None, x.st, x.t, &mut fh, false)?;
+                x.fh.as_deref()
+                    .expect("float histogram sample")
+                    .copy_to(&mut fh);
+                let (new_chunk, _) =
+                    ca.append_float_histogram(&mut *c, None, x.st, x.t, &mut fh, false)?;
                 if new_chunk.is_some() {
                     return Err(Error::msg("did not expect to start a second chunk"));
                 }
@@ -185,7 +226,12 @@ pub fn chunk_from_samples(s: &[Sample]) -> Result<Meta, Error> {
             ValueType::None => panic!("unknown sample type {}", sample_type),
         }
     }
-    Ok(Meta { chunk_ref: 0, chunk: Some(Arc::from(c)), min_time: mint, max_time: maxt })
+    Ok(Meta {
+        chunk_ref: 0,
+        chunk: Some(Arc::from(c)),
+        min_time: mint,
+        max_time: maxt,
+    })
 }
 
 /// Go `chunks.ChunkMetasToSamples`: the samples of the chunks (without start timestamps). Used in tests.

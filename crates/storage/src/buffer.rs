@@ -104,13 +104,17 @@ impl<'a> BufferedSeriesIterator<'a> {
                 self.buf.add_f(FSample { st, t, f });
             }
             ValueType::Histogram => {
-                let (t, h) = self.it.at_histogram(Some(std::mem::take(&mut self.h_reader)));
+                let (t, h) = self
+                    .it
+                    .at_histogram(Some(std::mem::take(&mut self.h_reader)));
                 let st = self.it.at_st();
                 self.buf.add_h(st, t, &h);
                 self.h_reader = h;
             }
             ValueType::FloatHistogram => {
-                let (t, fh) = self.it.at_float_histogram(Some(std::mem::take(&mut self.fh_reader)));
+                let (t, fh) = self
+                    .it
+                    .at_float_histogram(Some(std::mem::take(&mut self.fh_reader)));
                 let st = self.it.at_st();
                 self.buf.add_fh(st, t, &fh);
                 self.fh_reader = fh;
@@ -205,7 +209,12 @@ pub struct SampleRing {
 }
 
 /// Grows the ring if it is full and moves `r.i` to the slot for the new element.
-fn grow_and_advance<T: Default + Clone>(buf: &mut Vec<T>, r_i: &mut isize, r_f: &mut usize, r_l: usize) {
+fn grow_and_advance<T: Default + Clone>(
+    buf: &mut Vec<T>,
+    r_i: &mut isize,
+    r_f: &mut usize,
+    r_l: usize,
+) {
     let mut l = buf.len();
     if l == 0 {
         *buf = vec![T::default(); 16];
@@ -289,9 +298,28 @@ impl SampleRing {
         self.delta
     }
 
+    /// The lengths of the float, histogram, float histogram and mixed buffers (for tests).
+    #[doc(hidden)]
+    pub fn buf_lens(&self) -> [usize; 4] {
+        [
+            self.f_buf.len(),
+            self.h_buf.len(),
+            self.fh_buf.len(),
+            self.i_buf.len(),
+        ]
+    }
+
     /// An iterator over the buffered samples (Go `iterator`).
     pub fn iterator(&self) -> SampleRingIterator<'_> {
-        SampleRingIterator { r: self, i: -1, st: 0, t: 0, f: 0.0, h: None, fh: None }
+        SampleRingIterator {
+            r: self,
+            i: -1,
+            st: 0,
+            t: 0,
+            f: 0.0,
+            h: None,
+            fh: None,
+        }
     }
 
     fn at_i(&self, i: usize) -> &Sample {
@@ -315,7 +343,11 @@ impl SampleRing {
             match typ {
                 ValueType::Float => {
                     self.buf_in_use = BufType::F;
-                    self.add_f_inner(FSample { st: s.st, t: s.t, f: s.f });
+                    self.add_f_inner(FSample {
+                        st: s.st,
+                        t: s.t,
+                        f: s.f,
+                    });
                 }
                 ValueType::Histogram => {
                     self.buf_in_use = BufType::H;
@@ -332,7 +364,13 @@ impl SampleRing {
         if self.buf_in_use != BufType::I {
             // Stay specialized if the sample fits.
             match (typ, self.buf_in_use) {
-                (ValueType::Float, BufType::F) => return self.add_f_inner(FSample { st: s.st, t: s.t, f: s.f }),
+                (ValueType::Float, BufType::F) => {
+                    return self.add_f_inner(FSample {
+                        st: s.st,
+                        t: s.t,
+                        f: s.f,
+                    });
+                }
                 (ValueType::Histogram, BufType::H) => {
                     return self.add_h_inner(s.st, s.t, s.h.as_deref().expect("histogram"));
                 }
@@ -344,15 +382,24 @@ impl SampleRing {
             // Copy the specialized buffer into the mixed buffer (which is empty here), keeping the positions.
             match self.buf_in_use {
                 BufType::F => {
-                    self.i_buf.extend(self.f_buf.iter().map(|x| Sample::float(x.st, x.t, x.f)));
+                    self.i_buf
+                        .extend(self.f_buf.iter().map(|x| Sample::float(x.st, x.t, x.f)));
                     self.f_buf = Vec::new();
                 }
                 BufType::H => {
-                    self.i_buf.extend(self.h_buf.drain(..).map(|x| Sample::histogram(x.st, x.t, x.h)));
+                    self.i_buf.extend(
+                        self.h_buf
+                            .drain(..)
+                            .map(|x| Sample::histogram(x.st, x.t, x.h)),
+                    );
                     self.h_buf = Vec::new();
                 }
                 BufType::FH => {
-                    self.i_buf.extend(self.fh_buf.drain(..).map(|x| Sample::float_histogram(x.st, x.t, x.fh)));
+                    self.i_buf.extend(
+                        self.fh_buf
+                            .drain(..)
+                            .map(|x| Sample::float_histogram(x.st, x.t, x.fh)),
+                    );
                     self.fh_buf = Vec::new();
                 }
                 _ => {}
@@ -415,7 +462,13 @@ impl SampleRing {
         let i = self.i as usize;
         self.f_buf[i] = s;
         self.l += 1;
-        free_head(&self.f_buf, |x| x.t, s.t - self.delta, &mut self.f, &mut self.l);
+        free_head(
+            &self.f_buf,
+            |x| x.t,
+            s.t - self.delta,
+            &mut self.f,
+            &mut self.l,
+        );
     }
 
     fn add_h_inner(&mut self, st: i64, t: i64, h: &Histogram) {
@@ -425,7 +478,13 @@ impl SampleRing {
         slot.st = st;
         h.copy_to(&mut slot.h);
         self.l += 1;
-        free_head(&self.h_buf, |x| x.t, t - self.delta, &mut self.f, &mut self.l);
+        free_head(
+            &self.h_buf,
+            |x| x.t,
+            t - self.delta,
+            &mut self.f,
+            &mut self.l,
+        );
     }
 
     fn add_fh_inner(&mut self, st: i64, t: i64, fh: &FloatHistogram) {
@@ -435,7 +494,13 @@ impl SampleRing {
         slot.st = st;
         fh.copy_to(&mut slot.fh);
         self.l += 1;
-        free_head(&self.fh_buf, |x| x.t, t - self.delta, &mut self.f, &mut self.l);
+        free_head(
+            &self.fh_buf,
+            |x| x.t,
+            t - self.delta,
+            &mut self.f,
+            &mut self.l,
+        );
     }
 
     /// Go `reduceDelta`: lowers the delta and drops samples out of the new range.
@@ -449,10 +514,34 @@ impl SampleRing {
         }
         let i = self.i as usize;
         match self.buf_in_use {
-            BufType::F => free_head(&self.f_buf, |x| x.t, self.f_buf[i].t - delta, &mut self.f, &mut self.l),
-            BufType::H => free_head(&self.h_buf, |x| x.t, self.h_buf[i].t - delta, &mut self.f, &mut self.l),
-            BufType::FH => free_head(&self.fh_buf, |x| x.t, self.fh_buf[i].t - delta, &mut self.f, &mut self.l),
-            _ => free_head(&self.i_buf, |x| x.t, self.i_buf[i].t - delta, &mut self.f, &mut self.l),
+            BufType::F => free_head(
+                &self.f_buf,
+                |x| x.t,
+                self.f_buf[i].t - delta,
+                &mut self.f,
+                &mut self.l,
+            ),
+            BufType::H => free_head(
+                &self.h_buf,
+                |x| x.t,
+                self.h_buf[i].t - delta,
+                &mut self.f,
+                &mut self.l,
+            ),
+            BufType::FH => free_head(
+                &self.fh_buf,
+                |x| x.t,
+                self.fh_buf[i].t - delta,
+                &mut self.f,
+                &mut self.l,
+            ),
+            _ => free_head(
+                &self.i_buf,
+                |x| x.t,
+                self.i_buf[i].t - delta,
+                &mut self.f,
+                &mut self.l,
+            ),
         }
         true
     }

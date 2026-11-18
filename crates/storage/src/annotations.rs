@@ -124,7 +124,11 @@ impl AnnoError for AnnoErr {
         if query.is_empty() {
             return self.err.to_string();
         }
-        format!("{} ({})", self.err, self.position_range.start_pos_input(query, 0))
+        format!(
+            "{} ({})",
+            self.err,
+            self.position_range.start_pos_input(query, 0)
+        )
     }
     fn unwrap(&self) -> Option<&Error> {
         Some(&self.err)
@@ -136,7 +140,10 @@ impl AnnoError for AnnoErr {
 }
 
 fn anno(pos: PositionRange, err: Error) -> Error {
-    Error::Annotation(Arc::new(AnnoErr { position_range: pos, err }))
+    Error::Annotation(Arc::new(AnnoErr {
+        position_range: pos,
+        err,
+    }))
 }
 
 /// `fmt.Errorf("%w<rest>", base)`.
@@ -155,12 +162,21 @@ fn maybe_add_metric_name(anno: Error, metric_name: &str) -> Error {
 
 /// An invalid quantile value: outside [0, 1] or NaN.
 pub fn new_invalid_quantile_warning(q: f64, pos: PositionRange) -> Error {
-    anno(pos, wrapf(&INVALID_QUANTILE_WARNING, &format!(", got {}", g(q))))
+    anno(
+        pos,
+        wrapf(&INVALID_QUANTILE_WARNING, &format!(", got {}", g(q))),
+    )
 }
 
 /// An invalid ratio value: outside [-1, 1] or NaN.
 pub fn new_invalid_ratio_warning(q: f64, to: f64, pos: PositionRange) -> Error {
-    anno(pos, wrapf(&INVALID_RATIO_WARNING, &format!(", got {}, capping to {}", g(q), g(to))))
+    anno(
+        pos,
+        wrapf(
+            &INVALID_RATIO_WARNING,
+            &format!(", got {}, capping to {}", g(q), g(to)),
+        ),
+    )
 }
 
 /// The bucket label of a classic histogram could not be parsed.
@@ -171,7 +187,13 @@ pub fn new_bad_bucket_label_warning(metric_name: &str, label: &str, pos: Positio
 
 /// The queried series has float and histogram samples, for functions that do not support mixed samples.
 pub fn new_mixed_floats_histograms_warning(metric_name: &str, pos: PositionRange) -> Error {
-    anno(pos, wrapf(&MIXED_FLOATS_HISTOGRAMS_WARNING, &format!(" metric name {}", quote(metric_name))))
+    anno(
+        pos,
+        wrapf(
+            &MIXED_FLOATS_HISTOGRAMS_WARNING,
+            &format!(" metric name {}", quote(metric_name)),
+        ),
+    )
 }
 
 /// The series of an aggregation have float and histogram samples.
@@ -181,32 +203,75 @@ pub fn new_mixed_floats_histograms_agg_warning(pos: PositionRange) -> Error {
 
 /// The queried series include classic and native histograms.
 pub fn new_mixed_classic_native_histograms_warning(metric_name: &str, pos: PositionRange) -> Error {
-    anno(pos, maybe_add_metric_name(Error::Sentinel(&MIXED_CLASSIC_NATIVE_HISTOGRAMS_WARNING), metric_name))
+    anno(
+        pos,
+        maybe_add_metric_name(
+            Error::Sentinel(&MIXED_CLASSIC_NATIVE_HISTOGRAMS_WARNING),
+            metric_name,
+        ),
+    )
 }
 
 /// `histogramRate` with isCounter set on a gauge histogram.
 pub fn new_native_histogram_not_counter_warning(metric_name: &str, pos: PositionRange) -> Error {
-    anno(pos, wrapf(&NATIVE_HISTOGRAM_NOT_COUNTER_WARNING, &format!(" {}", quote(metric_name))))
+    anno(
+        pos,
+        wrapf(
+            &NATIVE_HISTOGRAM_NOT_COUNTER_WARNING,
+            &format!(" {}", quote(metric_name)),
+        ),
+    )
 }
 
 /// `histogramRate` with isCounter unset on a counter histogram.
 pub fn new_native_histogram_not_gauge_warning(metric_name: &str, pos: PositionRange) -> Error {
-    anno(pos, wrapf(&NATIVE_HISTOGRAM_NOT_GAUGE_WARNING, &format!(" {}", quote(metric_name))))
+    anno(
+        pos,
+        wrapf(
+            &NATIVE_HISTOGRAM_NOT_GAUGE_WARNING,
+            &format!(" {}", quote(metric_name)),
+        ),
+    )
 }
 
 /// The queried series include histograms with exponential and custom bucket schemas.
-pub fn new_mixed_exponential_custom_histograms_warning(metric_name: &str, pos: PositionRange) -> Error {
-    anno(pos, wrapf(&MIXED_EXPONENTIAL_CUSTOM_HISTOGRAMS_WARNING, &format!(" {}", quote(metric_name))))
+pub fn new_mixed_exponential_custom_histograms_warning(
+    metric_name: &str,
+    pos: PositionRange,
+) -> Error {
+    anno(
+        pos,
+        wrapf(
+            &MIXED_EXPONENTIAL_CUSTOM_HISTOGRAMS_WARNING,
+            &format!(" {}", quote(metric_name)),
+        ),
+    )
 }
 
 /// A counter metric with only float samples whose name does not end in _total, _sum, _count or _bucket.
 pub fn new_possible_non_counter_info(metric_name: &str, pos: PositionRange) -> Error {
-    anno(pos, wrapf(&POSSIBLE_NON_COUNTER_INFO, &format!(" {}", quote(metric_name))))
+    anno(
+        pos,
+        wrapf(
+            &POSSIBLE_NON_COUNTER_INFO,
+            &format!(" {}", quote(metric_name)),
+        ),
+    )
 }
 
 /// A counter metric with only float samples whose __type__ label is not "counter".
-pub fn new_possible_non_counter_label_info(metric_name: &str, type_label: &str, pos: PositionRange) -> Error {
-    anno(pos, wrapf(&POSSIBLE_NON_COUNTER_LABEL_INFO, &format!(", got {}: {}", quote(type_label), quote(metric_name))))
+pub fn new_possible_non_counter_label_info(
+    metric_name: &str,
+    type_label: &str,
+    pos: PositionRange,
+) -> Error {
+    anno(
+        pos,
+        wrapf(
+            &POSSIBLE_NON_COUNTER_LABEL_INFO,
+            &format!(", got {}: {}", quote(type_label), quote(metric_name)),
+        ),
+    )
 }
 
 /// Go `histogramQuantileForcedMonotonicityErr`.
@@ -281,7 +346,10 @@ pub fn new_histogram_quantile_forced_monotonicity_info(
 ) -> Error {
     Error::Annotation(Arc::new(HistogramQuantileForcedMonotonicityErr {
         position_range: pos,
-        err: maybe_add_metric_name(Error::Sentinel(&HISTOGRAM_QUANTILE_FORCED_MONOTONICITY_INFO), metric_name),
+        err: maybe_add_metric_name(
+            Error::Sentinel(&HISTOGRAM_QUANTILE_FORCED_MONOTONICITY_INFO),
+            metric_name,
+        ),
         min_ts: ts,
         max_ts: ts,
         min_bucket,
@@ -292,26 +360,61 @@ pub fn new_histogram_quantile_forced_monotonicity_info(
 }
 
 /// A binary operator on a combination of types that does not work.
-pub fn new_incompatible_types_in_bin_op_info(lhs_type: &str, operator: &str, rhs_type: &str, pos: PositionRange) -> Error {
+pub fn new_incompatible_types_in_bin_op_info(
+    lhs_type: &str,
+    operator: &str,
+    rhs_type: &str,
+    pos: PositionRange,
+) -> Error {
     anno(
         pos,
-        wrapf(&INCOMPATIBLE_TYPES_IN_BIN_OP_INFO, &format!(" {}: {} {} {}", quote(operator), lhs_type, operator, rhs_type)),
+        wrapf(
+            &INCOMPATIBLE_TYPES_IN_BIN_OP_INFO,
+            &format!(
+                " {}: {} {} {}",
+                quote(operator),
+                lhs_type,
+                operator,
+                rhs_type
+            ),
+        ),
     )
 }
 
 /// A histogram ignored by an aggregation operator that cannot handle histograms.
 pub fn new_histogram_ignored_in_aggregation_info(aggregation: &str, pos: PositionRange) -> Error {
-    anno(pos, wrapf(&HISTOGRAM_IGNORED_IN_AGGREGATION_INFO, &format!(" {} aggregation", aggregation)))
+    anno(
+        pos,
+        wrapf(
+            &HISTOGRAM_IGNORED_IN_AGGREGATION_INFO,
+            &format!(" {} aggregation", aggregation),
+        ),
+    )
 }
 
 /// A histogram ignored in a range vector with floats and histograms.
 pub fn new_histogram_ignored_in_mixed_range_info(metric_name: &str, pos: PositionRange) -> Error {
-    anno(pos, wrapf(&HISTOGRAM_IGNORED_IN_MIXED_RANGE_INFO, &format!(" {}", quote(metric_name))))
+    anno(
+        pos,
+        wrapf(
+            &HISTOGRAM_IGNORED_IN_MIXED_RANGE_INFO,
+            &format!(" {}", quote(metric_name)),
+        ),
+    )
 }
 
 /// A binary operator on two incompatible histograms.
-pub fn new_incompatible_bucket_layout_in_bin_op_warning(operator: &str, pos: PositionRange) -> Error {
-    anno(pos, wrapf(&INCOMPATIBLE_BUCKET_LAYOUT_IN_BIN_OP_WARNING, &format!(" {}", operator)))
+pub fn new_incompatible_bucket_layout_in_bin_op_warning(
+    operator: &str,
+    pos: PositionRange,
+) -> Error {
+    anno(
+        pos,
+        wrapf(
+            &INCOMPATIBLE_BUCKET_LAYOUT_IN_BIN_OP_WARNING,
+            &format!(" {}", operator),
+        ),
+    )
 }
 
 /// sort or sort_desc in a range query.
@@ -319,16 +422,37 @@ pub fn new_sort_in_range_query_warning(pos: PositionRange) -> Error {
     anno(pos, Error::Sentinel(&SORT_IN_RANGE_QUERY_WARNING))
 }
 
-pub fn new_native_histogram_quantile_nan_result_info(metric_name: &str, pos: PositionRange) -> Error {
-    anno(pos, maybe_add_metric_name(Error::Sentinel(&NATIVE_HISTOGRAM_QUANTILE_NAN_RESULT_INFO), metric_name))
+pub fn new_native_histogram_quantile_nan_result_info(
+    metric_name: &str,
+    pos: PositionRange,
+) -> Error {
+    anno(
+        pos,
+        maybe_add_metric_name(
+            Error::Sentinel(&NATIVE_HISTOGRAM_QUANTILE_NAN_RESULT_INFO),
+            metric_name,
+        ),
+    )
 }
 
 pub fn new_native_histogram_quantile_nan_skew_info(metric_name: &str, pos: PositionRange) -> Error {
-    anno(pos, maybe_add_metric_name(Error::Sentinel(&NATIVE_HISTOGRAM_QUANTILE_NAN_SKEW_INFO), metric_name))
+    anno(
+        pos,
+        maybe_add_metric_name(
+            Error::Sentinel(&NATIVE_HISTOGRAM_QUANTILE_NAN_SKEW_INFO),
+            metric_name,
+        ),
+    )
 }
 
 pub fn new_native_histogram_fraction_nans_info(metric_name: &str, pos: PositionRange) -> Error {
-    anno(pos, maybe_add_metric_name(Error::Sentinel(&NATIVE_HISTOGRAM_FRACTION_NANS_INFO), metric_name))
+    anno(
+        pos,
+        maybe_add_metric_name(
+            Error::Sentinel(&NATIVE_HISTOGRAM_FRACTION_NANS_INFO),
+            metric_name,
+        ),
+    )
 }
 
 /// Go `HistogramOperation`.
@@ -358,13 +482,31 @@ impl fmt::Display for HistogramOperation {
 
 /// Two counter histograms are added or subtracted where one has a CounterReset hint and the other
 /// NotCounterReset.
-pub fn new_histogram_counter_reset_collision_warning(pos: PositionRange, operation: HistogramOperation) -> Error {
-    anno(pos, wrapf(&HISTOGRAM_COUNTER_RESET_COLLISION_WARNING, &format!(" {}", operation.as_str())))
+pub fn new_histogram_counter_reset_collision_warning(
+    pos: PositionRange,
+    operation: HistogramOperation,
+) -> Error {
+    anno(
+        pos,
+        wrapf(
+            &HISTOGRAM_COUNTER_RESET_COLLISION_WARNING,
+            &format!(" {}", operation.as_str()),
+        ),
+    )
 }
 
 /// Custom bucket histograms with mismatched bounds were reconciled.
-pub fn new_mismatched_custom_buckets_histograms_info(pos: PositionRange, operation: HistogramOperation) -> Error {
-    anno(pos, wrapf(&MISMATCHED_CUSTOM_BUCKETS_HISTOGRAMS_INFO, &format!(" {}", operation.as_str())))
+pub fn new_mismatched_custom_buckets_histograms_info(
+    pos: PositionRange,
+    operation: HistogramOperation,
+) -> Error {
+    anno(
+        pos,
+        wrapf(
+            &MISMATCHED_CUSTOM_BUCKETS_HISTOGRAMS_INFO,
+            &format!(" {}", operation.as_str()),
+        ),
+    )
 }
 
 /// Go `startTimeOverlapErr`.
@@ -391,7 +533,12 @@ impl AnnoError for StartTimeOverlapErr {
                 self.position_range.start_pos_input(query, 0)
             );
         }
-        format!("{} for metric {} ({})", self.err, quote(&self.metric_name), self.position_range.start_pos_input(query, 0))
+        format!(
+            "{} for metric {} ({})",
+            self.err,
+            quote(&self.metric_name),
+            self.position_range.start_pos_input(query, 0)
+        )
     }
     fn unwrap(&self) -> Option<&Error> {
         Some(&self.err)
@@ -421,7 +568,13 @@ pub fn new_start_time_overlap_warning(metric_name: &str, pos: PositionRange) -> 
 
 /// An invalid integral strategy.
 pub fn new_invalid_integral_strategy_warning(strategy: f64, pos: PositionRange) -> Error {
-    anno(pos, wrapf(&INVALID_INTEGRAL_STRATEGY, &format!(", got {}", g(strategy))))
+    anno(
+        pos,
+        wrapf(
+            &INVALID_INTEGRAL_STRATEGY,
+            &format!(", got {}", g(strategy)),
+        ),
+    )
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -535,7 +688,12 @@ impl Annotations {
 
     /// Go `AsStrings`: the warnings and the infos as strings, with positions in `query`, at most `max_warnings`
     /// and `max_infos` of each (0 for no limit), plus a note on how many were left out.
-    pub fn as_strings(&self, query: &str, max_warnings: usize, max_infos: usize) -> (Vec<String>, Vec<String>) {
+    pub fn as_strings(
+        &self,
+        query: &str,
+        max_warnings: usize,
+        max_infos: usize,
+    ) -> (Vec<String>, Vec<String>) {
         let mut warnings = Vec::with_capacity(max_warnings + 1);
         let mut infos = Vec::with_capacity(max_infos + 1);
         let mut warn_skipped = 0;
@@ -583,14 +741,20 @@ impl Annotations {
 
 impl fmt::Debug for Annotations {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_list().entries(self.errs.iter().map(|e| e.to_string())).finish()
+        f.debug_list()
+            .entries(self.errs.iter().map(|e| e.to_string()))
+            .finish()
     }
 }
 
 /// Equal when both have the same keys with equal errors (Go `reflect.DeepEqual` of the maps).
 impl PartialEq for Annotations {
     fn eq(&self, other: &Annotations) -> bool {
-        self.len() == other.len() && self.index.iter().all(|(k, &i)| other.get(k) == Some(&self.errs[i]))
+        self.len() == other.len()
+            && self
+                .index
+                .iter()
+                .all(|(k, &i)| other.get(k) == Some(&self.errs[i]))
     }
 }
 
@@ -673,12 +837,20 @@ pub fn g_prec(f: f64, prec: usize) -> String {
         }
     } else {
         for i in 0..dp {
-            out.push(if i < nd { digits.as_bytes()[i as usize] as char } else { '0' });
+            out.push(if i < nd {
+                digits.as_bytes()[i as usize] as char
+            } else {
+                '0'
+            });
         }
         if decimals > 0 {
             out.push('.');
             for i in dp..dp + decimals {
-                out.push(if i < nd { digits.as_bytes()[i as usize] as char } else { '0' });
+                out.push(if i < nd {
+                    digits.as_bytes()[i as usize] as char
+                } else {
+                    '0'
+                });
             }
         }
     }
