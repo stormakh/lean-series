@@ -8,12 +8,14 @@
 //! See README.md for how to add a provider.
 pub mod cancel;
 pub mod chan;
+pub mod consul;
 pub mod file;
 pub mod glob;
 pub mod http;
 pub mod log;
 pub mod manager;
 pub mod metrics;
+pub mod nomad;
 pub mod refresh;
 pub mod registry;
 pub mod sdutil;
