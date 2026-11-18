@@ -40,6 +40,7 @@ pub struct Registration {
 /// The providers built into this crate. Adding a provider: one line here (see README.md).
 fn builtin() -> Vec<Registration> {
     vec![
+        registration::<crate::azure::SdConfig>(),
         registration::<crate::file::SdConfig>(),
         registration::<crate::http::SdConfig>(),
     ]

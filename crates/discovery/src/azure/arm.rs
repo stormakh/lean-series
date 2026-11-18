@@ -38,7 +38,10 @@ pub fn telemetry_value(application_id: &str, module: &str, version: &str) -> Str
         s.push(' ');
     }
     let m = module.rsplit('/').next().unwrap_or(module);
-    s.push_str(&format!("azsdk-go-{m}/{version} ({GO_VERSION}; {})", std::env::consts::OS));
+    s.push_str(&format!(
+        "azsdk-go-{m}/{version} ({GO_VERSION}; {})",
+        std::env::consts::OS
+    ));
     s
 }
 
@@ -58,7 +61,12 @@ const BUILT_IN_NAMESPACE: &str = "Microsoft.Resources";
 impl ResourceType {
     /// Go `NewResourceType`.
     pub fn new(namespace: &str, type_name: &str) -> ResourceType {
-        ResourceType { namespace: namespace.to_string(), type_: type_name.to_string(), types: split_omit_empty(type_name), string_value: format!("{namespace}/{type_name}") }
+        ResourceType {
+            namespace: namespace.to_string(),
+            type_: type_name.to_string(),
+            types: split_omit_empty(type_name),
+            string_value: format!("{namespace}/{type_name}"),
+        }
     }
     fn append_child(&self, child: &str) -> ResourceType {
         ResourceType::new(&self.namespace, &format!("{}/{}", self.type_, child))
@@ -95,21 +103,37 @@ impl std::fmt::Display for ResourceId {
 }
 
 fn root_resource_id() -> ResourceId {
-    ResourceId { resource_type: ResourceType::new(BUILT_IN_NAMESPACE, "tenants"), ..Default::default() }
+    ResourceId {
+        resource_type: ResourceType::new(BUILT_IN_NAMESPACE, "tenants"),
+        ..Default::default()
+    }
 }
 
 fn split_omit_empty(v: &str) -> Vec<String> {
-    v.split('/').map(|s| s.trim()).filter(|s| !s.is_empty()).map(|s| s.to_string()).collect()
+    v.split('/')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect()
 }
 
 fn is_tenant_resource(r: &ResourceId) -> bool {
-    r.resource_type.string_value.eq_ignore_ascii_case(&format!("{BUILT_IN_NAMESPACE}/tenants")) && r.parent.is_none()
+    r.resource_type
+        .string_value
+        .eq_ignore_ascii_case(&format!("{BUILT_IN_NAMESPACE}/tenants"))
+        && r.parent.is_none()
 }
 fn is_subscription_resource(r: &ResourceId) -> bool {
-    r.resource_type.string_value.eq_ignore_ascii_case(&format!("{BUILT_IN_NAMESPACE}/subscriptions")) && r.parent.as_deref().is_some_and(is_tenant_resource)
+    r.resource_type
+        .string_value
+        .eq_ignore_ascii_case(&format!("{BUILT_IN_NAMESPACE}/subscriptions"))
+        && r.parent.as_deref().is_some_and(is_tenant_resource)
 }
 fn is_resource_group_resource(r: &ResourceId) -> bool {
-    r.resource_type.string_value.eq_ignore_ascii_case(&format!("{BUILT_IN_NAMESPACE}/resourceGroups")) && r.parent.as_deref().is_some_and(is_subscription_resource)
+    r.resource_type
+        .string_value
+        .eq_ignore_ascii_case(&format!("{BUILT_IN_NAMESPACE}/resourceGroups"))
+        && r.parent.as_deref().is_some_and(is_subscription_resource)
 }
 
 fn choose_resource_type(type_name: &str, parent: &ResourceId) -> ResourceType {
@@ -122,7 +146,12 @@ fn choose_resource_type(type_name: &str, parent: &ResourceId) -> ResourceType {
     }
 }
 
-fn init_resource_id(parent: ResourceId, rt: ResourceType, name: &str, is_child: bool) -> ResourceId {
+fn init_resource_id(
+    parent: ResourceId,
+    rt: ResourceType,
+    name: &str,
+    is_child: bool,
+) -> ResourceId {
     let mut id = ResourceId {
         provider: parent.provider.clone(),
         subscription_id: parent.subscription_id.clone(),
@@ -151,7 +180,10 @@ fn init_resource_id(parent: ResourceId, rt: ResourceType, name: &str, is_child: 
             sv.push_str(name);
         }
     } else {
-        sv.push_str(&format!("/providers/{}/{}/{}", rt.namespace, rt.type_, name));
+        sv.push_str(&format!(
+            "/providers/{}/{}/{}",
+            rt.namespace, rt.type_, name
+        ));
     }
     id.parent = Some(Box::new(parent));
     id.is_child = is_child;
@@ -167,7 +199,10 @@ fn append_next(parent: ResourceId, parts: &[String], id: &str) -> Result<Resourc
         return Ok(parent);
     }
     if parts.len() == 1 {
-        if (parts[0].eq_ignore_ascii_case("subscriptions") && is_tenant_resource(&parent)) || (parts[0].eq_ignore_ascii_case("resourcegroups") && is_subscription_resource(&parent)) {
+        if (parts[0].eq_ignore_ascii_case("subscriptions") && is_tenant_resource(&parent))
+            || (parts[0].eq_ignore_ascii_case("resourcegroups")
+                && is_subscription_resource(&parent))
+        {
             return Err(invalid());
         }
         if is_resource_group_resource(&parent) {
@@ -176,15 +211,27 @@ fn append_next(parent: ResourceId, parts: &[String], id: &str) -> Result<Resourc
         let rt = choose_resource_type(&parts[0], &parent);
         return Ok(init_resource_id(parent, rt, "", true));
     }
-    if parts[0].eq_ignore_ascii_case("providers") && (parts.len() == 2 || parts[2].eq_ignore_ascii_case("providers")) {
+    if parts[0].eq_ignore_ascii_case("providers")
+        && (parts.len() == 2 || parts[2].eq_ignore_ascii_case("providers"))
+    {
         if !is_subscription_resource(&parent) && !is_tenant_resource(&parent) {
             return Err(invalid());
         }
-        let next = init_resource_id(parent, ResourceType::new(BUILT_IN_NAMESPACE, "providers"), &parts[1], true);
+        let next = init_resource_id(
+            parent,
+            ResourceType::new(BUILT_IN_NAMESPACE, "providers"),
+            &parts[1],
+            true,
+        );
         return append_next(next, &parts[2..], id);
     }
     if parts.len() > 3 && parts[0].eq_ignore_ascii_case("providers") {
-        let next = init_resource_id(parent, ResourceType::new(&parts[1], &parts[2]), &parts[3], false);
+        let next = init_resource_id(
+            parent,
+            ResourceType::new(&parts[1], &parts[2]),
+            &parts[3],
+            false,
+        );
         return append_next(next, &parts[4..], id);
     }
     if parts.len() > 1 && !parts[0].eq_ignore_ascii_case("providers") {
@@ -201,13 +248,17 @@ pub fn parse_resource_id(id: &str) -> Result<ResourceId, String> {
         return Err("invalid resource ID: id cannot be empty".to_string());
     }
     if !id.starts_with('/') {
-        return Err(format!("invalid resource ID: resource id '{id}' must start with '/'"));
+        return Err(format!(
+            "invalid resource ID: resource id '{id}' must start with '/'"
+        ));
     }
     let parts = split_omit_empty(id);
     if parts.len() < 2 {
         return Err(format!("invalid resource ID: {id}"));
     }
-    if !parts[0].eq_ignore_ascii_case("subscriptions") && !parts[0].eq_ignore_ascii_case("providers") {
+    if !parts[0].eq_ignore_ascii_case("subscriptions")
+        && !parts[0].eq_ignore_ascii_case("providers")
+    {
         return Err(format!("invalid resource ID: {id}"));
     }
     append_next(root_resource_id(), &parts, id)
@@ -288,7 +339,11 @@ pub fn go_json_indent(src: &[u8]) -> String {
 /// The body of an error as Go's `ResponseError`/`AuthenticationFailedError` print it: indented JSON when the
 /// body is JSON, the raw body otherwise.
 pub fn indent_body(body: &[u8]) -> String {
-    if Json::parse_bytes(body).is_ok() { go_json_indent(body) } else { String::from_utf8_lossy(body).into_owned() }
+    if Json::parse_bytes(body).is_ok() {
+        go_json_indent(body)
+    } else {
+        String::from_utf8_lossy(body).into_owned()
+    }
 }
 
 fn json_kind(v: &Json) -> &'static str {
@@ -303,14 +358,21 @@ fn json_kind(v: &Json) -> &'static str {
 }
 
 fn type_err(v: &Json, go_type: &str) -> String {
-    format!("json: cannot unmarshal {} into Go value of type {}", json_kind(v), go_type)
+    format!(
+        "json: cannot unmarshal {} into Go value of type {}",
+        json_kind(v),
+        go_type
+    )
 }
 
 /// The object members of a generated model, or Go's error for a non-object (`unmarshalling type *T: ...`).
 fn members<'a>(v: &'a Json, ty: &str) -> Result<&'a [(String, Json)], String> {
     match v {
         Json::Obj(m) => Ok(m),
-        _ => Err(format!("unmarshalling type {ty}: {}", type_err(v, "map[string]json.RawMessage"))),
+        _ => Err(format!(
+            "unmarshalling type {ty}: {}",
+            type_err(v, "map[string]json.RawMessage")
+        )),
     }
 }
 
@@ -331,14 +393,25 @@ fn un_bool(v: &Json, field: &str) -> Result<Option<bool>, String> {
     }
 }
 
-fn un_obj<T>(v: &Json, field: &str, f: impl Fn(&Json) -> Result<T, String>) -> Result<Option<T>, String> {
+fn un_obj<T>(
+    v: &Json,
+    field: &str,
+    f: impl Fn(&Json) -> Result<T, String>,
+) -> Result<Option<T>, String> {
     match v {
         Json::Null => Ok(None),
-        _ => f(v).map(Some).map_err(|e| format!("struct field {field}: {e}")),
+        _ => f(v)
+            .map(Some)
+            .map_err(|e| format!("struct field {field}: {e}")),
     }
 }
 
-fn un_vec<T>(v: &Json, field: &str, go_type: &str, f: impl Fn(&Json) -> Result<T, String>) -> Result<Vec<Option<T>>, String> {
+fn un_vec<T>(
+    v: &Json,
+    field: &str,
+    go_type: &str,
+    f: impl Fn(&Json) -> Result<T, String>,
+) -> Result<Vec<Option<T>>, String> {
     match v {
         Json::Null => Ok(Vec::new()),
         Json::Arr(a) => {
@@ -347,7 +420,9 @@ fn un_vec<T>(v: &Json, field: &str, go_type: &str, f: impl Fn(&Json) -> Result<T
                 if e.is_null() {
                     out.push(None);
                 } else {
-                    out.push(Some(f(e).map_err(|e| format!("struct field {field}: {e}"))?));
+                    out.push(Some(
+                        f(e).map_err(|e| format!("struct field {field}: {e}"))?,
+                    ));
                 }
             }
             Ok(out)
@@ -370,7 +445,10 @@ fn un_tags(v: &Json) -> Result<Option<BTreeMap<String, Option<String>>>, String>
             }
             Ok(Some(out))
         }
-        _ => Err(format!("struct field Tags: {}", type_err(v, "map[string]*string"))),
+        _ => Err(format!(
+            "struct field Tags: {}",
+            type_err(v, "map[string]*string")
+        )),
     }
 }
 
@@ -497,7 +575,11 @@ impl ArmVirtualMachine {
     /// The generated `UnmarshalJSON` of armcompute `VirtualMachine` (`scale_set_vm`: `VirtualMachineScaleSetVM`).
     pub fn from_json(v: &Json, scale_set_vm: bool) -> Result<ArmVirtualMachine, String> {
         let ty = if scale_set_vm { T_VMSSVM } else { T_VM };
-        let props_ty = if scale_set_vm { "*armcompute.VirtualMachineScaleSetVMProperties" } else { "*armcompute.VirtualMachineProperties" };
+        let props_ty = if scale_set_vm {
+            "*armcompute.VirtualMachineScaleSetVMProperties"
+        } else {
+            "*armcompute.VirtualMachineProperties"
+        };
         let w = |e: String| format!("unmarshalling type {ty}: {e}");
         let mut vm = ArmVirtualMachine::default();
         for (k, val) in members(v, ty)? {
@@ -506,9 +588,15 @@ impl ArmVirtualMachine {
                 "name" => vm.name = un_str(val, "Name", "string").map_err(w)?,
                 "type" => vm.type_ = un_str(val, "Type", "string").map_err(w)?,
                 "location" => vm.location = un_str(val, "Location", "string").map_err(w)?,
-                "instanceId" if scale_set_vm => vm.instance_id = un_str(val, "InstanceID", "string").map_err(w)?,
+                "instanceId" if scale_set_vm => {
+                    vm.instance_id = un_str(val, "InstanceID", "string").map_err(w)?
+                }
                 "tags" => vm.tags = un_tags(val).map_err(w)?,
-                "properties" => vm.properties = un_obj(val, "Properties", |p| VmProperties::from_json(p, props_ty)).map_err(w)?,
+                "properties" => {
+                    vm.properties =
+                        un_obj(val, "Properties", |p| VmProperties::from_json(p, props_ty))
+                            .map_err(w)?
+                }
                 _ => {}
             }
         }
@@ -519,46 +607,78 @@ impl ArmVirtualMachine {
     pub fn to_json(&self) -> Json {
         let mut o = Json::obj();
         put(&mut o, "id", self.id.as_ref().map(Json::from));
-        put(&mut o, "instanceId", self.instance_id.as_ref().map(Json::from));
+        put(
+            &mut o,
+            "instanceId",
+            self.instance_id.as_ref().map(Json::from),
+        );
         put(&mut o, "location", self.location.as_ref().map(Json::from));
         put(&mut o, "name", self.name.as_ref().map(Json::from));
         if let Some(p) = &self.properties {
             let mut po = Json::obj();
-            put(&mut po, "hardwareProfile", p.hardware_profile.as_ref().map(|h| {
-                let mut ho = Json::obj();
-                put(&mut ho, "vmSize", h.vm_size.as_ref().map(Json::from));
-                ho
-            }));
-            put(&mut po, "networkProfile", p.network_profile.as_ref().map(|n| {
-                let refs: Vec<Json> = n
-                    .network_interfaces
-                    .iter()
-                    .map(|r| match r {
-                        None => Json::Null,
-                        Some(r) => {
-                            let mut ro = Json::obj();
-                            put(&mut ro, "id", r.id.as_ref().map(Json::from));
-                            put(&mut ro, "properties", r.primary.map(|b| Json::obj().with("primary", b)));
-                            ro
-                        }
-                    })
-                    .collect();
-                Json::obj().with("networkInterfaces", Json::Arr(refs))
-            }));
-            put(&mut po, "osProfile", p.os_profile.as_ref().map(|os| {
-                let mut oo = Json::obj();
-                put(&mut oo, "computerName", os.computer_name.as_ref().map(Json::from));
-                oo
-            }));
-            put(&mut po, "storageProfile", p.storage_profile.as_ref().map(|s| {
-                let mut so = Json::obj();
-                put(&mut so, "osDisk", s.os_disk.as_ref().map(|d| {
-                    let mut d2 = Json::obj();
-                    put(&mut d2, "osType", d.os_type.as_ref().map(Json::from));
-                    d2
-                }));
-                so
-            }));
+            put(
+                &mut po,
+                "hardwareProfile",
+                p.hardware_profile.as_ref().map(|h| {
+                    let mut ho = Json::obj();
+                    put(&mut ho, "vmSize", h.vm_size.as_ref().map(Json::from));
+                    ho
+                }),
+            );
+            put(
+                &mut po,
+                "networkProfile",
+                p.network_profile.as_ref().map(|n| {
+                    let refs: Vec<Json> = n
+                        .network_interfaces
+                        .iter()
+                        .map(|r| match r {
+                            None => Json::Null,
+                            Some(r) => {
+                                let mut ro = Json::obj();
+                                put(&mut ro, "id", r.id.as_ref().map(Json::from));
+                                put(
+                                    &mut ro,
+                                    "properties",
+                                    r.primary.map(|b| Json::obj().with("primary", b)),
+                                );
+                                ro
+                            }
+                        })
+                        .collect();
+                    Json::obj().with("networkInterfaces", Json::Arr(refs))
+                }),
+            );
+            put(
+                &mut po,
+                "osProfile",
+                p.os_profile.as_ref().map(|os| {
+                    let mut oo = Json::obj();
+                    put(
+                        &mut oo,
+                        "computerName",
+                        os.computer_name.as_ref().map(Json::from),
+                    );
+                    oo
+                }),
+            );
+            put(
+                &mut po,
+                "storageProfile",
+                p.storage_profile.as_ref().map(|s| {
+                    let mut so = Json::obj();
+                    put(
+                        &mut so,
+                        "osDisk",
+                        s.os_disk.as_ref().map(|d| {
+                            let mut d2 = Json::obj();
+                            put(&mut d2, "osType", d.os_type.as_ref().map(Json::from));
+                            d2
+                        }),
+                    );
+                    so
+                }),
+            );
             o.set("properties", po);
         }
         if let Some(t) = &self.tags {
@@ -699,7 +819,10 @@ impl ArmInterface {
             match k.as_str() {
                 "id" => n.id = un_str(val, "ID", "string").map_err(w)?,
                 "name" => n.name = un_str(val, "Name", "string").map_err(w)?,
-                "properties" => n.properties = un_obj(val, "Properties", InterfaceProperties::from_json).map_err(w)?,
+                "properties" => {
+                    n.properties =
+                        un_obj(val, "Properties", InterfaceProperties::from_json).map_err(w)?
+                }
                 _ => {}
             }
         }
@@ -720,20 +843,40 @@ impl ArmInterface {
                     None => Json::Null,
                     Some(c) => {
                         let mut co = Json::obj();
-                        put(&mut co, "properties", c.properties.as_ref().map(|cp| {
-                            let mut cpo = Json::obj();
-                            put(&mut cpo, "privateIPAddress", cp.private_ip_address.as_ref().map(Json::from));
-                            put(&mut cpo, "publicIPAddress", cp.public_ip_address.as_ref().map(|pip| {
-                                let mut pio = Json::obj();
-                                put(&mut pio, "properties", pip.properties.as_ref().map(|pp| {
-                                    let mut ppo = Json::obj();
-                                    put(&mut ppo, "ipAddress", pp.ip_address.as_ref().map(Json::from));
-                                    ppo
-                                }));
-                                pio
-                            }));
-                            cpo
-                        }));
+                        put(
+                            &mut co,
+                            "properties",
+                            c.properties.as_ref().map(|cp| {
+                                let mut cpo = Json::obj();
+                                put(
+                                    &mut cpo,
+                                    "privateIPAddress",
+                                    cp.private_ip_address.as_ref().map(Json::from),
+                                );
+                                put(
+                                    &mut cpo,
+                                    "publicIPAddress",
+                                    cp.public_ip_address.as_ref().map(|pip| {
+                                        let mut pio = Json::obj();
+                                        put(
+                                            &mut pio,
+                                            "properties",
+                                            pip.properties.as_ref().map(|pp| {
+                                                let mut ppo = Json::obj();
+                                                put(
+                                                    &mut ppo,
+                                                    "ipAddress",
+                                                    pp.ip_address.as_ref().map(Json::from),
+                                                );
+                                                ppo
+                                            }),
+                                        );
+                                        pio
+                                    }),
+                                );
+                                cpo
+                            }),
+                        );
                         co
                     }
                 })
@@ -756,7 +899,15 @@ impl InterfaceProperties {
         for (k, val) in members(v, ty)? {
             match k.as_str() {
                 "primary" => p.primary = un_bool(val, "Primary").map_err(w)?,
-                "ipConfigurations" => p.ip_configurations = un_vec(val, "IPConfigurations", "[]*armnetwork.InterfaceIPConfiguration", IpConfiguration::from_json).map_err(w)?,
+                "ipConfigurations" => {
+                    p.ip_configurations = un_vec(
+                        val,
+                        "IPConfigurations",
+                        "[]*armnetwork.InterfaceIPConfiguration",
+                        IpConfiguration::from_json,
+                    )
+                    .map_err(w)?
+                }
                 _ => {}
             }
         }
@@ -776,28 +927,43 @@ impl IpConfiguration {
                     let mut p = IpConfigurationProperties::default();
                     for (k, val) in members(v, pty)? {
                         match k.as_str() {
-                            "privateIPAddress" => p.private_ip_address = un_str(val, "PrivateIPAddress", "string").map_err(pw)?,
-                            "publicIPAddress" => p.public_ip_address = un_obj(val, "PublicIPAddress", |v| {
-                                let aty = "*armnetwork.PublicIPAddress";
-                                let mut a = PublicIpAddress::default();
-                                for (k, val) in members(v, aty)? {
-                                    if k == "properties" {
-                                        a.properties = un_obj(val, "Properties", |v| {
-                                            let bty = "*armnetwork.PublicIPAddressPropertiesFormat";
-                                            let mut b = PublicIpAddressProperties::default();
-                                            for (k, val) in members(v, bty)? {
-                                                if k == "ipAddress" {
-                                                    b.ip_address = un_str(val, "IPAddress", "string").map_err(|e| format!("unmarshalling type {bty}: {e}"))?;
+                            "privateIPAddress" => {
+                                p.private_ip_address =
+                                    un_str(val, "PrivateIPAddress", "string").map_err(pw)?
+                            }
+                            "publicIPAddress" => {
+                                p.public_ip_address = un_obj(val, "PublicIPAddress", |v| {
+                                    let aty = "*armnetwork.PublicIPAddress";
+                                    let mut a = PublicIpAddress::default();
+                                    for (k, val) in members(v, aty)? {
+                                        if k == "properties" {
+                                            a.properties = un_obj(val, "Properties", |v| {
+                                                let bty =
+                                                    "*armnetwork.PublicIPAddressPropertiesFormat";
+                                                let mut b = PublicIpAddressProperties::default();
+                                                for (k, val) in members(v, bty)? {
+                                                    if k == "ipAddress" {
+                                                        b.ip_address = un_str(
+                                                            val,
+                                                            "IPAddress",
+                                                            "string",
+                                                        )
+                                                        .map_err(|e| {
+                                                            format!("unmarshalling type {bty}: {e}")
+                                                        })?;
+                                                    }
                                                 }
-                                            }
-                                            Ok(b)
-                                        })
-                                        .map_err(|e| format!("unmarshalling type {aty}: {e}"))?;
+                                                Ok(b)
+                                            })
+                                            .map_err(|e| {
+                                                format!("unmarshalling type {aty}: {e}")
+                                            })?;
+                                        }
                                     }
-                                }
-                                Ok(a)
-                            })
-                            .map_err(pw)?,
+                                    Ok(a)
+                                })
+                                .map_err(pw)?
+                            }
                             _ => {}
                         }
                     }
@@ -817,12 +983,26 @@ pub struct Page<T> {
 }
 
 /// The generated `UnmarshalJSON` of a list result (`ty` like "*armcompute.VirtualMachineListResult").
-fn parse_page<T>(v: &Json, ty: &str, value_ty: &str, f: impl Fn(&Json) -> Result<T, String>) -> Result<Page<T>, String> {
+fn parse_page<T>(
+    v: &Json,
+    ty: &str,
+    value_ty: &str,
+    f: impl Fn(&Json) -> Result<T, String>,
+) -> Result<Page<T>, String> {
     let w = |e: String| format!("unmarshalling type {ty}: {e}");
-    let mut page = Page { value: Vec::new(), next_link: None };
+    let mut page = Page {
+        value: Vec::new(),
+        next_link: None,
+    };
     for (k, val) in members(v, ty)? {
         match k.as_str() {
-            "value" => page.value = un_vec(val, "Value", value_ty, &f).map_err(w)?.into_iter().flatten().collect(),
+            "value" => {
+                page.value = un_vec(val, "Value", value_ty, &f)
+                    .map_err(w)?
+                    .into_iter()
+                    .flatten()
+                    .collect()
+            }
             "nextLink" => page.next_link = un_str(val, "NextLink", "string").map_err(w)?,
             _ => {}
         }
@@ -831,7 +1011,11 @@ fn parse_page<T>(v: &Json, ty: &str, value_ty: &str, f: impl Fn(&Json) -> Result
 }
 
 /// Go `runtime.UnmarshalAsJSON`: an empty body is the zero value; otherwise errors are prefixed with the type.
-fn unmarshal_as_json<T: Default>(body: &[u8], ty: &str, f: impl Fn(&Json) -> Result<T, String>) -> Result<T, String> {
+fn unmarshal_as_json<T: Default>(
+    body: &[u8],
+    ty: &str,
+    f: impl Fn(&Json) -> Result<T, String>,
+) -> Result<T, String> {
     if body.is_empty() {
         return Ok(T::default());
     }
@@ -842,7 +1026,10 @@ fn unmarshal_as_json<T: Default>(body: &[u8], ty: &str, f: impl Fn(&Json) -> Res
 
 impl<T> Default for Page<T> {
     fn default() -> Self {
-        Page { value: Vec::new(), next_link: None }
+        Page {
+            value: Vec::new(),
+            next_link: None,
+        }
     }
 }
 
@@ -867,7 +1054,8 @@ impl From<String> for ArmError {
     }
 }
 
-const SEPARATOR: &str = "--------------------------------------------------------------------------------";
+const SEPARATOR: &str =
+    "--------------------------------------------------------------------------------";
 
 fn extract_error_code(body: &[u8]) -> String {
     if let Ok(v) = Json::parse_bytes(body) {
@@ -883,15 +1071,61 @@ fn extract_error_code(body: &[u8]) -> String {
             (Json::Obj(_), None, None) => &v,
             _ => return String::new(),
         };
-        return inner.get("code").and_then(|c| c.as_str()).unwrap_or("").to_string();
+        return inner
+            .get("code")
+            .and_then(|c| c.as_str())
+            .unwrap_or("")
+            .to_string();
     }
-    // Go: `<(?:\w+:)?[c|C]ode>\s*(\w+)\s*<\/(?:\w+:)?[c|C]ode>`
+    // Go: `<(?:\w+:)?[c|C]ode>\s*(\w+)\s*<\/(?:\w+:)?[c|C]ode>`, leftmost match.
     let s = String::from_utf8_lossy(body);
-    let re = model::regexp::Regexp::must_compile(r"<(?:\w+:)?[c|C]ode>\s*(\w+)\s*</(?:\w+:)?[c|C]ode>");
-    match re.find_submatch(&s) {
-        Some(m) if m.len() == 2 => m[1].clone().unwrap_or_default(),
-        _ => String::new(),
+    let b = s.as_bytes();
+    let word = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    let space = |c: u8| matches!(c, b' ' | b'\t' | b'\n' | b'\r' | b'\x0c');
+    // the tag name after '<' or '</': optional "\w+:" then "[c|C]ode>"; returns the end index
+    let tag = |mut i: usize| -> Option<usize> {
+        let start = i;
+        while i < b.len() && word(b[i]) {
+            i += 1;
+        }
+        let mut cands = vec![start];
+        if i > start && i < b.len() && b[i] == b':' {
+            cands.push(i + 1);
+        }
+        cands.into_iter().rev().find_map(|j| {
+            if j + 5 <= b.len() && matches!(b[j], b'c' | b'C' | b'|') && &b[j + 1..j + 5] == b"ode>"
+            {
+                Some(j + 5)
+            } else {
+                None
+            }
+        })
+    };
+    for st in 0..b.len() {
+        if b[st] != b'<' {
+            continue;
+        }
+        let Some(mut i) = tag(st + 1) else { continue };
+        while i < b.len() && space(b[i]) {
+            i += 1;
+        }
+        let ws = i;
+        while i < b.len() && word(b[i]) {
+            i += 1;
+        }
+        if i == ws {
+            continue;
+        }
+        let w = &s[ws..i];
+        // \w+ is greedy but may give back nothing useful: after it only spaces then "</"
+        while i < b.len() && space(b[i]) {
+            i += 1;
+        }
+        if i + 1 < b.len() && b[i] == b'<' && b[i + 1] == b'/' && tag(i + 2).is_some() {
+            return w.to_string();
+        }
     }
+    String::new()
 }
 
 /// Go `runtime.NewResponseError(resp).Error()`.
@@ -901,7 +1135,13 @@ pub fn response_error(resp: &net::Response) -> ArmError {
         code = extract_error_code(&resp.body);
     }
     let u = &resp.request.url;
-    let mut msg = format!("{} {}://{}{}\n", resp.request.method, u.scheme, u.host, u.escaped_path());
+    let mut msg = format!(
+        "{} {}://{}{}\n",
+        resp.request.method,
+        u.scheme,
+        u.host,
+        u.escaped_path()
+    );
     msg.push_str(SEPARATOR);
     msg.push('\n');
     msg.push_str(&format!("RESPONSE {}: {}\n", resp.status, resp.status_text));
@@ -920,7 +1160,10 @@ pub fn response_error(resp: &net::Response) -> ArmError {
     }
     msg.push_str(SEPARATOR);
     msg.push('\n');
-    ArmError { status: Some(resp.status), msg }
+    ArmError {
+        status: Some(resp.status),
+        msg,
+    }
 }
 
 // ---------------- pipeline ----------------
@@ -938,7 +1181,13 @@ pub struct RetryOptions {
 
 impl Default for RetryOptions {
     fn default() -> Self {
-        RetryOptions { max_retries: 3, retry_delay: Duration::from_millis(800), max_retry_delay: Duration::from_secs(60), status_codes: vec![408, 429, 500, 502, 503, 504], try_timeout: None }
+        RetryOptions {
+            max_retries: 3,
+            retry_delay: Duration::from_millis(800),
+            max_retry_delay: Duration::from_secs(60),
+            status_codes: vec![408, 429, 500, 502, 503, 504],
+            try_timeout: None,
+        }
     }
 }
 
@@ -950,7 +1199,11 @@ fn random_f64() -> f64 {
 
 /// Go `calcDelay`: exponential back-off with jitter.
 fn calc_delay(o: &RetryOptions, try_: u32) -> Duration {
-    let factor = if try_ < 63 { (1u64 << try_) - 1 } else { u64::MAX };
+    let factor = if try_ < 63 {
+        (1u64 << try_) - 1
+    } else {
+        u64::MAX
+    };
     let base = o.retry_delay.as_secs_f64() * factor as f64;
     let jitter = random_f64() / 2.0 + 0.8;
     let d = Duration::from_secs_f64((base * jitter).min(1e9));
@@ -959,13 +1212,21 @@ fn calc_delay(o: &RetryOptions, try_: u32) -> Duration {
 
 /// Go `shared.RetryAfter` (millisecond headers and `Retry-After` in seconds).
 fn retry_after(resp: &net::Response) -> Duration {
-    for (h, ms) in [("retry-after-ms", true), ("x-ms-retry-after-ms", true), ("Retry-After", false)] {
+    for (h, ms) in [
+        ("retry-after-ms", true),
+        ("x-ms-retry-after-ms", true),
+        ("Retry-After", false),
+    ] {
         let v = resp.header.get_str(h);
         if v.is_empty() {
             continue;
         }
         if let Ok(n) = v.trim().parse::<u64>() {
-            return if ms { Duration::from_millis(n) } else { Duration::from_secs(n) };
+            return if ms {
+                Duration::from_millis(n)
+            } else {
+                Duration::from_secs(n)
+            };
         }
     }
     Duration::ZERO
@@ -975,7 +1236,11 @@ fn retry_after(resp: &net::Response) -> Duration {
 pub struct NonRetriable(pub String);
 
 /// Go azcore `retryPolicy.Do` around one request: `send` makes one try (and may fail without retry).
-pub fn do_with_retry(ctx: &CancelToken, o: &RetryOptions, mut send: impl FnMut(Option<Duration>) -> Result<Result<net::Response, String>, NonRetriable>) -> Result<net::Response, String> {
+pub fn do_with_retry(
+    ctx: &CancelToken,
+    o: &RetryOptions,
+    mut send: impl FnMut(Option<Duration>) -> Result<Result<net::Response, String>, NonRetriable>,
+) -> Result<net::Response, String> {
     let mut try_ = 1u32;
     loop {
         if ctx.is_cancelled() {
@@ -1019,14 +1284,22 @@ pub struct Bearer {
 
 impl Bearer {
     pub fn new(cred: Arc<dyn TokenCredential>, scopes: Vec<String>, allow_http: bool) -> Bearer {
-        Bearer { cred, scopes, token: Mutex::new(None), allow_http }
+        Bearer {
+            cred,
+            scopes,
+            token: Mutex::new(None),
+            allow_http,
+        }
     }
 
     /// The `Authorization` header value, from the cache or a new token (Go `shouldRefresh`: within five
     /// minutes of expiry, or after `RefreshOn`).
     fn authorization(&self, ctx: &CancelToken, req: &net::Request) -> Result<String, NonRetriable> {
         if !req.url.scheme.eq_ignore_ascii_case("https") && !self.allow_http {
-            return Err(NonRetriable("authorized requests are not permitted for non-TLS protected (https) endpoints".to_string()));
+            return Err(NonRetriable(
+                "authorized requests are not permitted for non-TLS protected (https) endpoints"
+                    .to_string(),
+            ));
         }
         let mut t = self.token.lock().unwrap_or_else(|e| e.into_inner());
         let now = SystemTime::now();
@@ -1035,10 +1308,16 @@ impl Bearer {
             None => tk.expires_on > now + Duration::from_secs(300),
         });
         if !fresh {
-            let tk = self.cred.get_token(ctx, &self.scopes).map_err(|e| NonRetriable(e.to_string()))?;
+            let tk = self
+                .cred
+                .get_token(ctx, &self.scopes)
+                .map_err(|e| NonRetriable(e.to_string()))?;
             *t = Some(tk);
         }
-        Ok(format!("Bearer {}", t.as_ref().map(|t| t.token.as_str()).unwrap_or("")))
+        Ok(format!(
+            "Bearer {}",
+            t.as_ref().map(|t| t.token.as_str()).unwrap_or("")
+        ))
     }
 }
 
@@ -1052,7 +1331,12 @@ pub struct ArmPipeline {
 
 impl ArmPipeline {
     pub fn new(http: net::Client, user_agent: String, bearer: Bearer) -> ArmPipeline {
-        ArmPipeline { http, user_agent, bearer, retry: RetryOptions::default() }
+        ArmPipeline {
+            http,
+            user_agent,
+            bearer,
+            retry: RetryOptions::default(),
+        }
     }
 
     /// Sends a GET through the pipeline. `accept`: set `Accept: application/json` (first pages only).
@@ -1085,7 +1369,11 @@ pub fn join_paths(root: &str, p: &str) -> String {
     };
     let mut p = p.to_string();
     if !qps.is_empty() {
-        p = if p.contains('?') { format!("{p}&{qps}") } else { format!("{p}?{qps}") };
+        p = if p.contains('?') {
+            format!("{p}&{qps}")
+        } else {
+            format!("{p}?{qps}")
+        };
     }
     let mut root = root.to_string();
     if root.ends_with('/') && p.starts_with('/') {
@@ -1118,7 +1406,10 @@ pub fn next_link_url(endpoint: &str, next_link: &str) -> Result<String, String> 
         if let Some(e) = err {
             return Err(e);
         }
-        link = format!("{before}?{}", yaml::url::encode_query(&pairs).replace('+', "%20"));
+        link = format!(
+            "{before}?{}",
+            yaml::url::encode_query(&pairs).replace('+', "%20")
+        );
     }
     if !has_scheme(&link) {
         link = join_paths(endpoint, &link);
@@ -1131,9 +1422,16 @@ fn esc(s: &str) -> String {
 }
 
 fn query(pairs: &[(&str, &str)], spaces_as_20: bool) -> String {
-    let v: Vec<(String, String)> = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    let v: Vec<(String, String)> = pairs
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
     let q = yaml::url::encode_query(&v);
-    if spaces_as_20 { q.replace('+', "%20") } else { q }
+    if spaces_as_20 {
+        q.replace('+', "%20")
+    } else {
+        q
+    }
 }
 
 /// armcompute v8.4.0 api-version of the VM, scale set and scale set VM operations.
@@ -1146,7 +1444,15 @@ pub const VMSS_NIC_API_VERSION: &str = "2018-10-01";
 pub const NIC_EXPAND: &str = "IPConfigurations/PublicIPAddress";
 
 /// Go `runtime.Pager` loop over a list operation: the first page from `first_url`, then every `nextLink`.
-fn list_all<T>(p: &ArmPipeline, ctx: &CancelToken, endpoint: &str, first_url: Result<String, String>, ty: &str, value_ty: &str, f: impl Fn(&Json) -> Result<T, String> + Copy) -> Result<Vec<T>, ArmError> {
+fn list_all<T>(
+    p: &ArmPipeline,
+    ctx: &CancelToken,
+    endpoint: &str,
+    first_url: Result<String, String>,
+    ty: &str,
+    value_ty: &str,
+    f: impl Fn(&Json) -> Result<T, String> + Copy,
+) -> Result<Vec<T>, ArmError> {
     let mut out = Vec::new();
     let mut next: Option<String> = None;
     loop {
@@ -1179,56 +1485,136 @@ pub struct ArmClients {
 }
 
 /// The module names and versions in the SDK telemetry user agent.
-pub const ARMCOMPUTE_MODULE: &str = "github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute";
+pub const ARMCOMPUTE_MODULE: &str =
+    "github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute";
 pub const ARMCOMPUTE_VERSION: &str = "v8.4.0";
-pub const ARMNETWORK_MODULE: &str = "github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/network/armnetwork/v8";
+pub const ARMNETWORK_MODULE: &str =
+    "github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/network/armnetwork/v8";
 pub const ARMNETWORK_VERSION: &str = "v8.0.0";
 
 impl ArmClients {
     /// Go `armcompute.New*Client` and `armnetwork.NewInterfacesClient` with the same credential and options.
-    pub fn new(subscription_id: &str, endpoint: &str, audience: &str, cred: Arc<dyn TokenCredential>, http: net::Client, application_id: &str, allow_http: bool) -> ArmClients {
+    pub fn new(
+        subscription_id: &str,
+        endpoint: &str,
+        audience: &str,
+        cred: Arc<dyn TokenCredential>,
+        http: net::Client,
+        application_id: &str,
+        allow_http: bool,
+    ) -> ArmClients {
         let scopes = vec![format!("{audience}/.default")];
         let compute_ua = telemetry_value(application_id, ARMCOMPUTE_MODULE, ARMCOMPUTE_VERSION);
         let network_ua = telemetry_value(application_id, ARMNETWORK_MODULE, ARMNETWORK_VERSION);
-        let pl = |ua: &str| ArmPipeline::new(http.clone(), ua.to_string(), Bearer::new(cred.clone(), scopes.clone(), allow_http));
-        ArmClients { subscription_id: subscription_id.to_string(), endpoint: endpoint.to_string(), vm: pl(&compute_ua), vmss: pl(&compute_ua), vmssvm: pl(&compute_ua), nic: pl(&network_ua) }
+        let pl = |ua: &str| {
+            ArmPipeline::new(
+                http.clone(),
+                ua.to_string(),
+                Bearer::new(cred.clone(), scopes.clone(), allow_http),
+            )
+        };
+        ArmClients {
+            subscription_id: subscription_id.to_string(),
+            endpoint: endpoint.to_string(),
+            vm: pl(&compute_ua),
+            vmss: pl(&compute_ua),
+            vmssvm: pl(&compute_ua),
+            nic: pl(&network_ua),
+        }
     }
 
     fn compute_url(&self, path: String, ok: Result<(), String>) -> Result<String, String> {
         ok?;
-        Ok(format!("{}?{}", join_paths(&self.endpoint, &path), query(&[("api-version", COMPUTE_API_VERSION)], true)))
+        Ok(format!(
+            "{}?{}",
+            join_paths(&self.endpoint, &path),
+            query(&[("api-version", COMPUTE_API_VERSION)], true)
+        ))
     }
 
     fn sub_check(&self) -> Result<(), String> {
-        if self.subscription_id.is_empty() { Err("parameter subscriptionID cannot be empty".to_string()) } else { Ok(()) }
+        if self.subscription_id.is_empty() {
+            Err("parameter subscriptionID cannot be empty".to_string())
+        } else {
+            Ok(())
+        }
     }
 
     /// `VirtualMachinesClient.NewListAllPager` (resource group empty) or `NewListPager`.
-    pub fn list_vms(&self, ctx: &CancelToken, resource_group: &str) -> Result<Vec<ArmVirtualMachine>, ArmError> {
+    pub fn list_vms(
+        &self,
+        ctx: &CancelToken,
+        resource_group: &str,
+    ) -> Result<Vec<ArmVirtualMachine>, ArmError> {
         let sub = esc(&self.subscription_id);
         let url = if resource_group.is_empty() {
-            self.compute_url(format!("/subscriptions/{sub}/providers/Microsoft.Compute/virtualMachines"), self.sub_check())
+            self.compute_url(
+                format!("/subscriptions/{sub}/providers/Microsoft.Compute/virtualMachines"),
+                self.sub_check(),
+            )
         } else {
-            let ok = self.sub_check().and_then(|_| if resource_group.is_empty() { Err("parameter resourceGroupName cannot be empty".to_string()) } else { Ok(()) });
+            let ok = self.sub_check().and_then(|_| {
+                if resource_group.is_empty() {
+                    Err("parameter resourceGroupName cannot be empty".to_string())
+                } else {
+                    Ok(())
+                }
+            });
             self.compute_url(format!("/subscriptions/{sub}/resourceGroups/{}/providers/Microsoft.Compute/virtualMachines", esc(resource_group)), ok)
         };
-        list_all(&self.vm, ctx, &self.endpoint, url, "*armcompute.VirtualMachineListResult", "[]*armcompute.VirtualMachine", |v| ArmVirtualMachine::from_json(v, false))
+        list_all(
+            &self.vm,
+            ctx,
+            &self.endpoint,
+            url,
+            "*armcompute.VirtualMachineListResult",
+            "[]*armcompute.VirtualMachine",
+            |v| ArmVirtualMachine::from_json(v, false),
+        )
     }
 
     /// `VirtualMachineScaleSetsClient.NewListAllPager` (resource group empty) or `NewListPager`.
-    pub fn list_scale_sets(&self, ctx: &CancelToken, resource_group: &str) -> Result<Vec<ArmScaleSet>, ArmError> {
+    pub fn list_scale_sets(
+        &self,
+        ctx: &CancelToken,
+        resource_group: &str,
+    ) -> Result<Vec<ArmScaleSet>, ArmError> {
         let sub = esc(&self.subscription_id);
         if resource_group.is_empty() {
-            let url = self.compute_url(format!("/subscriptions/{sub}/providers/Microsoft.Compute/virtualMachineScaleSets"), self.sub_check());
-            list_all(&self.vmss, ctx, &self.endpoint, url, "*armcompute.VirtualMachineScaleSetListWithLinkResult", "[]*armcompute.VirtualMachineScaleSet", ArmScaleSet::from_json)
+            let url = self.compute_url(
+                format!("/subscriptions/{sub}/providers/Microsoft.Compute/virtualMachineScaleSets"),
+                self.sub_check(),
+            );
+            list_all(
+                &self.vmss,
+                ctx,
+                &self.endpoint,
+                url,
+                "*armcompute.VirtualMachineScaleSetListWithLinkResult",
+                "[]*armcompute.VirtualMachineScaleSet",
+                ArmScaleSet::from_json,
+            )
         } else {
             let url = self.compute_url(format!("/subscriptions/{sub}/resourceGroups/{}/providers/Microsoft.Compute/virtualMachineScaleSets", esc(resource_group)), self.sub_check());
-            list_all(&self.vmss, ctx, &self.endpoint, url, "*armcompute.VirtualMachineScaleSetListResult", "[]*armcompute.VirtualMachineScaleSet", ArmScaleSet::from_json)
+            list_all(
+                &self.vmss,
+                ctx,
+                &self.endpoint,
+                url,
+                "*armcompute.VirtualMachineScaleSetListResult",
+                "[]*armcompute.VirtualMachineScaleSet",
+                ArmScaleSet::from_json,
+            )
         }
     }
 
     /// `VirtualMachineScaleSetVMsClient.NewListPager`.
-    pub fn list_scale_set_vms(&self, ctx: &CancelToken, resource_group: &str, scale_set: &str) -> Result<Vec<ArmVirtualMachine>, ArmError> {
+    pub fn list_scale_set_vms(
+        &self,
+        ctx: &CancelToken,
+        resource_group: &str,
+        scale_set: &str,
+    ) -> Result<Vec<ArmVirtualMachine>, ArmError> {
         let ok = self.sub_check().and_then(|_| {
             if resource_group.is_empty() {
                 Err("parameter resourceGroupName cannot be empty".to_string())
@@ -1239,7 +1625,15 @@ impl ArmClients {
             }
         });
         let url = self.compute_url(format!("/subscriptions/{}/resourceGroups/{}/providers/Microsoft.Compute/virtualMachineScaleSets/{}/virtualMachines", esc(&self.subscription_id), esc(resource_group), esc(scale_set)), ok);
-        list_all(&self.vmssvm, ctx, &self.endpoint, url, "*armcompute.VirtualMachineScaleSetVMListResult", "[]*armcompute.VirtualMachineScaleSetVM", |v| ArmVirtualMachine::from_json(v, true))
+        list_all(
+            &self.vmssvm,
+            ctx,
+            &self.endpoint,
+            url,
+            "*armcompute.VirtualMachineScaleSetVMListResult",
+            "[]*armcompute.VirtualMachineScaleSetVM",
+            |v| ArmVirtualMachine::from_json(v, true),
+        )
     }
 
     fn get_interface(&self, ctx: &CancelToken, url: String) -> Result<ArmInterface, ArmError> {
@@ -1247,34 +1641,78 @@ impl ArmClients {
         if resp.status != 200 {
             return Err(response_error(&resp));
         }
-        Ok(unmarshal_as_json(&resp.body, "*armnetwork.Interface", ArmInterface::from_json)?)
+        Ok(unmarshal_as_json(
+            &resp.body,
+            "*armnetwork.Interface",
+            ArmInterface::from_json,
+        )?)
     }
 
     /// `InterfacesClient.Get` with `$expand=IPConfigurations/PublicIPAddress`.
-    pub fn get_interface_by_name(&self, ctx: &CancelToken, resource_group: &str, name: &str) -> Result<ArmInterface, ArmError> {
+    pub fn get_interface_by_name(
+        &self,
+        ctx: &CancelToken,
+        resource_group: &str,
+        name: &str,
+    ) -> Result<ArmInterface, ArmError> {
         if resource_group.is_empty() {
-            return Err("parameter resourceGroupName cannot be empty".to_string().into());
+            return Err("parameter resourceGroupName cannot be empty"
+                .to_string()
+                .into());
         }
         if name.is_empty() {
-            return Err("parameter networkInterfaceName cannot be empty".to_string().into());
+            return Err("parameter networkInterfaceName cannot be empty"
+                .to_string()
+                .into());
         }
         if self.subscription_id.is_empty() {
-            return Err("parameter client.subscriptionID cannot be empty".to_string().into());
+            return Err("parameter client.subscriptionID cannot be empty"
+                .to_string()
+                .into());
         }
-        let path = format!("/subscriptions/{}/resourceGroups/{}/providers/Microsoft.Network/networkInterfaces/{}", esc(&self.subscription_id), esc(resource_group), esc(name));
-        let url = format!("{}?{}", join_paths(&self.endpoint, &path), query(&[("$expand", NIC_EXPAND), ("api-version", NETWORK_API_VERSION)], false));
+        let path = format!(
+            "/subscriptions/{}/resourceGroups/{}/providers/Microsoft.Network/networkInterfaces/{}",
+            esc(&self.subscription_id),
+            esc(resource_group),
+            esc(name)
+        );
+        let url = format!(
+            "{}?{}",
+            join_paths(&self.endpoint, &path),
+            query(
+                &[
+                    ("$expand", NIC_EXPAND),
+                    ("api-version", NETWORK_API_VERSION)
+                ],
+                false
+            )
+        );
         self.get_interface(ctx, url)
     }
 
     /// `InterfacesClient.GetVirtualMachineScaleSetNetworkInterface` with `$expand=IPConfigurations/PublicIPAddress`.
-    pub fn get_scale_set_interface(&self, ctx: &CancelToken, resource_group: &str, scale_set: &str, index: &str, name: &str) -> Result<ArmInterface, ArmError> {
-        for (v, n) in [(resource_group, "resourceGroupName"), (scale_set, "virtualMachineScaleSetName"), (index, "virtualmachineIndex"), (name, "networkInterfaceName")] {
+    pub fn get_scale_set_interface(
+        &self,
+        ctx: &CancelToken,
+        resource_group: &str,
+        scale_set: &str,
+        index: &str,
+        name: &str,
+    ) -> Result<ArmInterface, ArmError> {
+        for (v, n) in [
+            (resource_group, "resourceGroupName"),
+            (scale_set, "virtualMachineScaleSetName"),
+            (index, "virtualmachineIndex"),
+            (name, "networkInterfaceName"),
+        ] {
             if v.is_empty() {
                 return Err(format!("parameter {n} cannot be empty").into());
             }
         }
         if self.subscription_id.is_empty() {
-            return Err("parameter client.subscriptionID cannot be empty".to_string().into());
+            return Err("parameter client.subscriptionID cannot be empty"
+                .to_string()
+                .into());
         }
         let path = format!(
             "/subscriptions/{}/resourceGroups/{}/providers/microsoft.Compute/virtualMachineScaleSets/{}/virtualMachines/{}/networkInterfaces/{}",
@@ -1284,7 +1722,17 @@ impl ArmClients {
             esc(index),
             esc(name)
         );
-        let url = format!("{}?{}", join_paths(&self.endpoint, &path), query(&[("$expand", NIC_EXPAND), ("api-version", VMSS_NIC_API_VERSION)], false));
+        let url = format!(
+            "{}?{}",
+            join_paths(&self.endpoint, &path),
+            query(
+                &[
+                    ("$expand", NIC_EXPAND),
+                    ("api-version", VMSS_NIC_API_VERSION)
+                ],
+                false
+            )
+        );
         self.get_interface(ctx, url)
     }
 }
