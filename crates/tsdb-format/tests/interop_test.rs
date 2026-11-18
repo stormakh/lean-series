@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 
 use tsdb_format::record::{Decoder, Encoder, Type};
 use tsdb_format::tombstones::{self, Interval};
+use tsdb_format::wlog::{self, Reader, WL, compression};
 
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../bench/tmp/w1-tsdbfmt")
@@ -145,6 +146,57 @@ fn dump_tombstones(dir: &Path, out: &mut String) {
         let is: Vec<String> = ivs.iter().map(|i| format!("{}:{}", i.mint, i.maxt)).collect();
         let _ = writeln!(out, "tombstone {r} {}", is.join(" "));
     }
+}
+
+const COMPRESSIONS: [(&str, compression::Type); 3] =
+    [("none", compression::Type::None), ("snappy", compression::Type::Snappy), ("zstd", compression::Type::Zstd)];
+
+/// All records of the numbered segments in `dir` (not the checkpoint).
+fn read_records(dir: &Path) -> Vec<Vec<u8>> {
+    let mut r = Reader::new(wlog::new_segments_reader(dir).unwrap());
+    let mut out = Vec::new();
+    while r.next() {
+        out.push(r.record().to_vec());
+    }
+    if let Some(e) = r.err() {
+        panic!("read {}: {e}", dir.display());
+    }
+    out
+}
+
+fn dump_wals(dir: &Path, out: &mut String) {
+    let mut dec = Decoder::new(Default::default());
+    for (name, _) in COMPRESSIONS {
+        let wdir = dir.join(format!("wal-{name}"));
+        let (first, last) = wlog::segments(&wdir).unwrap();
+        let _ = writeln!(out, "wal {name} segments {first} {last}");
+        for rec in read_records(&wdir) {
+            let _ = writeln!(out, "rec {name} {} {}", rec[0], hex(&rec));
+        }
+        dump_checkpoint(&mut dec, name, &wdir, out);
+    }
+}
+
+const WAL_SEGMENT_SIZE: usize = 4 * 32 * 1024;
+const CHECKPOINT_MINT: i64 = 1_000_000;
+
+/// Re-encodes every Go record (asserting identical bytes) and writes them to Rust WALs, then makes a checkpoint
+/// with the same parameters as the Go generator.
+fn rewrite_wals(go: &Path, out: &Path) {
+    let mut dec = Decoder::new(Default::default());
+    for (name, c) in COMPRESSIONS {
+        let recs = read_records(&go.join(format!("wal-{name}")));
+        let w = WL::new_size(out.join(format!("wal-{name}")), WAL_SEGMENT_SIZE, c).unwrap();
+        for (i, rec) in recs.iter().enumerate() {
+            let again = reencode(&mut dec, rec);
+            assert!(again == *rec, "wal-{name} record {i} (type {}): Rust re-encoding differs from Go", rec[0]);
+            w.log(rec).unwrap();
+        }
+        let (_, last) = wlog::segments(w.dir()).unwrap();
+        make_checkpoint(&w, last - 1);
+        w.close().unwrap();
+    }
+    eprintln!("ok   every WAL record decodes and re-encodes to the same bytes");
 }
 
 fn dump(_dir: &Path) -> String {
