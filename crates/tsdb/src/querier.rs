@@ -74,6 +74,18 @@ pub fn new_block_base_querier(b: &dyn BlockReader, mint: i64, maxt: i64) -> Resu
 }
 
 impl BlockBaseQuerier {
+    /// A querier over the given readers (Go `&blockBaseQuerier{...}` literal, used by tests and the DB).
+    pub fn from_parts(
+        block_id: Ulid,
+        index: Arc<dyn IndexReader>,
+        chunks: Arc<dyn ChunkReader>,
+        tombstones: Arc<dyn tombstones::Reader>,
+        mint: i64,
+        maxt: i64,
+    ) -> BlockBaseQuerier {
+        BlockBaseQuerier { block_id, index, chunks, tombstones, closed: false, mint, maxt }
+    }
+
     /// The ULID of the block.
     pub fn block_id(&self) -> Ulid {
         self.block_id
