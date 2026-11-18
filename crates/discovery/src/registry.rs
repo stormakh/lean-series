@@ -40,9 +40,11 @@ pub struct Registration {
 /// The providers built into this crate. Adding a provider: one line here (see README.md).
 fn builtin() -> Vec<Registration> {
     vec![
+        registration::<crate::consul::SdConfig>(),
         registration::<crate::dns::SdConfig>(),
         registration::<crate::file::SdConfig>(),
         registration::<crate::http::SdConfig>(),
+        registration::<crate::nomad::SdConfig>(),
     ]
 }
 
