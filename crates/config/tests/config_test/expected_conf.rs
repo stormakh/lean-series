@@ -600,43 +600,33 @@ pub fn expected_conf() -> Config {
                 ..job("service-nomad")
             },
             ScrapeConfig {
-                service_discovery_configs: sd(vec![
-                    // waits for ec2:
-                    // &aws.EC2SDConfig{
-                    //     Region:          "us-east-1",
-                    //     AccessKey:       "access",
-                    //     SecretKey:       "mysecret",
-                    //     Profile:         "profile",
-                    //     RefreshInterval: model.Duration(60 * time.Second),
-                    //     Port:            80,
-                    //     Filters: []*aws.Filter{
-                    //         {
-                    //             Name:   "tag:environment",
-                    //             Values: []string{"prod"},
-                    //         },
-                    //         {
-                    //             Name:   "tag:service",
-                    //             Values: []string{"web", "db"},
-                    //         },
-                    //     },
-                    //     HTTPClientConfig: config.DefaultHTTPClientConfig,
-                    // },
-                ]),
+                service_discovery_configs: sd(vec![Box::new(discovery::aws::ec2::Ec2SdConfig {
+                    region: s("us-east-1"),
+                    access_key: s("access"),
+                    secret_key: Secret(s("mysecret")),
+                    profile: s("profile"),
+                    refresh_interval: Duration::from_secs(60),
+                    port: 80,
+                    filters: vec![
+                        discovery::aws::Filter { name: s("tag:environment"), values: vec![s("prod")] },
+                        discovery::aws::Filter { name: s("tag:service"), values: vec![s("web"), s("db")] },
+                    ],
+                    http_client_config: HttpClientConfig::default_config(),
+                    ..Default::default()
+                })]),
                 ..job("service-ec2")
             },
             ScrapeConfig {
-                service_discovery_configs: sd(vec![
-                    // waits for lightsail:
-                    // &aws.LightsailSDConfig{
-                    //     Region:           "us-east-1",
-                    //     AccessKey:        "access",
-                    //     SecretKey:        "mysecret",
-                    //     Profile:          "profile",
-                    //     RefreshInterval:  model.Duration(60 * time.Second),
-                    //     Port:             80,
-                    //     HTTPClientConfig: config.DefaultHTTPClientConfig,
-                    // },
-                ]),
+                service_discovery_configs: sd(vec![Box::new(discovery::aws::lightsail::LightsailSdConfig {
+                    region: s("us-east-1"),
+                    access_key: s("access"),
+                    secret_key: Secret(s("mysecret")),
+                    profile: s("profile"),
+                    refresh_interval: Duration::from_secs(60),
+                    port: 80,
+                    http_client_config: HttpClientConfig::default_config(),
+                    ..Default::default()
+                })]),
                 ..job("service-lightsail")
             },
             ScrapeConfig {
