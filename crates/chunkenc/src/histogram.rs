@@ -88,7 +88,8 @@ pub(crate) fn set_header_num_samples<const ST: bool>(b: &mut [u8], num: usize) {
     }
 }
 
-pub(crate) fn count_spans(spans: &[Span]) -> usize {
+#[doc(hidden)]
+pub fn count_spans(spans: &[Span]) -> usize {
     spans.iter().map(|s| s.length as usize).sum()
 }
 
@@ -465,7 +466,8 @@ impl<const ST: bool> HistogramAppenderT<ST> {
 
     /// Recodes the chunk with new inserts and spans (Go `recode` / `recodeST`); returns the new chunk and its
     /// appender.
-    fn recode(
+    #[doc(hidden)]
+    pub fn recode(
         &self,
         c: &HistogramChunkT<ST>,
         positive_inserts: &[Insert],

@@ -350,7 +350,9 @@ impl<const ST: bool> FloatHistogramAppenderT<ST> {
         new_num
     }
 
-    fn recode(
+    /// Go `recode`: the chunk recoded with the inserts and the new spans, and its appender.
+    #[doc(hidden)]
+    pub fn recode(
         &self,
         c: &FloatHistogramChunkT<ST>,
         positive_inserts: &[Insert],

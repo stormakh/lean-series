@@ -91,11 +91,9 @@ impl Xor2Chunk {
         crate::compact_stream(&mut self.b.stream);
     }
 
-    /// An appender whose state continues after the last sample of the chunk.
-    ///
-    /// Go also sets the chunk's write position (`c.b.count = it.br.valid`) here. This method takes `&self`, so the
-    /// appender carries that bit count and sets it on the chunk at its first append (same bytes as Go).
-    pub fn appender(&self) -> Result<Xor2Appender, Error> {
+    /// An appender whose state continues after the last sample of the chunk. Like Go, it also sets the chunk's
+    /// write position (`c.b.count = it.br.valid`).
+    pub fn appender(&mut self) -> Result<Xor2Appender, Error> {
         if self.b.stream.len() == CHUNK_HEADER_SIZE + CHUNK_ST_HEADER_SIZE {
             return Ok(Xor2Appender {
                 st: 0,
@@ -108,7 +106,6 @@ impl Xor2Chunk {
                 num_total: 0,
                 first_st_change_on: 0,
                 first_st_known: false,
-                resume_count: None,
             });
         }
         let mut it = self.iterator();
@@ -116,7 +113,8 @@ impl Xor2Chunk {
         if let Some(e) = it.err {
             return Err(e);
         }
-        Ok(Xor2Appender {
+        let valid = it.br.valid;
+        let a = Xor2Appender {
             st: it.st,
             t: it.t,
             v: it.baseline_v,
@@ -127,10 +125,10 @@ impl Xor2Chunk {
             num_total: read_u16(self.b.bytes()),
             first_st_change_on: it.first_st_change_on as u16,
             first_st_known: it.first_st_known,
-            // Set the bit position for continuing writes. The iterator's reader tracks how many bits remain unread
-            // in the last byte.
-            resume_count: Some(it.br.valid),
-        })
+        };
+        // Set the bit position for continuing writes: the reader knows how many bits of the last byte are unread.
+        self.b.count = valid;
+        Ok(a)
     }
 
     pub fn iterator(&self) -> Xor2Iterator<'_> {
@@ -154,8 +152,6 @@ pub struct Xor2Appender {
     num_total: u16,
     first_st_change_on: u16,
     first_st_known: bool,
-    /// The write position to set on the chunk at the first append (see `Xor2Chunk::appender`).
-    resume_count: Option<u8>,
 }
 
 /// Writes the ST delta of the active-ST fast path when it follows a T/V `0` bit, fused with that bit (Go inlines
@@ -186,9 +182,6 @@ impl Xor2Appender {
     #[inline]
     pub fn append(&mut self, c: &mut Xor2Chunk, st: i64, t: i64, v: f64) {
         let b = &mut c.b;
-        if let Some(count) = self.resume_count.take() {
-            b.count = count;
-        }
         let mut t_delta: u64 = 0;
         let mut st_diff: i64 = 0;
 

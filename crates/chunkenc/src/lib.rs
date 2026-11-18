@@ -602,7 +602,9 @@ pub trait Pool: Send + Sync {
 /// The default pool: a free list per encoding.
 #[derive(Default)]
 pub struct DefaultPool {
-    free: [Mutex<Vec<Box<dyn Chunk>>>; 6],
+    /// The free lists, indexed by encoding - 1 (public for tests only).
+    #[doc(hidden)]
+    pub free: [Mutex<Vec<Box<dyn Chunk>>>; 6],
 }
 
 /// Go `NewPool`.
