@@ -742,22 +742,20 @@ pub fn expected_conf() -> Config {
                 ..job("dockerswarm")
             },
             ScrapeConfig {
-                service_discovery_configs: sd(vec![
-                    // waits for oci:
-                    // &oci.SDConfig{
-                    //     Auth:             "api_key",
-                    //     Region:           "us-ashburn-1",
-                    //     Tenancy:          "ocid1.tenancy.oc1..tenancy001",
-                    //     User:             "ocid1.user.oc1..user001",
-                    //     Fingerprint:      "aa:bb:cc:dd:ee:ff",
-                    //     KeyFile:          filepath.FromSlash("testdata/valid_key_file"),
-                    //     KeyPassphrase:    "mysecret",
-                    //     Compartments:     []string{"ocid1.compartment.oc1..comp001"},
-                    //     Port:             9100,
-                    //     RefreshInterval:  model.Duration(60 * time.Second),
-                    //     HTTPClientConfig: config.DefaultHTTPClientConfig,
-                    // },
-                ]),
+                service_discovery_configs: sd(vec![Box::new(discovery::oci::SdConfig {
+                    auth: s("api_key"),
+                    region: s("us-ashburn-1"),
+                    tenancy: s("ocid1.tenancy.oc1..tenancy001"),
+                    user: s("ocid1.user.oc1..user001"),
+                    fingerprint: s("aa:bb:cc:dd:ee:ff"),
+                    key_file: s("testdata/valid_key_file"),
+                    key_passphrase: Secret(s("mysecret")),
+                    compartments: vec![s("ocid1.compartment.oc1..comp001")],
+                    port: 9100,
+                    refresh_interval: Duration::from_secs(60),
+                    http_client_config: HttpClientConfig::default_config(),
+                    ..Default::default()
+                })]),
                 ..job("service-oci")
             },
             ScrapeConfig {
