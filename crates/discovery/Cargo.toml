@@ -9,6 +9,7 @@ yaml = { path = "../yaml" }
 json = { path = "../json" }
 model = { path = "../model" }
 net = { path = "../net" }
+crypto = { path = "../crypto" }
 
 [dev-dependencies]
 http = { path = "../http" }

@@ -16,6 +16,7 @@ pub mod manager;
 pub mod metrics;
 pub mod refresh;
 pub mod registry;
+pub mod sdutil;
 pub mod targetgroup;
 
 use std::any::Any;
