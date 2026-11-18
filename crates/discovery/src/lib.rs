@@ -22,6 +22,7 @@ pub mod openstack;
 pub mod refresh;
 pub mod registry;
 pub mod targetgroup;
+pub mod util;
 
 use std::any::Any;
 use std::collections::HashMap;
