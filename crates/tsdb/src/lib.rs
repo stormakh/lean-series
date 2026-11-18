@@ -14,12 +14,19 @@
 //! - Self-instrumentation values are plain atomics ([`metrics`]) with upstream metric names in comments.
 
 pub mod block;
+// Needs the head; enable with `--cfg head` (RUSTFLAGS) until the head is merged, then drop the cfg.
+#[cfg(head)]
+pub mod blockwriter;
 pub mod compact;
 pub mod exemplar;
 pub mod meta;
 pub mod metrics;
 pub mod querier;
+pub mod query_cost;
 pub mod reader;
+pub mod repair;
+#[cfg(head)]
+pub mod tsdbblockutil;
 
 pub use meta::*;
 pub use reader::*;
