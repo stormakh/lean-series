@@ -281,8 +281,10 @@ impl ScrapeCache {
             });
             m.metadata_size -= removed;
             drop(m);
+            let tracked: std::collections::HashSet<u32, crate::util::FxBuild> =
+                if freed.is_empty() { Default::default() } else { s.series_cur.values().copied().collect() };
             for id in freed {
-                if s.series_cur.values().any(|&x| x == id) {
+                if tracked.contains(&id) {
                     continue;
                 }
                 s.entries[id as usize] = CacheEntry::default();
