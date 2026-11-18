@@ -9,7 +9,7 @@ use model::schema::{self, METRIC_TYPE_LABEL, METRIC_UNIT_LABEL};
 use storage::annotations::{self as annos, HistogramOperation, PositionRange, PROMQL_INFO, PROMQL_WARNING};
 use storage::{Annotations, Error};
 
-use super::eval::{EvalResult, drop_metadata, errorf};
+use super::eval::{EvalResult, errorf};
 use super::{EvalNodeHelper, EvalSeriesHelper, Evaluator, go_pow};
 use crate::parser::{
     ADD, ATAN2, BinaryExpr, DIV, EQLC, GTE, GTR, ItemType, LSS, LTE, MOD, MUL, NEQ, POW, SUB, TRIM_LOWER,

@@ -28,7 +28,7 @@ use crate::engine::{EvalNodeHelper, Evaluator};
 use crate::gosort;
 use crate::parser::{self, Expr, FunctionId};
 use crate::quantile::{self, Bucket, MetricWithBuckets, EXCLUDED_LABELS};
-use crate::value::{FPoint, HPoint, Sample, Series, SeriesView, Value, Vector};
+use crate::value::{FPoint, HPoint, Sample, SeriesView, Value, Vector};
 
 /// A function implementation (Go `FunctionCall`).
 pub type FunctionCall =

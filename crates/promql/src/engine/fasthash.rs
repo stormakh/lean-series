@@ -1,7 +1,7 @@
 //! Fast hashers for the engine's per-step maps. Keys are label hashes or label bytes of one query, so HashDoS
 //! resistance (SipHash) is not needed.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 
 /// A hasher for keys that are already hashes (u64): the value is used as it is.
@@ -78,7 +78,7 @@ impl Hasher for FxHasher {
 
 /// A map keyed by a hash value.
 pub type HashKeyMap<V> = HashMap<u64, V, BuildHasherDefault<IdHasher>>;
-/// A set of hash values.
-pub type HashKeySet = HashSet<u64, BuildHasherDefault<IdHasher>>;
+
+
 /// A map with FxHash.
 pub type FxMap<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;

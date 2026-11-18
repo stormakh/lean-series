@@ -1110,7 +1110,7 @@ fn test_query_cost_limit_resolution() {
 
 use model::labels::{Labels, from_strings};
 use storage::{AppenderTransaction, AppenderV2};
-use promql::{FPoint, Sample, Scalar, Series, StringValue, Value};
+use promql::{FPoint, Sample, Scalar, Series, Value};
 
 fn new_test_engine() -> Engine {
     promqltest::new_test_engine(false, Duration::ZERO, promqltest::DEFAULT_MAX_SAMPLES_PER_QUERY)
@@ -1585,5 +1585,299 @@ fn test_query_cost_max_series_early_termination() {
     let n = calls.load(std::sync::atomic::Ordering::SeqCst);
     assert_eq!(MAX_SERIES as usize + 1, n, "expected early termination after exceeding the ceiling");
     assert!(n < TOTAL_AVAIL, "the whole series set must not be materialized");
+}
+
+
+// Counts storage sample accesses before they enter the evaluator's buffer (Go `sampleReadQueryable`).
+struct SampleReads {
+    reads: std::sync::atomic::AtomicUsize,
+    on_read: Option<Box<dyn Fn(usize) + Send + Sync>>,
+}
+
+struct SampleReadQueryable {
+    inner: Arc<dyn storage::Queryable>,
+    owner: Arc<SampleReads>,
+}
+
+impl storage::Queryable for SampleReadQueryable {
+    fn querier(&self, mint: i64, maxt: i64) -> Result<BoxQuerier, Error> {
+        Ok(Box::new(SampleReadQuerier { inner: self.inner.querier(mint, maxt)?, owner: self.owner.clone() }))
+    }
+}
+
+struct SampleReadQuerier {
+    inner: BoxQuerier,
+    owner: Arc<SampleReads>,
+}
+
+impl LabelQuerier for SampleReadQuerier {
+    fn label_values(&self, ctx: &Context, n: &str, h: Option<&LabelHints>, m: &[Matcher]) -> LabelResult {
+        self.inner.label_values(ctx, n, h, m)
+    }
+    fn label_names(&self, ctx: &Context, h: Option<&LabelHints>, m: &[Matcher]) -> LabelResult {
+        self.inner.label_names(ctx, h, m)
+    }
+    fn close(&mut self) -> Option<Error> {
+        self.inner.close()
+    }
+}
+
+impl Querier for SampleReadQuerier {
+    fn select(&self, ctx: &Context, sort: bool, hints: Option<&SelectHints>, m: &[Matcher]) -> BoxSeriesSet {
+        Box::new(SampleReadSet { inner: self.inner.select(ctx, sort, hints, m), owner: self.owner.clone(), cur: None })
+    }
+}
+
+struct SampleReadSet {
+    inner: BoxSeriesSet,
+    owner: Arc<SampleReads>,
+    cur: Option<storage::SeriesArc>,
+}
+
+impl storage::SeriesSet for SampleReadSet {
+    fn next(&mut self) -> bool {
+        if !self.inner.next() {
+            return false;
+        }
+        self.cur = Some(Arc::new(SampleReadSeries { inner: self.inner.at().clone(), owner: self.owner.clone() }));
+        true
+    }
+    fn at(&self) -> &storage::SeriesArc {
+        self.cur.as_ref().unwrap()
+    }
+    fn err(&self) -> Option<Error> {
+        self.inner.err()
+    }
+    fn warnings(&self) -> Annotations {
+        self.inner.warnings()
+    }
+}
+
+struct SampleReadSeries {
+    inner: storage::SeriesArc,
+    owner: Arc<SampleReads>,
+}
+
+impl storage::Series for SampleReadSeries {
+    fn labels(&self) -> &Labels {
+        self.inner.labels()
+    }
+    fn iterator<'a>(&'a self, _reuse: Option<chunkenc::AnyIterator<'a>>) -> chunkenc::AnyIterator<'a> {
+        chunkenc::AnyIterator::Other(Box::new(SampleReadIterator { inner: self.inner.iterator(None), owner: &self.owner }))
+    }
+}
+
+struct SampleReadIterator<'a> {
+    inner: chunkenc::AnyIterator<'a>,
+    owner: &'a SampleReads,
+}
+
+impl SampleReadIterator<'_> {
+    fn record_read(&self) {
+        let n = self.owner.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        if let Some(f) = &self.owner.on_read {
+            f(n);
+        }
+    }
+}
+
+impl chunkenc::ChunkIterator for SampleReadIterator<'_> {
+    fn next(&mut self) -> chunkenc::ValueType {
+        self.inner.next()
+    }
+    fn seek(&mut self, t: i64) -> chunkenc::ValueType {
+        self.inner.seek(t)
+    }
+    fn at(&self) -> (i64, f64) {
+        self.record_read();
+        self.inner.at()
+    }
+    fn at_histogram(&self, h: Option<model::histogram::Histogram>) -> (i64, model::histogram::Histogram) {
+        self.record_read();
+        self.inner.at_histogram(h)
+    }
+    fn at_float_histogram(&self, h: Option<model::histogram::FloatHistogram>) -> (i64, model::histogram::FloatHistogram) {
+        self.record_read();
+        self.inner.at_float_histogram(h)
+    }
+    fn at_t(&self) -> i64 {
+        self.inner.at_t()
+    }
+    fn at_st(&self) -> i64 {
+        self.inner.at_st()
+    }
+    fn err(&self) -> Option<&chunkenc::Error> {
+        self.inner.err()
+    }
+}
+
+fn counted(st: Arc<dyn storage::Queryable>, on_read: Option<Box<dyn Fn(usize) + Send + Sync>>) -> (Arc<SampleReadQueryable>, Arc<SampleReads>) {
+    let owner = Arc::new(SampleReads { reads: std::sync::atomic::AtomicUsize::new(0), on_read });
+    (Arc::new(SampleReadQueryable { inner: st, owner: owner.clone() }), owner)
+}
+
+#[test]
+fn test_query_cost_max_samples_read_matrix() {
+    use model::histogram::{CUSTOM_BUCKETS_SCHEMA, Histogram, Span, custom_values};
+    let mut failures: Vec<String> = Vec::new();
+    // Limits: a large matrix window must stop consuming points as soon as its budget is exhausted.
+    {
+        let st = promqltest::loaded_storage("\nload 10s\n  bigmetric{a=\"1\"} 1+1x1000\n").unwrap();
+        let engine = new_query_cost_engine();
+        let ts = 10_000_000;
+        for (query, reads) in [
+            ("bigmetric[10000s]", 1000u64),
+            ("sum_over_time(bigmetric[10000s])", 1000),
+            ("sum_over_time(bigmetric[10000s] @ 10000)", 1000),
+            ("rate(bigmetric[10000s] anchored)", 1001),
+            ("rate(bigmetric[10000s] smoothed)", 1001),
+        ] {
+            let ctx = Context::background();
+            engine.set_query_limits(0, reads, Duration::ZERO);
+            let mut qry = engine.new_instant_query(&ctx, Arc::new(st.clone()), None, query, ts).unwrap();
+            let err = qry.exec(&ctx).err;
+            if err.is_some() {
+                failures.push(format!("{}: {:?}", query, err));
+                continue;
+            }
+            let got = qry.stats().samples.unwrap().samples_read;
+            if got != reads as i64 {
+                failures.push(format!("{}: samples read {} != {}", query, got, reads));
+            }
+            engine.set_query_limits(0, 10, Duration::ZERO);
+            let (cq, owner) = counted(Arc::new(st.clone()), None);
+            let mut qry = engine.new_instant_query(&ctx, cq, None, query, ts).unwrap();
+            let err = qry.exec(&ctx).err;
+            if !err_is(&err, &PromqlError::TooManySamplesRead(env())) {
+                failures.push(format!("{}: want too many samples read, got {:?}", query, err));
+            }
+            let got = qry.stats().samples.unwrap().samples_read;
+            if got != 11 {
+                failures.push(format!("{}: stop before consuming the full window: {} != 11", query, got));
+            }
+            let r = owner.reads.load(std::sync::atomic::Ordering::SeqCst);
+            if r > 12 {
+                failures.push(format!("{}: stop before buffering the full window: {} reads", query, r));
+            }
+        }
+    }
+    // Buffer accounting.
+    for kind in ["float", "histogram", "float histogram", "custom histogram", "mixed", "stale"] {
+        let st = TestStorage::new();
+        let metric = from_strings(&["__name__", "metric"]);
+        let mut app = st.appender_v1();
+        let mut interrupted_cost: i64 = 0;
+        for i in 0..1001i64 {
+            let ts = i * 10000;
+            let h = Histogram {
+                count: (i + 1) as u64,
+                sum: (i + 1) as f64,
+                positive_spans: vec![Span::new(0, 1)],
+                positive_buckets: vec![i + 1],
+                ..Default::default()
+            };
+            let mut point_cost = 1i64;
+            let r = if kind == "float" || (kind == "mixed" && i % 2 == 0) {
+                storage::Appender::append(&mut app, 0, &metric, ts, i as f64)
+            } else if kind == "stale" {
+                point_cost = 0;
+                storage::Appender::append(&mut app, 0, &metric, ts, model::value::stale_nan())
+            } else if kind == "histogram" {
+                point_cost = ((h.to_float().size() + 8) / 16) as i64;
+                storage::Appender::append_histogram(&mut app, 0, &metric, ts, Some(&h), None)
+            } else {
+                let mut fh = h.to_float();
+                if kind == "custom histogram" {
+                    fh.schema = CUSTOM_BUCKETS_SCHEMA;
+                    fh.custom_values = custom_values(&[1.0, 2.0]);
+                }
+                point_cost = ((fh.size() + 8) / 16) as i64;
+                storage::Appender::append_histogram(&mut app, 0, &metric, ts, None, Some(&fh))
+            };
+            r.unwrap();
+            if i > 0 && i <= 10 {
+                interrupted_cost += point_cost;
+            }
+        }
+        assert!(storage::AppenderTransaction::commit(&mut app).is_none());
+        let queryable: Arc<dyn storage::Queryable> = Arc::new(st.clone());
+        let engine = new_query_cost_engine();
+        for expr in [
+            "metric[10000s]",
+            "metric smoothed",
+            "sum_over_time(metric[10000s])",
+            "last_over_time(metric[10000s])",
+            "histogram_sum(sum_over_time(metric[10000s]))",
+            "last_over_time(sum_over_time(metric[10000s])[1s:1s])",
+        ] {
+            let name = format!("{}/{}", kind, expr);
+            let ctx = Context::background();
+            engine.set_query_limits(0, 0, Duration::ZERO);
+            let mut q = engine.new_instant_query(&ctx, queryable.clone(), None, expr, 10_000_000).unwrap();
+            let result = q.exec(&ctx);
+            if let Some(e) = result.err {
+                failures.push(format!("{}: {}", name, e));
+                continue;
+            }
+            let want = result.value.unwrap().to_string();
+            let reads = q.stats().samples.unwrap().samples_read;
+            engine.set_query_limits(0, reads as u64, Duration::ZERO);
+            let mut q = engine.new_instant_query(&ctx, queryable.clone(), None, expr, 10_000_000).unwrap();
+            let result = q.exec(&ctx);
+            match (&result.err, &result.value) {
+                (None, Some(v)) if v.to_string() == want => {}
+                _ => failures.push(format!("{}: with the exact budget: {:?}", name, result.err)),
+            }
+            let got = q.stats().samples.unwrap().samples_read;
+            if got != reads {
+                failures.push(format!("{}: samples read {} != {}", name, got, reads));
+            }
+            if kind == "stale" {
+                continue;
+            }
+            engine.set_query_limits(0, 25, Duration::ZERO);
+            let (cq, owner) = counted(queryable.clone(), None);
+            let mut q = engine.new_instant_query(&ctx, cq, None, expr, 10_000_000).unwrap();
+            let err = q.exec(&ctx).err;
+            if !err_is(&err, &PromqlError::TooManySamplesRead(env())) {
+                failures.push(format!("{}: want too many samples read, got {:?}", name, err));
+            }
+            let sr = q.stats().samples.unwrap().samples_read;
+            if !(sr > 25 && sr <= 38) {
+                failures.push(format!("{}: samples read {} not in (25, 38]", name, sr));
+            }
+            let r = owner.reads.load(std::sync::atomic::Ordering::SeqCst);
+            if r > 27 {
+                failures.push(format!("{}: storage input must stop before the full window: {} reads", name, r));
+            }
+        }
+        for quota in [0u64, 1_000_000] {
+            let name = format!("{}/cancellation/quota={}", kind, quota);
+            let (ctx, cancel) = Context::background().with_cancel();
+            let (cq, owner) = counted(
+                queryable.clone(),
+                Some(Box::new(move |n| {
+                    if n == 10 {
+                        cancel.cancel();
+                    }
+                })),
+            );
+            engine.set_query_limits(0, quota, Duration::ZERO);
+            let mut q = engine.new_instant_query(&ctx, cq, None, "metric[10000s]", 10_000_000).unwrap();
+            let err = q.exec(&ctx).err;
+            if !err_is(&err, &PromqlError::QueryCanceled(env())) {
+                failures.push(format!("{}: want canceled, got {:?}", name, err));
+            }
+            let r = owner.reads.load(std::sync::atomic::Ordering::SeqCst);
+            if r != 10 {
+                failures.push(format!("{}: {} reads != 10", name, r));
+            }
+            let sr = q.stats().samples.unwrap().samples_read;
+            if sr != interrupted_cost {
+                failures.push(format!("{}: samples read {} != {}", name, sr, interrupted_cost));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.join("\n"));
 }
 

@@ -145,8 +145,6 @@ pub struct EvalNodeHelper {
     pub(crate) result_metric_ptr: FxMap<(usize, usize, usize, usize), Labels>,
     pub(crate) num_sigs: usize,
 
-    // Info series matching.
-    pub(crate) right_str_sigs: HashMap<String, Sample>,
 
     /// The labels without metric name, type and unit, by the address of the input label buffer. The input
     /// labels are kept in the value, so the address stays unique.

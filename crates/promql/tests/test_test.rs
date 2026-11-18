@@ -10,7 +10,7 @@ use promql::promqltest::internal::{
 };
 use promql::promqltest::{self, LazyLoader, LazyLoaderOpts};
 use promql::{FPoint, Series};
-use storage::{AppenderTransaction, Context, Storage};
+use storage::{Context, Storage};
 
 const TEST_DATA: &str = r#"
 load 5m
