@@ -42,10 +42,12 @@ fn builtin() -> Vec<Registration> {
     vec![
         registration::<crate::consul::SdConfig>(),
         registration::<crate::dns::SdConfig>(),
+        registration::<crate::eureka::SdConfig>(),
         registration::<crate::file::SdConfig>(),
         registration::<crate::http::SdConfig>(),
         registration::<crate::ionos::SdConfig>(),
         registration::<crate::linode::SdConfig>(),
+        registration::<crate::marathon::SdConfig>(),
         registration::<crate::moby::DockerSdConfig>(),
         registration::<crate::moby::DockerSwarmSdConfig>(),
         registration::<crate::nomad::SdConfig>(),
@@ -56,6 +58,8 @@ fn builtin() -> Vec<Registration> {
         registration::<crate::triton::SdConfig>(),
         registration::<crate::uyuni::SdConfig>(),
         registration::<crate::vultr::SdConfig>(),
+        registration::<crate::zookeeper::NerveSdConfig>(),
+        registration::<crate::zookeeper::ServersetSdConfig>(),
     ]
 }
 
