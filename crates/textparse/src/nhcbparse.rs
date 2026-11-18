@@ -28,8 +28,10 @@ pub struct NHCBParser<'a> {
     builder: ScratchBuilder,
     state: CollectionState,
 
-    // Cached values of the wrapped parser. Series bytes and histograms are read from the wrapped parser, which
+    // Cached values of the wrapped parser (Go keeps its slices; they can be clobbered by the wrapped parser's
+    // StartTimestamp peeking, so the series bytes are copied). Histograms are read from the wrapped parser, which
     // is still positioned at the cached entry whenever they are asked for.
+    bytes: Vec<u8>,
     ts: Option<i64>,
     value: f64,
     lset: Labels,
@@ -69,6 +71,7 @@ impl<'a> NHCBParser<'a> {
             parse_st,
             builder: ScratchBuilder::new(16),
             state: CollectionState::Start,
+            bytes: Vec::new(),
             ts: None,
             value: 0.0,
             lset: Labels::default(),
@@ -240,8 +243,7 @@ impl<'a> NHCBParser<'a> {
 
 impl Parser for NHCBParser<'_> {
     fn series(&self) -> (&[u8], Option<i64>, f64) {
-        let (b, _, _) = self.parser.series();
-        (b, self.ts, self.value)
+        (&self.bytes, self.ts, self.value)
     }
 
     fn histogram(&mut self) -> (&[u8], Option<i64>, Option<&Histogram>, Option<&FloatHistogram>) {
@@ -249,8 +251,8 @@ impl Parser for NHCBParser<'_> {
             return (&self.bytes_nhcb, self.ts, self.h_nhcb.as_ref(), self.fh_nhcb.as_ref());
         }
         let ts = self.ts;
-        let (b, _, h, fh) = self.parser.histogram();
-        (b, ts, h, fh)
+        let (_, _, h, fh) = self.parser.histogram();
+        (&self.bytes, ts, h, fh)
     }
 
     fn help(&mut self) -> (&[u8], &[u8]) {
@@ -331,7 +333,9 @@ impl Parser for NHCBParser<'_> {
             }
             match self.entry {
                 Entry::Series => {
-                    let (_, ts, v) = self.parser.series();
+                    let (b, ts, v) = self.parser.series();
+                    self.bytes.clear();
+                    self.bytes.extend_from_slice(b);
                     self.ts = ts;
                     self.value = v;
                     self.parser.labels(&mut self.lset);
@@ -362,7 +366,9 @@ impl Parser for NHCBParser<'_> {
                 }
                 Entry::Histogram => {
                     self.state = CollectionState::Inhibiting;
-                    let (_, ts, _, _) = self.parser.histogram();
+                    let (b, ts, _, _) = self.parser.histogram();
+                    self.bytes.clear();
+                    self.bytes.extend_from_slice(b);
                     self.ts = ts;
                     self.parser.labels(&mut self.lset);
                     self.store_exponential_labels();
