@@ -18,6 +18,7 @@ pub mod meta;
 pub mod metrics;
 pub mod querier;
 pub mod reader;
+pub mod tsdbutil;
 
 pub use meta::*;
 pub use reader::*;
