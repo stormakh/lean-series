@@ -283,12 +283,25 @@ fn result_metric(
     matching: &VectorMatching,
     drop_metric_name: bool,
     enh: &mut EvalNodeHelper,
+    cacheable: bool,
 ) -> Labels {
+    // Input series give the same label buffers at every step: look the pair up by address first.
+    let (ld, rd) = (lhs.data(), rhs.data());
+    let pkey = (ld.as_ptr() as usize, ld.len(), rd.as_ptr() as usize, rd.len());
+    if cacheable {
+        if let Some(ret) = enh.result_metric_ptr.get(&pkey) {
+            return ret.clone();
+        }
+    }
     enh.lbl_result_buf.clear();
     enh.lbl_result_buf.extend_from_slice(lhs.data());
     enh.lbl_result_buf.extend_from_slice(rhs.data());
     if let Some(ret) = enh.result_metric.get(enh.lbl_result_buf.as_slice()) {
-        return ret.clone();
+        let ret = ret.clone();
+        if cacheable {
+            enh.result_metric_ptr.insert(pkey, ret.clone());
+        }
+        return ret;
     }
     let key = enh.lbl_result_buf.clone();
     let lb = enh.reset_builder(lhs.clone());
@@ -312,6 +325,9 @@ fn result_metric(
     }
     let ret = lb.labels();
     enh.result_metric.insert(key, ret.clone());
+    if cacheable {
+        enh.result_metric_ptr.insert(pkey, ret.clone());
+    }
     ret
 }
 
@@ -373,7 +389,7 @@ pub(crate) fn vector_binop(
     let mut last_err: Option<Error> = None;
     let drop_metric_name = !ev.enable_delayed_name_removal && return_bool;
 
-    let mut do_bin_op = |ls: &Sample, rs: &Sample, sig: usize, enh: &mut EvalNodeHelper| -> EvalResult<()> {
+    let mut do_bin_op = |ls: &Sample, rs: &Sample, sig: usize, enh: &mut EvalNodeHelper, cacheable: bool| -> EvalResult<()> {
         let (mut fl, mut fr) = (ls.f, rs.f);
         let (mut hl, mut hr) = (ls.h.as_ref(), rs.h.as_ref());
         if one_to_many {
@@ -393,7 +409,7 @@ pub(crate) fn vector_binop(
             hv = None;
             fv = if r.keep { 1.0 } else { 0.0 };
         }
-        let metric = result_metric(&ls.metric, &rs.metric, op, matching, drop_metric_name, enh);
+        let metric = result_metric(&ls.metric, &rs.metric, op, matching, drop_metric_name, enh, cacheable);
         if one_to_one {
             if enh.matched_sigs_present[sig] {
                 return Err(errorf("multiple matches for labels: many-to-one matching must be explicit (group_left/group_right)"));
@@ -416,11 +432,11 @@ pub(crate) fn vector_binop(
         let sig = lhsh[i].sig_ordinal;
         if enh.sigs_present[sig] {
             let rs = enh.right_sigs[sig].clone().unwrap();
-            do_bin_op(ls, &rs, sig, enh)?;
+            do_bin_op(ls, &rs, sig, enh, true)?;
         } else {
             let Some(fill) = fill_rhs else { continue };
             let rs = Sample { metric: match_labels(&ls.metric, matching.on, &matching.matching_labels), f: fill, ..Default::default() };
-            do_bin_op(ls, &rs, sig, enh)?;
+            do_bin_op(ls, &rs, sig, enh, false)?;
         }
     }
     if let Some(fill) = fill_lhs {
@@ -430,7 +446,7 @@ pub(crate) fn vector_binop(
                 continue;
             }
             let ls = Sample { metric: match_labels(&rs.metric, matching.on, &matching.matching_labels), f: fill, ..Default::default() };
-            do_bin_op(&ls, rs, sig, enh)?;
+            do_bin_op(&ls, rs, sig, enh, false)?;
         }
     }
     Ok(last_err)

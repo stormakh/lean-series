@@ -19,6 +19,7 @@ use storage::{
 use util::stats::{QuerySamples, QueryTiming, SubqueryConsumer};
 
 use super::*;
+use super::fasthash::{FxMap, HashKeyMap};
 use crate::functions::{self, FunctionCall};
 use crate::histogram_stats_iterator::HistogramStatsIterator;
 use crate::parser::{
@@ -134,7 +135,9 @@ pub struct EvalNodeHelper {
     pub(crate) sigs_present: Vec<bool>,
     pub(crate) matched_sigs: Vec<HashSet<u64>>,
     pub(crate) matched_sigs_present: Vec<bool>,
-    pub(crate) result_metric: HashMap<Vec<u8>, Labels>,
+    pub(crate) result_metric: FxMap<Vec<u8>, Labels>,
+    /// `result_metric` by the addresses of the input label buffers (inputs stay alive while the node runs).
+    pub(crate) result_metric_ptr: FxMap<(usize, usize, usize, usize), Labels>,
     pub(crate) num_sigs: usize,
 
     // Info series matching.
@@ -342,6 +345,62 @@ fn add_to_series(ss: &mut Series, ts: i64, f: f64, h: Option<HistogramRef>, num_
             }
             ss.histograms.push(HPoint { t: ts, h });
         }
+    }
+}
+
+/// Collects the samples of each step into output series (Go's `seriess` map of `rangeEval`). Series are found
+/// by the address of their label buffer first (the same input series gives the same buffer at every step), then
+/// by the label hash.
+pub(crate) struct SeriesCollector {
+    series: Vec<(Series, i64)>,
+    by_hash: HashKeyMap<usize>,
+    by_ptr: FxMap<(usize, usize), usize>,
+    num_steps: usize,
+}
+
+impl SeriesCollector {
+    pub fn new(cap: usize, num_steps: usize) -> SeriesCollector {
+        SeriesCollector {
+            series: Vec::with_capacity(cap),
+            by_hash: HashKeyMap::with_capacity_and_hasher(cap, Default::default()),
+            by_ptr: FxMap::with_capacity_and_hasher(cap, Default::default()),
+            num_steps,
+        }
+    }
+
+    #[inline]
+    pub fn add(&mut self, sample: Sample, ts: i64) -> EvalResult<()> {
+        let data = sample.metric.data();
+        let pkey = (data.as_ptr() as usize, data.len());
+        let idx = match self.by_ptr.get(&pkey) {
+            Some(&i) => Some(i),
+            None => self.by_hash.get(&sample.metric.hash()).copied(),
+        };
+        match idx {
+            Some(i) => {
+                let (ss, last) = &mut self.series[i];
+                if *last == ts {
+                    return Err(errorf("vector cannot contain metrics with the same labelset"));
+                }
+                *last = ts;
+                add_to_series(ss, ts, sample.f, sample.h, self.num_steps);
+            }
+            None => {
+                let i = self.series.len();
+                self.by_hash.insert(sample.metric.hash(), i);
+                // The series keeps this label buffer alive, so its address stays unique.
+                self.by_ptr.insert(pkey, i);
+                let mut ss = Series::new(sample.metric);
+                ss.drop_name = sample.drop_name;
+                add_to_series(&mut ss, ts, sample.f, sample.h, self.num_steps);
+                self.series.push((ss, ts));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn finish(self) -> Matrix {
+        self.series.into_iter().map(|(s, _)| s).collect()
     }
 }
 
@@ -808,7 +867,7 @@ impl<'a> Evaluator<'a> {
             }
             names.sort();
             let mut buf = Vec::with_capacity(1024);
-            let mut sig_to_ord: HashMap<Vec<u8>, usize> = HashMap::new();
+            let mut sig_to_ord: FxMap<Vec<u8>, usize> = FxMap::default();
             for m in &matrixes {
                 let mut sh = Vec::with_capacity(m.mat.len());
                 for s in &m.mat {
@@ -833,8 +892,7 @@ impl<'a> Evaluator<'a> {
         }
         let use_signatures = matching.is_some();
 
-        let mut out_series: Vec<(Series, i64)> = Vec::with_capacity(biggest_len);
-        let mut out_index: HashMap<u64, usize> = HashMap::with_capacity(biggest_len);
+        let mut out = SeriesCollector::new(biggest_len, num_steps);
         let mut temp_num_samples = self.current_samples;
 
         let mut ts = self.start_timestamp;
@@ -884,28 +942,11 @@ impl<'a> Evaluator<'a> {
             }
 
             for sample in result.drain(..) {
-                let h = sample.metric.hash();
-                match out_index.get(&h) {
-                    Some(&i) => {
-                        let (ss, last) = &mut out_series[i];
-                        if *last == ts {
-                            return Err(errorf("vector cannot contain metrics with the same labelset"));
-                        }
-                        *last = ts;
-                        add_to_series(ss, ts, sample.f, sample.h, num_steps);
-                    }
-                    None => {
-                        let mut ss = Series::new(sample.metric);
-                        ss.drop_name = sample.drop_name;
-                        add_to_series(&mut ss, ts, sample.f, sample.h, num_steps);
-                        out_index.insert(h, out_series.len());
-                        out_series.push((ss, ts));
-                    }
-                }
+                out.add(sample, ts)?;
             }
             ts += self.interval;
         }
-        let mat: Matrix = out_series.into_iter().map(|(s, _)| s).collect();
+        let mat: Matrix = out.finish();
         self.current_samples = original_num_samples + matrix_total_samples(&mat) as i64;
         self.update_peak();
         Ok((mat, warnings))
@@ -1032,6 +1073,14 @@ impl<'a> Evaluator<'a> {
         let mut it = new_memoized_empty_iterator(self.lookback_ms());
         for s in series.iter() {
             self.check_ctx("expression evaluation")?;
+            if self.budget.is_none() {
+                if let Some(ss) = self.eval_series_floats(s, offset_ns, record_orig_t, at_timestamp, num_steps)? {
+                    if !ss.floats.is_empty() {
+                        mat.push(ss);
+                    }
+                    continue;
+                }
+            }
             it.reset(s.iterator(None));
             let mut ss = Series::new(s.labels().clone());
             let mut ts = self.start_timestamp;
@@ -1081,6 +1130,83 @@ impl<'a> Evaluator<'a> {
         }
         self.update_peak();
         Ok(mat)
+    }
+
+    /// The common case of `evalSeries` for a series of floats only, without a memoized iterator: one pass over
+    /// the samples. Returns `None` (having changed nothing) when the series has histograms.
+    fn eval_series_floats(
+        &mut self,
+        s: &SeriesArc,
+        offset_ns: i64,
+        record_orig_t: bool,
+        at_timestamp: Option<i64>,
+        num_steps: usize,
+    ) -> EvalResult<Option<Series>> {
+        let mut it = s.iterator(None);
+        let lb = self.lookback_ms();
+        let off = dur_ms(offset_ns);
+        let mut vt = it.next();
+        // The last sample at or before the reference time.
+        let mut prev: Option<(i64, f64)> = None;
+        let mut floats: Vec<FPoint> = Vec::new();
+        let mut ts = self.start_timestamp;
+        let mut step = 0usize;
+        let mut added: i64 = 0;
+        let tracking = self.samples_stats.step_tracking;
+        let mut steps_hit: Vec<usize> = Vec::new();
+        while ts <= self.end_timestamp {
+            let ref_time = at_timestamp.unwrap_or(ts) - off;
+            // Skip ahead when the next sample is older than the lookback window (Go's memoized seek).
+            if vt == VT::Float && it.at_t() <= ref_time - lb {
+                prev = None;
+                vt = it.seek(ref_time - lb + 1);
+            }
+            while vt == VT::Float {
+                let (t, f) = it.at();
+                if t > ref_time {
+                    break;
+                }
+                prev = Some((t, f));
+                vt = it.next();
+            }
+            if vt == VT::Histogram || vt == VT::FloatHistogram {
+                self.current_samples -= added;
+                return Ok(None);
+            }
+            if let Some((t, f)) = prev {
+                if t > ref_time - lb && !is_stale_nan(f) {
+                    self.current_samples += 1;
+                    added += 1;
+                    if tracking {
+                        steps_hit.push(step);
+                    }
+                    self.check_samples()?;
+                    if floats.capacity() == 0 {
+                        floats.reserve_exact(num_steps.min(MAX_POINTS_SLICE_SIZE));
+                    }
+                    floats.push(FPoint { t: ts, f: if record_orig_t { t as f64 } else { f } });
+                }
+            }
+            ts += self.interval;
+            step += 1;
+        }
+        if vt == VT::None {
+            if let Some(e) = it.err() {
+                return Err(Error::Chunk(e.clone()));
+            }
+        }
+        if tracking {
+            for st in steps_hit {
+                self.samples_stats.increment_samples_at_step(st, 1);
+                self.samples_stats.increment_samples_read_at_step(st, 1);
+            }
+        } else {
+            self.samples_stats.total_samples += added;
+            self.samples_stats.samples_read += added;
+        }
+        let mut ss = Series::new(s.labels().clone());
+        ss.floats = floats;
+        Ok(Some(ss))
     }
 
     /// Go `smoothSeries`.
@@ -1509,7 +1635,7 @@ impl<'a> Evaluator<'a> {
 
         let call = match call {
             Some(c) => c,
-            None => panic!("unexpected nil implementation for function {:?}", name),
+            None => return Err(errorf(format!("unexpected nil implementation for function {:?}", name))),
         };
 
         if matches!(name, "sort" | "sort_desc" | "sort_by_label" | "sort_by_label_desc")

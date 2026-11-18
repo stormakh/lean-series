@@ -9,6 +9,7 @@
 
 mod aggregate;
 mod binop;
+pub(crate) mod fasthash;
 pub(crate) mod eval;
 mod preprocess;
 
