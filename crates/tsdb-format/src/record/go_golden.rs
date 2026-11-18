@@ -157,7 +157,7 @@ fn encode_matches_go() {
     assert_eq!(go("exemplars"), enc(|b| e.exemplars(&ex, b)));
     let ts = vec![Stone { r#ref: 4, intervals: vec![Interval::new(-5, 10), Interval::new(20, i64::MAX)] }];
     assert_eq!(go("tombstones"), enc(|b| e.tombstones(&ts, b)));
-    let mm = vec![RefMmapMarker { r#ref: 1, mmap_ref: 0x0000_0005_0000_1234 }];
+    let mm = vec![RefMmapMarker { r#ref: 1, mmap_ref: ChunkDiskMapperRef(0x0000_0005_0000_1234) }];
     assert_eq!(go("mmap"), enc(|b| e.mmap_markers(&mm, b)));
     assert_eq!(go("minvalid"), enc(|b| e.min_valid_time(-12345, b)));
 
@@ -227,7 +227,7 @@ fn decode_go_records() {
     assert_eq!(go("tombstones"), enc(|b| Encoder::default().tombstones(&ts, b)));
     let mut mm = Vec::new();
     dec.mmap_markers(&go("mmap"), &mut mm).unwrap();
-    assert_eq!(vec![RefMmapMarker { r#ref: 1, mmap_ref: 0x0000_0005_0000_1234 }], mm);
+    assert_eq!(vec![RefMmapMarker { r#ref: 1, mmap_ref: ChunkDiskMapperRef(0x0000_0005_0000_1234) }], mm);
     assert_eq!(-12345, dec.min_valid_time(&go("minvalid")).unwrap());
 
     // Tombstones file written by Go.

@@ -23,9 +23,7 @@ use crate::chunks::HeadSeriesRef;
 use crate::encoding::{self, Decbuf, put_uvarint, put_varint};
 use crate::tombstones::{Interval, Stone};
 
-/// Go `chunks.ChunkDiskMapperRef`: a reference to a chunk in the head chunk files (segment << 32 | offset).
-// TODO(chunks): use chunks::ChunkDiskMapperRef after merge.
-pub type ChunkDiskMapperRef = u64;
+pub use crate::chunks::ChunkDiskMapperRef;
 
 // ---------------------------------------------------------------------------------------------------------------
 // Types.
@@ -546,7 +544,7 @@ impl Decoder {
         while !dec.b.is_empty() && dec.e.is_none() {
             let r = dec.be64();
             let mmap_ref = dec.be64();
-            markers.push(RefMmapMarker { r#ref: r, mmap_ref });
+            markers.push(RefMmapMarker { r#ref: r, mmap_ref: ChunkDiskMapperRef(mmap_ref) });
         }
         if let Some(e) = dec.e {
             let n = markers.len();
@@ -1174,7 +1172,7 @@ impl Encoder {
         b.push(Type::MmapMarkers as u8);
         for s in markers {
             put_be64(b, s.r#ref);
-            put_be64(b, s.mmap_ref);
+            put_be64(b, s.mmap_ref.0);
         }
     }
 
