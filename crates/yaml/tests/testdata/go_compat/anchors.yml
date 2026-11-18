@@ -1,0 +1,12 @@
+
+base: &base
+  a: 1
+  b: 2
+derived:
+  <<: *base
+  b: 3
+  c: 4
+multi:
+  <<: [*base, {z: 9}]
+list: &l [1, 2]
+again: *l
