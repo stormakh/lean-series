@@ -1,0 +1,379 @@
+{
+ "TestBinaryExprUTF8Labels": [
+  {
+   "expected": "foo / on (\"äää\") bar",
+   "input": "foo / on(\"äää\") bar",
+   "name": "UTF-8 labels in on clause"
+  },
+  {
+   "expected": "foo / ignoring (\"üüü\") bar",
+   "input": "foo / ignoring(\"üüü\") bar",
+   "name": "UTF-8 labels in ignoring clause"
+  },
+  {
+   "expected": "foo / on (\"äää\") group_left (\"ööö\") bar",
+   "input": "foo / on(\"äää\") group_left(\"ööö\") bar",
+   "name": "UTF-8 labels in group_left clause"
+  },
+  {
+   "expected": "foo / on (\"äää\") group_right (\"ööö\") bar",
+   "input": "foo / on(\"äää\") group_right(\"ööö\") bar",
+   "name": "UTF-8 labels in group_right clause"
+  },
+  {
+   "expected": "foo / on (legacy, \"üüü\") bar",
+   "input": "foo / on(legacy, \"üüü\") bar",
+   "name": "Mixed legacy and UTF-8 labels"
+  },
+  {
+   "expected": "foo / on (job, instance) bar",
+   "input": "foo / on(job, instance) bar",
+   "name": "Legacy labels only (should not quote)"
+  }
+ ],
+ "TestExprString": [
+  {
+   "in": "sum by() (task:errors:rate10s{job=\"s\"})",
+   "out": "sum(task:errors:rate10s{job=\"s\"})"
+  },
+  {
+   "in": "sum by(code) (task:errors:rate10s{job=\"s\"})",
+   "out": "sum by (code) (task:errors:rate10s{job=\"s\"})"
+  },
+  {
+   "in": "sum without() (task:errors:rate10s{job=\"s\"})",
+   "out": "sum without () (task:errors:rate10s{job=\"s\"})"
+  },
+  {
+   "in": "sum without(instance) (task:errors:rate10s{job=\"s\"})",
+   "out": "sum without (instance) (task:errors:rate10s{job=\"s\"})"
+  },
+  {
+   "in": "sum by(\"foo.bar\") (task:errors:rate10s{job=\"s\"})",
+   "out": "sum by (\"foo.bar\") (task:errors:rate10s{job=\"s\"})"
+  },
+  {
+   "in": "sum without(\"foo.bar\") (task:errors:rate10s{job=\"s\"})",
+   "out": "sum without (\"foo.bar\") (task:errors:rate10s{job=\"s\"})"
+  },
+  {
+   "in": "topk(5, task:errors:rate10s{job=\"s\"})"
+  },
+  {
+   "in": "count_values(\"value\", task:errors:rate10s{job=\"s\"})"
+  },
+  {
+   "in": "a - on() c",
+   "out": "a - on () c"
+  },
+  {
+   "in": "a - on(b) c",
+   "out": "a - on (b) c"
+  },
+  {
+   "in": "a - on(b) group_left(x) c",
+   "out": "a - on (b) group_left (x) c"
+  },
+  {
+   "in": "a - on(b) group_left(x, y) c",
+   "out": "a - on (b) group_left (x, y) c"
+  },
+  {
+   "in": "a - on(b) group_left c",
+   "out": "a - on (b) group_left () c"
+  },
+  {
+   "in": "a - on(b) group_left() (c)",
+   "out": "a - on (b) group_left () (c)"
+  },
+  {
+   "in": "a - ignoring(b) c",
+   "out": "a - ignoring (b) c"
+  },
+  {
+   "in": "a - ignoring() c",
+   "out": "a - c"
+  },
+  {
+   "in": "a - ignoring() group_left(__metric__) c",
+   "out": "a - ignoring () group_left (__metric__) c"
+  },
+  {
+   "in": "a - ignoring() group_left c",
+   "out": "a - ignoring () group_left () c"
+  },
+  {
+   "in": "a + fill(-23) b",
+   "out": "a + fill (-23) b"
+  },
+  {
+   "in": "a + fill_left(-23) b",
+   "out": "a + fill_left (-23) b"
+  },
+  {
+   "in": "a + fill_right(42) b",
+   "out": "a + fill_right (42) b"
+  },
+  {
+   "in": "a + fill_left(-23) fill_right(42) b",
+   "out": "a + fill_left (-23) fill_right (42) b"
+  },
+  {
+   "in": "a + fill_left(5) fill_right(5) b",
+   "out": "a + fill (5) b"
+  },
+  {
+   "in": "a + on(b) group_left fill(-23) c",
+   "out": "a + on (b) group_left () fill (-23) c"
+  },
+  {
+   "in": "up \u003e bool 0"
+  },
+  {
+   "in": "a offset 1m"
+  },
+  {
+   "in": "a offset -7m"
+  },
+  {
+   "in": "a{c=\"d\"}[5m] offset 1m"
+  },
+  {
+   "in": "a[5m] offset 1m"
+  },
+  {
+   "in": "a[12m] offset -3m"
+  },
+  {
+   "in": "a[1h:5m] offset 1m"
+  },
+  {
+   "in": "a anchored"
+  },
+  {
+   "in": "a[5m] anchored"
+  },
+  {
+   "in": "a{b=\"c\"}[5m] anchored"
+  },
+  {
+   "in": "a{b=\"c\"}[5m] anchored offset 1m"
+  },
+  {
+   "in": "a{b=\"c\"}[5m] anchored @ start() offset 1m"
+  },
+  {
+   "in": "a smoothed"
+  },
+  {
+   "in": "a[5m] smoothed"
+  },
+  {
+   "in": "a{b=\"c\"}[5m] smoothed"
+  },
+  {
+   "in": "a{b=\"c\"}[5m] smoothed offset 1m"
+  },
+  {
+   "in": "a{b=\"c\"}[5m] smoothed @ start() offset 1m"
+  },
+  {
+   "in": "{__name__=\"a\"}"
+  },
+  {
+   "in": "a{b!=\"c\"}[1m]"
+  },
+  {
+   "in": "a{b=~\"c\"}[1m]"
+  },
+  {
+   "in": "a{b!~\"c\"}[1m]"
+  },
+  {
+   "in": "a @ 10",
+   "out": "a @ 10.000"
+  },
+  {
+   "in": "a[1m] @ 10",
+   "out": "a[1m] @ 10.000"
+  },
+  {
+   "in": "a @ start()"
+  },
+  {
+   "in": "a @ end()"
+  },
+  {
+   "in": "a[1m] @ start()"
+  },
+  {
+   "in": "a[1m] @ end()"
+  },
+  {
+   "in": "{__name__=\"\",a=\"x\"}"
+  },
+  {
+   "in": "{\"a.b\"=\"c\"}"
+  },
+  {
+   "in": "{\"0\"=\"1\"}"
+  },
+  {
+   "in": "{\"_0\"=\"1\"}",
+   "out": "{_0=\"1\"}"
+  },
+  {
+   "in": "{\"\"=\"0\"}"
+  },
+  {
+   "in": "{``=\"0\"}",
+   "out": "{\"\"=\"0\"}"
+  },
+  {
+   "in": "1048576",
+   "out": "1048576"
+  },
+  {
+   "in": "foo[step()]"
+  },
+  {
+   "in": "foo[-step()]"
+  },
+  {
+   "in": "foo[(step())]"
+  },
+  {
+   "in": "foo[-(step())]"
+  },
+  {
+   "in": "foo offset step()"
+  },
+  {
+   "in": "foo offset -step()"
+  },
+  {
+   "in": "foo offset (step())"
+  },
+  {
+   "in": "foo offset -(step())"
+  },
+  {
+   "in": "foo offset +(5)",
+   "out": "foo offset (5)"
+  },
+  {
+   "in": "foo offset -(5)"
+  },
+  {
+   "in": "foo offset (5)"
+  },
+  {
+   "in": "foo offset (5m)"
+  },
+  {
+   "in": "foo[(5s)]"
+  },
+  {
+   "in": "foo[(5m):(1m)]"
+  },
+  {
+   "in": "foo offset +min_of(10s, 20s)",
+   "out": "foo offset min_of(10s, 20s)"
+  },
+  {
+   "in": "foo offset -min_of(10s, 20s)"
+  },
+  {
+   "in": "foo offset -min_of(10s, +max_of(step() ^ 2, 2))",
+   "out": "foo offset -min_of(10s, max_of(step() ^ 2, 2))"
+  },
+  {
+   "in": "foo[200-min_of(-step()^+step(),1)]",
+   "out": "foo[200 - min_of(-step() ^ step(), 1)]"
+  },
+  {
+   "in": "foo[200 - min_of(step() + 10s, -max_of(step() ^ 2, 3))]"
+  },
+  {
+   "in": "foo[range()]"
+  },
+  {
+   "in": "foo[-range()]"
+  },
+  {
+   "in": "foo offset range()"
+  },
+  {
+   "in": "foo offset -range()"
+  },
+  {
+   "in": "foo[max_of(range(), 5s)]"
+  },
+  {
+   "in": "predict_linear(foo[1h], 3000)"
+  },
+  {
+   "in": "sum by(\"üüü\") (foo)",
+   "out": "sum by (\"üüü\") (foo)"
+  },
+  {
+   "in": "sum without(\"äää\") (foo)",
+   "out": "sum without (\"äää\") (foo)"
+  },
+  {
+   "in": "count by(\"ööö\", job) (foo)",
+   "out": "count by (\"ööö\", job) (foo)"
+  }
+ ],
+ "TestMatrixSelector_String": [
+  {
+   "expected": "foobar[5m]",
+   "expectedShort": "[5m]",
+   "name": "vector selector"
+  },
+  {
+   "expected": "1[5m]",
+   "expectedShort": "[5m]",
+   "name": "non-vector operand"
+  },
+  {
+   "expected": "[5m]",
+   "expectedShort": "[5m]",
+   "name": "no operand"
+  }
+ ],
+ "TestVectorSelector_String": [
+  {
+   "expected": "",
+   "name": "empty value"
+  },
+  {
+   "expected": "foobar",
+   "name": "no matchers with name"
+  },
+  {
+   "expected": "foobar{a=\"x\"}",
+   "name": "one matcher with name"
+  },
+  {
+   "expected": "foobar{a=\"x\",b=\"y\"}",
+   "name": "two matchers with name"
+  },
+  {
+   "expected": "{a=\"x\",b=\"y\"}",
+   "name": "two matchers without name"
+  },
+  {
+   "expected": "foobar",
+   "name": "name matcher and name"
+  },
+  {
+   "expected": "{__name__=\"foobar\"}",
+   "name": "name matcher only"
+  },
+  {
+   "expected": "{__name__=\"\",a=\"x\"}",
+   "name": "empty name matcher"
+  }
+ ]
+}

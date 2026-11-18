@@ -1,0 +1,3158 @@
+[
+ {
+  "name": "common",
+  "tests": [
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57349,
+      "Val": ","
+     }
+    ],
+    "fail": false,
+    "input": ",",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57357,
+      "Val": "("
+     },
+     {
+      "Pos": 1,
+      "Typ": 57364,
+      "Val": ")"
+     }
+    ],
+    "fail": false,
+    "input": "()",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57355,
+      "Val": "{"
+     },
+     {
+      "Pos": 1,
+      "Typ": 57362,
+      "Val": "}"
+     }
+    ],
+    "fail": false,
+    "input": "{}",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57356,
+      "Val": "["
+     },
+     {
+      "Pos": 1,
+      "Typ": 57351,
+      "Val": "5m"
+     },
+     {
+      "Pos": 3,
+      "Typ": 57363,
+      "Val": "]"
+     }
+    ],
+    "fail": false,
+    "input": "[5m]",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57356,
+      "Val": "["
+     },
+     {
+      "Pos": 2,
+      "Typ": 57351,
+      "Val": "5m"
+     },
+     {
+      "Pos": 4,
+      "Typ": 57363,
+      "Val": "]"
+     }
+    ],
+    "fail": false,
+    "input": "[ 5m]",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57356,
+      "Val": "["
+     },
+     {
+      "Pos": 3,
+      "Typ": 57351,
+      "Val": "5m"
+     },
+     {
+      "Pos": 5,
+      "Typ": 57363,
+      "Val": "]"
+     }
+    ],
+    "fail": false,
+    "input": "[  5m]",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57356,
+      "Val": "["
+     },
+     {
+      "Pos": 3,
+      "Typ": 57351,
+      "Val": "5m"
+     },
+     {
+      "Pos": 6,
+      "Typ": 57363,
+      "Val": "]"
+     }
+    ],
+    "fail": false,
+    "input": "[  5m ]",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": false,
+    "input": "\r\n\r",
+    "seriesDesc": false
+   }
+  ]
+ },
+ {
+  "name": "numbers",
+  "tests": [
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57361,
+      "Val": "1"
+     }
+    ],
+    "fail": false,
+    "input": "1",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57361,
+      "Val": "4.23"
+     }
+    ],
+    "fail": false,
+    "input": "4.23",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57361,
+      "Val": ".3"
+     }
+    ],
+    "fail": false,
+    "input": ".3",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57361,
+      "Val": "5."
+     }
+    ],
+    "fail": false,
+    "input": "5.",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57361,
+      "Val": "NaN"
+     }
+    ],
+    "fail": false,
+    "input": "NaN",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57361,
+      "Val": "nAN"
+     }
+    ],
+    "fail": false,
+    "input": "nAN",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57361,
+      "Val": "NaN"
+     },
+     {
+      "Pos": 4,
+      "Typ": 57361,
+      "Val": "123"
+     }
+    ],
+    "fail": false,
+    "input": "NaN 123",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57354,
+      "Val": "NaN123"
+     }
+    ],
+    "fail": false,
+    "input": "NaN123",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57361,
+      "Val": "iNf"
+     }
+    ],
+    "fail": false,
+    "input": "iNf",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57361,
+      "Val": "Inf"
+     }
+    ],
+    "fail": false,
+    "input": "Inf",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57383,
+      "Val": "+"
+     },
+     {
+      "Pos": 1,
+      "Typ": 57361,
+      "Val": "Inf"
+     }
+    ],
+    "fail": false,
+    "input": "+Inf",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57383,
+      "Val": "+"
+     },
+     {
+      "Pos": 1,
+      "Typ": 57361,
+      "Val": "Inf"
+     },
+     {
+      "Pos": 5,
+      "Typ": 57361,
+      "Val": "123"
+     }
+    ],
+    "fail": false,
+    "input": "+Inf 123",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57401,
+      "Val": "-"
+     },
+     {
+      "Pos": 1,
+      "Typ": 57361,
+      "Val": "Inf"
+     }
+    ],
+    "fail": false,
+    "input": "-Inf",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57354,
+      "Val": "Infoo"
+     }
+    ],
+    "fail": false,
+    "input": "Infoo",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57401,
+      "Val": "-"
+     },
+     {
+      "Pos": 1,
+      "Typ": 57354,
+      "Val": "Infoo"
+     }
+    ],
+    "fail": false,
+    "input": "-Infoo",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57401,
+      "Val": "-"
+     },
+     {
+      "Pos": 1,
+      "Typ": 57361,
+      "Val": "Inf"
+     },
+     {
+      "Pos": 5,
+      "Typ": 57361,
+      "Val": "123"
+     }
+    ],
+    "fail": false,
+    "input": "-Inf 123",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57361,
+      "Val": "0x123"
+     }
+    ],
+    "fail": false,
+    "input": "0x123",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "1..2",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "1.2.",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57361,
+      "Val": "00_1_23_4.56_7_8"
+     }
+    ],
+    "fail": false,
+    "input": "00_1_23_4.56_7_8",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "00_1_23__4.56_7_8",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "00_1_23_4._56_7_8",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "00_1_23_4_.56_7_8",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57361,
+      "Val": "0x1_2_34"
+     }
+    ],
+    "fail": false,
+    "input": "0x1_2_34",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "0x1_2__34",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "0x1_2__34.5_6p1",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "0x1_2__34.5_6",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "0x1_2__34.56",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "1_e2",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57361,
+      "Val": "1.e2"
+     }
+    ],
+    "fail": false,
+    "input": "1.e2",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "1e.2",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "1e+.2",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "1ee2",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "1e+e2",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "1e",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "1e+",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57361,
+      "Val": "1e1_2_34"
+     }
+    ],
+    "fail": false,
+    "input": "1e1_2_34",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "1e_1_2_34",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "1e1_2__34",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "1e+_1_2_34",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "1e-_1_2_34",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "12_",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57354,
+      "Val": "_1_2"
+     }
+    ],
+    "fail": false,
+    "input": "_1_2",
+    "seriesDesc": false
+   }
+  ]
+ },
+ {
+  "name": "strings",
+  "tests": [
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57367,
+      "Val": "\"test\\tsequence\""
+     }
+    ],
+    "fail": false,
+    "input": "\"test\\tsequence\"",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57367,
+      "Val": "\"test\\\\.expression\""
+     }
+    ],
+    "fail": false,
+    "input": "\"test\\\\.expression\"",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57353,
+      "Val": "unknown escape sequence U+002E '.'"
+     },
+     {
+      "Pos": 0,
+      "Typ": 57367,
+      "Val": "\"test\\.expression\""
+     }
+    ],
+    "fail": false,
+    "input": "\"test\\.expression\"",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57367,
+      "Val": "`test\\.expression`"
+     }
+    ],
+    "fail": false,
+    "input": "`test\\.expression`",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": ".٩",
+    "seriesDesc": false
+   }
+  ]
+ },
+ {
+  "name": "durations",
+  "tests": [
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57351,
+      "Val": "5s"
+     }
+    ],
+    "fail": false,
+    "input": "5s",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57351,
+      "Val": "123m"
+     }
+    ],
+    "fail": false,
+    "input": "123m",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57351,
+      "Val": "1h"
+     }
+    ],
+    "fail": false,
+    "input": "1h",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57351,
+      "Val": "3w"
+     }
+    ],
+    "fail": false,
+    "input": "3w",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57351,
+      "Val": "1y"
+     }
+    ],
+    "fail": false,
+    "input": "1y",
+    "seriesDesc": false
+   }
+  ]
+ },
+ {
+  "name": "identifiers",
+  "tests": [
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57354,
+      "Val": "abc"
+     }
+    ],
+    "fail": false,
+    "input": "abc",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57360,
+      "Val": "a:bc"
+     }
+    ],
+    "fail": false,
+    "input": "a:bc",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57354,
+      "Val": "abc"
+     },
+     {
+      "Pos": 4,
+      "Typ": 57354,
+      "Val": "d"
+     }
+    ],
+    "fail": false,
+    "input": "abc d",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57360,
+      "Val": ":bc"
+     }
+    ],
+    "fail": false,
+    "input": ":bc",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "0a:bc",
+    "seriesDesc": false
+   }
+  ]
+ },
+ {
+  "name": "comments",
+  "tests": [
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57350,
+      "Val": "# some comment"
+     }
+    ],
+    "fail": false,
+    "input": "# some comment",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57361,
+      "Val": "5"
+     },
+     {
+      "Pos": 2,
+      "Typ": 57350,
+      "Val": "# 1+1"
+     },
+     {
+      "Pos": 8,
+      "Typ": 57361,
+      "Val": "5"
+     }
+    ],
+    "fail": false,
+    "input": "5 # 1+1\n5",
+    "seriesDesc": false
+   }
+  ]
+ },
+ {
+  "name": "operators",
+  "tests": [
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57346,
+      "Val": "="
+     }
+    ],
+    "fail": false,
+    "input": "=",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57355,
+      "Val": "{"
+     },
+     {
+      "Pos": 1,
+      "Typ": 57346,
+      "Val": "="
+     },
+     {
+      "Pos": 2,
+      "Typ": 57362,
+      "Val": "}"
+     }
+    ],
+    "fail": false,
+    "input": "{=}",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57385,
+      "Val": "=="
+     }
+    ],
+    "fail": false,
+    "input": "==",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57398,
+      "Val": "!="
+     }
+    ],
+    "fail": false,
+    "input": "!=",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57393,
+      "Val": "\u003c"
+     }
+    ],
+    "fail": false,
+    "input": "\u003c",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57388,
+      "Val": "\u003e"
+     }
+    ],
+    "fail": false,
+    "input": "\u003e",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57387,
+      "Val": "\u003e="
+     }
+    ],
+    "fail": false,
+    "input": "\u003e=",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57394,
+      "Val": "\u003c="
+     }
+    ],
+    "fail": false,
+    "input": "\u003c=",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57383,
+      "Val": "+"
+     }
+    ],
+    "fail": false,
+    "input": "+",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57401,
+      "Val": "-"
+     }
+    ],
+    "fail": false,
+    "input": "-",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57397,
+      "Val": "*"
+     }
+    ],
+    "fail": false,
+    "input": "*",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57384,
+      "Val": "/"
+     }
+    ],
+    "fail": false,
+    "input": "/",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57400,
+      "Val": "^"
+     }
+    ],
+    "fail": false,
+    "input": "^",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57396,
+      "Val": "%"
+     }
+    ],
+    "fail": false,
+    "input": "%",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57391,
+      "Val": "AND"
+     }
+    ],
+    "fail": false,
+    "input": "AND",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57392,
+      "Val": "or"
+     }
+    ],
+    "fail": false,
+    "input": "or",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57395,
+      "Val": "unless"
+     }
+    ],
+    "fail": false,
+    "input": "unless",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57402,
+      "Val": "@"
+     }
+    ],
+    "fail": false,
+    "input": "@",
+    "seriesDesc": false
+   }
+  ]
+ },
+ {
+  "name": "aggregators",
+  "tests": [
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57416,
+      "Val": "sum"
+     }
+    ],
+    "fail": false,
+    "input": "sum",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57406,
+      "Val": "AVG"
+     }
+    ],
+    "fail": false,
+    "input": "AVG",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57410,
+      "Val": "GROUP"
+     }
+    ],
+    "fail": false,
+    "input": "GROUP",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57411,
+      "Val": "MAX"
+     }
+    ],
+    "fail": false,
+    "input": "MAX",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57412,
+      "Val": "min"
+     }
+    ],
+    "fail": false,
+    "input": "min",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57408,
+      "Val": "count"
+     }
+    ],
+    "fail": false,
+    "input": "count",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57415,
+      "Val": "stdvar"
+     }
+    ],
+    "fail": false,
+    "input": "stdvar",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57414,
+      "Val": "stddev"
+     }
+    ],
+    "fail": false,
+    "input": "stddev",
+    "seriesDesc": false
+   }
+  ]
+ },
+ {
+  "name": "keywords",
+  "tests": [
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57430,
+      "Val": "offset"
+     }
+    ],
+    "fail": false,
+    "input": "offset",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57423,
+      "Val": "by"
+     }
+    ],
+    "fail": false,
+    "input": "by",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57434,
+      "Val": "without"
+     }
+    ],
+    "fail": false,
+    "input": "without",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57433,
+      "Val": "on"
+     }
+    ],
+    "fail": false,
+    "input": "on",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57429,
+      "Val": "ignoring"
+     }
+    ],
+    "fail": false,
+    "input": "ignoring",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57424,
+      "Val": "group_left"
+     }
+    ],
+    "fail": false,
+    "input": "group_left",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57425,
+      "Val": "group_right"
+     }
+    ],
+    "fail": false,
+    "input": "group_right",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57422,
+      "Val": "bool"
+     }
+    ],
+    "fail": false,
+    "input": "bool",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57403,
+      "Val": "atan2"
+     }
+    ],
+    "fail": false,
+    "input": "atan2",
+    "seriesDesc": false
+   }
+  ]
+ },
+ {
+  "name": "preprocessors",
+  "tests": [
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57437,
+      "Val": "start"
+     }
+    ],
+    "fail": false,
+    "input": "start",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57438,
+      "Val": "end"
+     }
+    ],
+    "fail": false,
+    "input": "end",
+    "seriesDesc": false
+   }
+  ]
+ },
+ {
+  "name": "selectors",
+  "tests": [
+   {
+    "expected": [],
+    "fail": true,
+    "input": "台北",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "{台北='a'}",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "{0a='a'}",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57355,
+      "Val": "{"
+     },
+     {
+      "Pos": 1,
+      "Typ": 57354,
+      "Val": "foo"
+     },
+     {
+      "Pos": 4,
+      "Typ": 57346,
+      "Val": "="
+     },
+     {
+      "Pos": 5,
+      "Typ": 57367,
+      "Val": "'bar'"
+     },
+     {
+      "Pos": 10,
+      "Typ": 57362,
+      "Val": "}"
+     }
+    ],
+    "fail": false,
+    "input": "{foo='bar'}",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57355,
+      "Val": "{"
+     },
+     {
+      "Pos": 1,
+      "Typ": 57354,
+      "Val": "foo"
+     },
+     {
+      "Pos": 4,
+      "Typ": 57346,
+      "Val": "="
+     },
+     {
+      "Pos": 5,
+      "Typ": 57367,
+      "Val": "\"bar\""
+     },
+     {
+      "Pos": 10,
+      "Typ": 57362,
+      "Val": "}"
+     }
+    ],
+    "fail": false,
+    "input": "{foo=\"bar\"}",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57355,
+      "Val": "{"
+     },
+     {
+      "Pos": 1,
+      "Typ": 57354,
+      "Val": "foo"
+     },
+     {
+      "Pos": 4,
+      "Typ": 57346,
+      "Val": "="
+     },
+     {
+      "Pos": 5,
+      "Typ": 57367,
+      "Val": "\"bar\\\"bar\""
+     },
+     {
+      "Pos": 15,
+      "Typ": 57362,
+      "Val": "}"
+     }
+    ],
+    "fail": false,
+    "input": "{foo=\"bar\\\"bar\"}",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57355,
+      "Val": "{"
+     },
+     {
+      "Pos": 1,
+      "Typ": 57354,
+      "Val": "NaN"
+     },
+     {
+      "Pos": 5,
+      "Typ": 57398,
+      "Val": "!="
+     },
+     {
+      "Pos": 8,
+      "Typ": 57367,
+      "Val": "\"bar\""
+     },
+     {
+      "Pos": 14,
+      "Typ": 57362,
+      "Val": "}"
+     }
+    ],
+    "fail": false,
+    "input": "{NaN\t!= \"bar\" }",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57355,
+      "Val": "{"
+     },
+     {
+      "Pos": 1,
+      "Typ": 57354,
+      "Val": "alert"
+     },
+     {
+      "Pos": 6,
+      "Typ": 57386,
+      "Val": "=~"
+     },
+     {
+      "Pos": 8,
+      "Typ": 57367,
+      "Val": "\"bar\""
+     },
+     {
+      "Pos": 14,
+      "Typ": 57362,
+      "Val": "}"
+     }
+    ],
+    "fail": false,
+    "input": "{alert=~\"bar\" }",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57355,
+      "Val": "{"
+     },
+     {
+      "Pos": 1,
+      "Typ": 57354,
+      "Val": "on"
+     },
+     {
+      "Pos": 3,
+      "Typ": 57399,
+      "Val": "!~"
+     },
+     {
+      "Pos": 5,
+      "Typ": 57367,
+      "Val": "\"bar\""
+     },
+     {
+      "Pos": 10,
+      "Typ": 57362,
+      "Val": "}"
+     }
+    ],
+    "fail": false,
+    "input": "{on!~\"bar\"}",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "{alert!#\"bar\"}",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "{foo:a=\"bar\"}",
+    "seriesDesc": false
+   }
+  ]
+ },
+ {
+  "name": "common errors",
+  "tests": [
+   {
+    "expected": [],
+    "fail": true,
+    "input": "=~",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "!~",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "!(",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "1a",
+    "seriesDesc": false
+   }
+  ]
+ },
+ {
+  "name": "mismatched parentheses",
+  "tests": [
+   {
+    "expected": [],
+    "fail": true,
+    "input": "(",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "())",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "(()",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "{",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "}",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "{{",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "{{}}",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "[",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "[[",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "[]]",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "[[]]",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "]",
+    "seriesDesc": false
+   }
+  ]
+ },
+ {
+  "name": "encoding issues",
+  "tests": [
+   {
+    "expected": [],
+    "fail": true,
+    "input": {
+     "$bytes": "22ff22"
+    },
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": {
+     "$bytes": "60ff60"
+    },
+    "seriesDesc": false
+   }
+  ]
+ },
+ {
+  "name": "histogram series descriptions",
+  "tests": [
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57355,
+      "Val": "{"
+     },
+     {
+      "Pos": 1,
+      "Typ": 57362,
+      "Val": "}"
+     },
+     {
+      "Pos": 2,
+      "Typ": 57366,
+      "Val": " "
+     },
+     {
+      "Pos": 3,
+      "Typ": 57358,
+      "Val": "{{"
+     },
+     {
+      "Pos": 5,
+      "Typ": 57375,
+      "Val": "buckets"
+     },
+     {
+      "Pos": 12,
+      "Typ": 57348,
+      "Val": ":"
+     },
+     {
+      "Pos": 13,
+      "Typ": 57356,
+      "Val": "["
+     },
+     {
+      "Pos": 14,
+      "Typ": 57361,
+      "Val": "5"
+     },
+     {
+      "Pos": 15,
+      "Typ": 57363,
+      "Val": "]"
+     },
+     {
+      "Pos": 16,
+      "Typ": 57359,
+      "Val": "}}"
+     }
+    ],
+    "fail": false,
+    "input": "{} {{buckets:[5]}}",
+    "seriesDesc": true
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57355,
+      "Val": "{"
+     },
+     {
+      "Pos": 1,
+      "Typ": 57362,
+      "Val": "}"
+     },
+     {
+      "Pos": 2,
+      "Typ": 57366,
+      "Val": " "
+     },
+     {
+      "Pos": 3,
+      "Typ": 57358,
+      "Val": "{{"
+     },
+     {
+      "Pos": 5,
+      "Typ": 57375,
+      "Val": "buckets"
+     },
+     {
+      "Pos": 12,
+      "Typ": 57348,
+      "Val": ":"
+     },
+     {
+      "Pos": 13,
+      "Typ": 57366,
+      "Val": " "
+     },
+     {
+      "Pos": 14,
+      "Typ": 57356,
+      "Val": "["
+     },
+     {
+      "Pos": 15,
+      "Typ": 57361,
+      "Val": "5"
+     },
+     {
+      "Pos": 16,
+      "Typ": 57366,
+      "Val": " "
+     },
+     {
+      "Pos": 17,
+      "Typ": 57361,
+      "Val": "10"
+     },
+     {
+      "Pos": 19,
+      "Typ": 57366,
+      "Val": " "
+     },
+     {
+      "Pos": 20,
+      "Typ": 57361,
+      "Val": "7"
+     },
+     {
+      "Pos": 21,
+      "Typ": 57363,
+      "Val": "]"
+     },
+     {
+      "Pos": 22,
+      "Typ": 57359,
+      "Val": "}}"
+     }
+    ],
+    "fail": false,
+    "input": "{} {{buckets: [5 10 7]}}",
+    "seriesDesc": true
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57355,
+      "Val": "{"
+     },
+     {
+      "Pos": 1,
+      "Typ": 57362,
+      "Val": "}"
+     },
+     {
+      "Pos": 2,
+      "Typ": 57366,
+      "Val": " "
+     },
+     {
+      "Pos": 3,
+      "Typ": 57358,
+      "Val": "{{"
+     },
+     {
+      "Pos": 5,
+      "Typ": 57375,
+      "Val": "buckets"
+     },
+     {
+      "Pos": 12,
+      "Typ": 57348,
+      "Val": ":"
+     },
+     {
+      "Pos": 13,
+      "Typ": 57366,
+      "Val": " "
+     },
+     {
+      "Pos": 14,
+      "Typ": 57356,
+      "Val": "["
+     },
+     {
+      "Pos": 15,
+      "Typ": 57361,
+      "Val": "5"
+     },
+     {
+      "Pos": 16,
+      "Typ": 57366,
+      "Val": " "
+     },
+     {
+      "Pos": 17,
+      "Typ": 57361,
+      "Val": "10"
+     },
+     {
+      "Pos": 19,
+      "Typ": 57366,
+      "Val": " "
+     },
+     {
+      "Pos": 20,
+      "Typ": 57361,
+      "Val": "7"
+     },
+     {
+      "Pos": 21,
+      "Typ": 57363,
+      "Val": "]"
+     },
+     {
+      "Pos": 22,
+      "Typ": 57366,
+      "Val": " "
+     },
+     {
+      "Pos": 23,
+      "Typ": 57372,
+      "Val": "schema"
+     },
+     {
+      "Pos": 29,
+      "Typ": 57348,
+      "Val": ":"
+     },
+     {
+      "Pos": 30,
+      "Typ": 57361,
+      "Val": "1"
+     },
+     {
+      "Pos": 31,
+      "Typ": 57359,
+      "Val": "}}"
+     }
+    ],
+    "fail": false,
+    "input": "{} {{buckets: [5 10 7] schema:1}}",
+    "seriesDesc": true
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57355,
+      "Val": "{"
+     },
+     {
+      "Pos": 1,
+      "Typ": 57362,
+      "Val": "}"
+     },
+     {
+      "Pos": 2,
+      "Typ": 57366,
+      "Val": " "
+     },
+     {
+      "Pos": 3,
+      "Typ": 57358,
+      "Val": "{{"
+     },
+     {
+      "Pos": 5,
+      "Typ": 57375,
+      "Val": "buckets"
+     },
+     {
+      "Pos": 12,
+      "Typ": 57348,
+      "Val": ":"
+     },
+     {
+      "Pos": 13,
+      "Typ": 57366,
+      "Val": " "
+     },
+     {
+      "Pos": 14,
+      "Typ": 57356,
+      "Val": "["
+     },
+     {
+      "Pos": 15,
+      "Typ": 57361,
+      "Val": "Inf"
+     },
+     {
+      "Pos": 18,
+      "Typ": 57366,
+      "Val": " "
+     },
+     {
+      "Pos": 19,
+      "Typ": 57361,
+      "Val": "NaN"
+     },
+     {
+      "Pos": 22,
+      "Typ": 57363,
+      "Val": "]"
+     },
+     {
+      "Pos": 23,
+      "Typ": 57366,
+      "Val": " "
+     },
+     {
+      "Pos": 24,
+      "Typ": 57372,
+      "Val": "schema"
+     },
+     {
+      "Pos": 30,
+      "Typ": 57348,
+      "Val": ":"
+     },
+     {
+      "Pos": 31,
+      "Typ": 57361,
+      "Val": "1"
+     },
+     {
+      "Pos": 32,
+      "Typ": 57359,
+      "Val": "}}"
+     }
+    ],
+    "fail": false,
+    "input": "{} {{buckets: [Inf NaN] schema:1}}",
+    "seriesDesc": true
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57355,
+      "Val": "{"
+     },
+     {
+      "Pos": 1,
+      "Typ": 57362,
+      "Val": "}"
+     },
+     {
+      "Pos": 2,
+      "Typ": 57366,
+      "Val": " "
+     },
+     {
+      "Pos": 3,
+      "Typ": 57358,
+      "Val": "{{"
+     },
+     {
+      "Pos": 5,
+      "Typ": 57375,
+      "Val": "buckets"
+     },
+     {
+      "Pos": 12,
+      "Typ": 57348,
+      "Val": ":"
+     },
+     {
+      "Pos": 13,
+      "Typ": 57366,
+      "Val": " "
+     },
+     {
+      "Pos": 14,
+      "Typ": 57356,
+      "Val": "["
+     },
+     {
+      "Pos": 15,
+      "Typ": 57361,
+      "Val": "5"
+     },
+     {
+      "Pos": 16,
+      "Typ": 57366,
+      "Val": " "
+     },
+     {
+      "Pos": 17,
+      "Typ": 57361,
+      "Val": "10"
+     },
+     {
+      "Pos": 19,
+      "Typ": 57366,
+      "Val": " "
+     },
+     {
+      "Pos": 20,
+      "Typ": 57361,
+      "Val": "7"
+     },
+     {
+      "Pos": 21,
+      "Typ": 57363,
+      "Val": "]"
+     },
+     {
+      "Pos": 22,
+      "Typ": 57366,
+      "Val": " "
+     },
+     {
+      "Pos": 23,
+      "Typ": 57370,
+      "Val": "sum"
+     },
+     {
+      "Pos": 26,
+      "Typ": 57348,
+      "Val": ":"
+     },
+     {
+      "Pos": 27,
+      "Typ": 57361,
+      "Val": "Inf"
+     },
+     {
+      "Pos": 30,
+      "Typ": 57366,
+      "Val": " "
+     },
+     {
+      "Pos": 31,
+      "Typ": 57371,
+      "Val": "count"
+     },
+     {
+      "Pos": 36,
+      "Typ": 57348,
+      "Val": ":"
+     },
+     {
+      "Pos": 37,
+      "Typ": 57361,
+      "Val": "NaN"
+     },
+     {
+      "Pos": 40,
+      "Typ": 57359,
+      "Val": "}}"
+     }
+    ],
+    "fail": false,
+    "input": "{} {{buckets: [5 10 7] sum:Inf count:NaN}}",
+    "seriesDesc": true
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57355,
+      "Val": "{"
+     },
+     {
+      "Pos": 1,
+      "Typ": 57362,
+      "Val": "}"
+     },
+     {
+      "Pos": 2,
+      "Typ": 57366,
+      "Val": " "
+     },
+     {
+      "Pos": 3,
+      "Typ": 57358,
+      "Val": "{{"
+     },
+     {
+      "Pos": 5,
+      "Typ": 57370,
+      "Val": "sum"
+     },
+     {
+      "Pos": 8,
+      "Typ": 57348,
+      "Val": ":"
+     },
+     {
+      "Pos": 9,
+      "Typ": 57361,
+      "Val": "1"
+     },
+     {
+      "Pos": 10,
+      "Typ": 57359,
+      "Val": "}}"
+     },
+     {
+      "Pos": 12,
+      "Typ": 57383,
+      "Val": "+"
+     },
+     {
+      "Pos": 13,
+      "Typ": 57358,
+      "Val": "{{"
+     },
+     {
+      "Pos": 15,
+      "Typ": 57370,
+      "Val": "sum"
+     },
+     {
+      "Pos": 18,
+      "Typ": 57348,
+      "Val": ":"
+     },
+     {
+      "Pos": 19,
+      "Typ": 57361,
+      "Val": "0"
+     },
+     {
+      "Pos": 20,
+      "Typ": 57359,
+      "Val": "}}"
+     },
+     {
+      "Pos": 22,
+      "Typ": 57368,
+      "Val": "x"
+     },
+     {
+      "Pos": 23,
+      "Typ": 57361,
+      "Val": "2"
+     },
+     {
+      "Pos": 24,
+      "Typ": 57366,
+      "Val": " "
+     },
+     {
+      "Pos": 25,
+      "Typ": 57358,
+      "Val": "{{"
+     },
+     {
+      "Pos": 27,
+      "Typ": 57370,
+      "Val": "sum"
+     },
+     {
+      "Pos": 30,
+      "Typ": 57348,
+      "Val": ":"
+     },
+     {
+      "Pos": 31,
+      "Typ": 57361,
+      "Val": "1"
+     },
+     {
+      "Pos": 32,
+      "Typ": 57359,
+      "Val": "}}"
+     },
+     {
+      "Pos": 34,
+      "Typ": 57383,
+      "Val": "+"
+     },
+     {
+      "Pos": 35,
+      "Typ": 57358,
+      "Val": "{{"
+     },
+     {
+      "Pos": 37,
+      "Typ": 57370,
+      "Val": "sum"
+     },
+     {
+      "Pos": 40,
+      "Typ": 57348,
+      "Val": ":"
+     },
+     {
+      "Pos": 41,
+      "Typ": 57361,
+      "Val": "0"
+     },
+     {
+      "Pos": 42,
+      "Typ": 57359,
+      "Val": "}}"
+     },
+     {
+      "Pos": 44,
+      "Typ": 57368,
+      "Val": "x"
+     },
+     {
+      "Pos": 45,
+      "Typ": 57361,
+      "Val": "3"
+     }
+    ],
+    "fail": false,
+    "input": "{} {{sum:1}}+{{sum:0}}x2 {{sum:1}}+{{sum:0}}x3",
+    "seriesDesc": true
+   }
+  ]
+ },
+ {
+  "name": "series descriptions",
+  "tests": [
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57355,
+      "Val": "{"
+     },
+     {
+      "Pos": 1,
+      "Typ": 57362,
+      "Val": "}"
+     },
+     {
+      "Pos": 2,
+      "Typ": 57366,
+      "Val": " "
+     },
+     {
+      "Pos": 3,
+      "Typ": 57347,
+      "Val": "_"
+     },
+     {
+      "Pos": 4,
+      "Typ": 57366,
+      "Val": " "
+     },
+     {
+      "Pos": 5,
+      "Typ": 57361,
+      "Val": "1"
+     },
+     {
+      "Pos": 6,
+      "Typ": 57366,
+      "Val": " "
+     },
+     {
+      "Pos": 7,
+      "Typ": 57368,
+      "Val": "x"
+     },
+     {
+      "Pos": 8,
+      "Typ": 57366,
+      "Val": " "
+     },
+     {
+      "Pos": 9,
+      "Typ": 57361,
+      "Val": ".3"
+     }
+    ],
+    "fail": false,
+    "input": "{} _ 1 x .3",
+    "seriesDesc": true
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57354,
+      "Val": "metric"
+     },
+     {
+      "Pos": 6,
+      "Typ": 57366,
+      "Val": " "
+     },
+     {
+      "Pos": 7,
+      "Typ": 57383,
+      "Val": "+"
+     },
+     {
+      "Pos": 8,
+      "Typ": 57361,
+      "Val": "Inf"
+     },
+     {
+      "Pos": 11,
+      "Typ": 57366,
+      "Val": " "
+     },
+     {
+      "Pos": 12,
+      "Typ": 57361,
+      "Val": "Inf"
+     },
+     {
+      "Pos": 15,
+      "Typ": 57366,
+      "Val": " "
+     },
+     {
+      "Pos": 16,
+      "Typ": 57361,
+      "Val": "NaN"
+     }
+    ],
+    "fail": false,
+    "input": "metric +Inf Inf NaN",
+    "seriesDesc": true
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57354,
+      "Val": "metric"
+     },
+     {
+      "Pos": 6,
+      "Typ": 57366,
+      "Val": " "
+     },
+     {
+      "Pos": 7,
+      "Typ": 57361,
+      "Val": "1"
+     },
+     {
+      "Pos": 8,
+      "Typ": 57383,
+      "Val": "+"
+     },
+     {
+      "Pos": 9,
+      "Typ": 57361,
+      "Val": "1"
+     },
+     {
+      "Pos": 10,
+      "Typ": 57368,
+      "Val": "x"
+     },
+     {
+      "Pos": 11,
+      "Typ": 57361,
+      "Val": "4"
+     }
+    ],
+    "fail": false,
+    "input": "metric 1+1x4",
+    "seriesDesc": true
+   }
+  ]
+ },
+ {
+  "name": "subqueries",
+  "tests": [
+   {
+    "expected": [],
+    "fail": true,
+    "input": "rate(foo[5m])[:1s]",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "rate(foo[step()])[:1s]",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57354,
+      "Val": "foo"
+     },
+     {
+      "Pos": 3,
+      "Typ": 57356,
+      "Val": "["
+     },
+     {
+      "Pos": 4,
+      "Typ": 57440,
+      "Val": "range"
+     },
+     {
+      "Pos": 9,
+      "Typ": 57357,
+      "Val": "("
+     },
+     {
+      "Pos": 10,
+      "Typ": 57364,
+      "Val": ")"
+     },
+     {
+      "Pos": 11,
+      "Typ": 57348,
+      "Val": ":"
+     },
+     {
+      "Pos": 12,
+      "Typ": 57351,
+      "Val": "1s"
+     },
+     {
+      "Pos": 14,
+      "Typ": 57363,
+      "Val": "]"
+     }
+    ],
+    "fail": false,
+    "input": "foo[range():1s]",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57354,
+      "Val": "foo"
+     },
+     {
+      "Pos": 3,
+      "Typ": 57356,
+      "Val": "["
+     },
+     {
+      "Pos": 4,
+      "Typ": 57439,
+      "Val": "step"
+     },
+     {
+      "Pos": 8,
+      "Typ": 57357,
+      "Val": "("
+     },
+     {
+      "Pos": 9,
+      "Typ": 57364,
+      "Val": ")"
+     },
+     {
+      "Pos": 10,
+      "Typ": 57348,
+      "Val": ":"
+     },
+     {
+      "Pos": 11,
+      "Typ": 57363,
+      "Val": "]"
+     }
+    ],
+    "fail": false,
+    "input": "foo[step():]",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57354,
+      "Val": "test_name"
+     },
+     {
+      "Pos": 9,
+      "Typ": 57355,
+      "Val": "{"
+     },
+     {
+      "Pos": 10,
+      "Typ": 57354,
+      "Val": "on"
+     },
+     {
+      "Pos": 12,
+      "Typ": 57399,
+      "Val": "!~"
+     },
+     {
+      "Pos": 14,
+      "Typ": 57367,
+      "Val": "\"bar\""
+     },
+     {
+      "Pos": 19,
+      "Typ": 57362,
+      "Val": "}"
+     },
+     {
+      "Pos": 20,
+      "Typ": 57356,
+      "Val": "["
+     },
+     {
+      "Pos": 21,
+      "Typ": 57351,
+      "Val": "4m"
+     },
+     {
+      "Pos": 23,
+      "Typ": 57348,
+      "Val": ":"
+     },
+     {
+      "Pos": 24,
+      "Typ": 57351,
+      "Val": "4s"
+     },
+     {
+      "Pos": 26,
+      "Typ": 57363,
+      "Val": "]"
+     }
+    ],
+    "fail": false,
+    "input": "test_name{on!~\"bar\"}[4m:4s]",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57360,
+      "Val": "test:name"
+     },
+     {
+      "Pos": 9,
+      "Typ": 57355,
+      "Val": "{"
+     },
+     {
+      "Pos": 10,
+      "Typ": 57354,
+      "Val": "on"
+     },
+     {
+      "Pos": 12,
+      "Typ": 57399,
+      "Val": "!~"
+     },
+     {
+      "Pos": 14,
+      "Typ": 57367,
+      "Val": "\"bar\""
+     },
+     {
+      "Pos": 19,
+      "Typ": 57362,
+      "Val": "}"
+     },
+     {
+      "Pos": 20,
+      "Typ": 57356,
+      "Val": "["
+     },
+     {
+      "Pos": 21,
+      "Typ": 57351,
+      "Val": "4m"
+     },
+     {
+      "Pos": 23,
+      "Typ": 57348,
+      "Val": ":"
+     },
+     {
+      "Pos": 24,
+      "Typ": 57351,
+      "Val": "4s"
+     },
+     {
+      "Pos": 26,
+      "Typ": 57363,
+      "Val": "]"
+     }
+    ],
+    "fail": false,
+    "input": "test:name{on!~\"bar\"}[4m:4s]",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57360,
+      "Val": "test:name"
+     },
+     {
+      "Pos": 9,
+      "Typ": 57355,
+      "Val": "{"
+     },
+     {
+      "Pos": 10,
+      "Typ": 57354,
+      "Val": "on"
+     },
+     {
+      "Pos": 12,
+      "Typ": 57399,
+      "Val": "!~"
+     },
+     {
+      "Pos": 14,
+      "Typ": 57367,
+      "Val": "\"b:ar\""
+     },
+     {
+      "Pos": 20,
+      "Typ": 57362,
+      "Val": "}"
+     },
+     {
+      "Pos": 21,
+      "Typ": 57356,
+      "Val": "["
+     },
+     {
+      "Pos": 22,
+      "Typ": 57351,
+      "Val": "4m"
+     },
+     {
+      "Pos": 24,
+      "Typ": 57348,
+      "Val": ":"
+     },
+     {
+      "Pos": 25,
+      "Typ": 57351,
+      "Val": "4s"
+     },
+     {
+      "Pos": 27,
+      "Typ": 57363,
+      "Val": "]"
+     }
+    ],
+    "fail": false,
+    "input": "test:name{on!~\"b:ar\"}[4m:4s]",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57360,
+      "Val": "test:name"
+     },
+     {
+      "Pos": 9,
+      "Typ": 57355,
+      "Val": "{"
+     },
+     {
+      "Pos": 10,
+      "Typ": 57354,
+      "Val": "on"
+     },
+     {
+      "Pos": 12,
+      "Typ": 57399,
+      "Val": "!~"
+     },
+     {
+      "Pos": 14,
+      "Typ": 57367,
+      "Val": "\"b:ar\""
+     },
+     {
+      "Pos": 20,
+      "Typ": 57362,
+      "Val": "}"
+     },
+     {
+      "Pos": 21,
+      "Typ": 57356,
+      "Val": "["
+     },
+     {
+      "Pos": 22,
+      "Typ": 57351,
+      "Val": "4m"
+     },
+     {
+      "Pos": 24,
+      "Typ": 57348,
+      "Val": ":"
+     },
+     {
+      "Pos": 25,
+      "Typ": 57363,
+      "Val": "]"
+     }
+    ],
+    "fail": false,
+    "input": "test:name{on!~\"b:ar\"}[4m:]",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57354,
+      "Val": "min_over_time"
+     },
+     {
+      "Pos": 13,
+      "Typ": 57357,
+      "Val": "("
+     },
+     {
+      "Pos": 14,
+      "Typ": 57354,
+      "Val": "rate"
+     },
+     {
+      "Pos": 18,
+      "Typ": 57357,
+      "Val": "("
+     },
+     {
+      "Pos": 19,
+      "Typ": 57354,
+      "Val": "foo"
+     },
+     {
+      "Pos": 22,
+      "Typ": 57355,
+      "Val": "{"
+     },
+     {
+      "Pos": 23,
+      "Typ": 57354,
+      "Val": "bar"
+     },
+     {
+      "Pos": 26,
+      "Typ": 57346,
+      "Val": "="
+     },
+     {
+      "Pos": 27,
+      "Typ": 57367,
+      "Val": "\"baz\""
+     },
+     {
+      "Pos": 32,
+      "Typ": 57362,
+      "Val": "}"
+     },
+     {
+      "Pos": 33,
+      "Typ": 57356,
+      "Val": "["
+     },
+     {
+      "Pos": 34,
+      "Typ": 57351,
+      "Val": "2s"
+     },
+     {
+      "Pos": 36,
+      "Typ": 57363,
+      "Val": "]"
+     },
+     {
+      "Pos": 37,
+      "Typ": 57364,
+      "Val": ")"
+     },
+     {
+      "Pos": 38,
+      "Typ": 57356,
+      "Val": "["
+     },
+     {
+      "Pos": 39,
+      "Typ": 57351,
+      "Val": "5m"
+     },
+     {
+      "Pos": 41,
+      "Typ": 57348,
+      "Val": ":"
+     },
+     {
+      "Pos": 42,
+      "Typ": 57363,
+      "Val": "]"
+     },
+     {
+      "Pos": 43,
+      "Typ": 57364,
+      "Val": ")"
+     },
+     {
+      "Pos": 44,
+      "Typ": 57356,
+      "Val": "["
+     },
+     {
+      "Pos": 45,
+      "Typ": 57351,
+      "Val": "4m"
+     },
+     {
+      "Pos": 47,
+      "Typ": 57348,
+      "Val": ":"
+     },
+     {
+      "Pos": 48,
+      "Typ": 57351,
+      "Val": "3s"
+     },
+     {
+      "Pos": 50,
+      "Typ": 57363,
+      "Val": "]"
+     }
+    ],
+    "fail": false,
+    "input": "min_over_time(rate(foo{bar=\"baz\"}[2s])[5m:])[4m:3s]",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57360,
+      "Val": "test:name"
+     },
+     {
+      "Pos": 9,
+      "Typ": 57355,
+      "Val": "{"
+     },
+     {
+      "Pos": 10,
+      "Typ": 57354,
+      "Val": "on"
+     },
+     {
+      "Pos": 12,
+      "Typ": 57399,
+      "Val": "!~"
+     },
+     {
+      "Pos": 14,
+      "Typ": 57367,
+      "Val": "\"b:ar\""
+     },
+     {
+      "Pos": 20,
+      "Typ": 57362,
+      "Val": "}"
+     },
+     {
+      "Pos": 21,
+      "Typ": 57356,
+      "Val": "["
+     },
+     {
+      "Pos": 22,
+      "Typ": 57351,
+      "Val": "4m"
+     },
+     {
+      "Pos": 24,
+      "Typ": 57348,
+      "Val": ":"
+     },
+     {
+      "Pos": 25,
+      "Typ": 57351,
+      "Val": "4s"
+     },
+     {
+      "Pos": 27,
+      "Typ": 57363,
+      "Val": "]"
+     },
+     {
+      "Pos": 29,
+      "Typ": 57430,
+      "Val": "offset"
+     },
+     {
+      "Pos": 36,
+      "Typ": 57351,
+      "Val": "10m"
+     }
+    ],
+    "fail": false,
+    "input": "test:name{on!~\"b:ar\"}[4m:4s] offset 10m",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57354,
+      "Val": "min_over_time"
+     },
+     {
+      "Pos": 13,
+      "Typ": 57357,
+      "Val": "("
+     },
+     {
+      "Pos": 14,
+      "Typ": 57354,
+      "Val": "rate"
+     },
+     {
+      "Pos": 18,
+      "Typ": 57357,
+      "Val": "("
+     },
+     {
+      "Pos": 19,
+      "Typ": 57354,
+      "Val": "foo"
+     },
+     {
+      "Pos": 22,
+      "Typ": 57355,
+      "Val": "{"
+     },
+     {
+      "Pos": 23,
+      "Typ": 57354,
+      "Val": "bar"
+     },
+     {
+      "Pos": 26,
+      "Typ": 57346,
+      "Val": "="
+     },
+     {
+      "Pos": 27,
+      "Typ": 57367,
+      "Val": "\"baz\""
+     },
+     {
+      "Pos": 32,
+      "Typ": 57362,
+      "Val": "}"
+     },
+     {
+      "Pos": 33,
+      "Typ": 57356,
+      "Val": "["
+     },
+     {
+      "Pos": 34,
+      "Typ": 57351,
+      "Val": "2s"
+     },
+     {
+      "Pos": 36,
+      "Typ": 57363,
+      "Val": "]"
+     },
+     {
+      "Pos": 37,
+      "Typ": 57364,
+      "Val": ")"
+     },
+     {
+      "Pos": 38,
+      "Typ": 57356,
+      "Val": "["
+     },
+     {
+      "Pos": 39,
+      "Typ": 57351,
+      "Val": "5m"
+     },
+     {
+      "Pos": 41,
+      "Typ": 57348,
+      "Val": ":"
+     },
+     {
+      "Pos": 42,
+      "Typ": 57363,
+      "Val": "]"
+     },
+     {
+      "Pos": 44,
+      "Typ": 57430,
+      "Val": "offset"
+     },
+     {
+      "Pos": 51,
+      "Typ": 57351,
+      "Val": "6m"
+     },
+     {
+      "Pos": 53,
+      "Typ": 57364,
+      "Val": ")"
+     },
+     {
+      "Pos": 54,
+      "Typ": 57356,
+      "Val": "["
+     },
+     {
+      "Pos": 55,
+      "Typ": 57351,
+      "Val": "4m"
+     },
+     {
+      "Pos": 57,
+      "Typ": 57348,
+      "Val": ":"
+     },
+     {
+      "Pos": 58,
+      "Typ": 57351,
+      "Val": "3s"
+     },
+     {
+      "Pos": 60,
+      "Typ": 57363,
+      "Val": "]"
+     }
+    ],
+    "fail": false,
+    "input": "min_over_time(rate(foo{bar=\"baz\"}[2s])[5m:] offset 6m)[4m:3s]",
+    "seriesDesc": false
+   },
+   {
+    "expected": [
+     {
+      "Pos": 0,
+      "Typ": 57360,
+      "Val": "test:name"
+     },
+     {
+      "Pos": 9,
+      "Typ": 57356,
+      "Val": "["
+     },
+     {
+      "Pos": 11,
+      "Typ": 57351,
+      "Val": "5m"
+     },
+     {
+      "Pos": 13,
+      "Typ": 57363,
+      "Val": "]"
+     }
+    ],
+    "fail": false,
+    "input": "test:name[ 5m]",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "test:name{o:n!~\"bar\"}[4m:4s]",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "test:name{on!~\"bar\"}[4m:4s:4h]",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "test:name{on!~\"bar\"}[4m:4s:]",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "test:name{on!~\"bar\"}[4m::]",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "test:name{on!~\"bar\"}[:4s]",
+    "seriesDesc": false
+   },
+   {
+    "expected": [],
+    "fail": true,
+    "input": "test:name{on!~\"bar\"}[1s:1s:1s]",
+    "seriesDesc": false
+   }
+  ]
+ }
+]
