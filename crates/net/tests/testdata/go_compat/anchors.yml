@@ -1,0 +1,3 @@
+x: &a
+  username: u
+basic_auth: *a

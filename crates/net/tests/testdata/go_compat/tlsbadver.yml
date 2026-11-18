@@ -1,0 +1,2 @@
+tls_config:
+  min_version: TLS9

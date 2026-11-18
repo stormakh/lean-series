@@ -1,0 +1,121 @@
+=== anchors.yml
+ERR: yaml: unmarshal errors:
+  line 1: field x not found in type config.plain
+=== authz.yml
+authorization:
+  type: Token
+  credentials_file: /t
+follow_redirects: true
+enable_http2: true
+=== badurl.yml
+ERR: parse "::bad": missing protocol scheme
+=== bearer.yml
+authorization:
+  type: Bearer
+  credentials: <secret>
+follow_redirects: true
+enable_http2: true
+=== dupfield.yml
+ERR: yaml: unmarshal errors:
+  line 2: field follow_redirects already set in type config.plain
+=== full.yml
+basic_auth:
+  username: u
+  password: <secret>
+tls_config:
+  cert: |
+    -----BEGIN CERT-----
+    abc
+  key: <secret>
+  ca_file: /x/ca.pem
+  insecure_skip_verify: false
+follow_redirects: false
+enable_http2: true
+proxy_url: http://user:xxxxx@proxy:3128/x
+no_proxy: a.b,c
+proxy_connect_header:
+  A:
+  - <secret>
+  - <secret>
+  X-B:
+  - <secret>
+http_headers:
+  X-A:
+    values:
+    - 'needs: quoting'
+    - "true"
+    - ""
+  X-Z:
+    values:
+    - v
+    secrets:
+    - <secret>
+    files:
+    - f
+=== headers_dup.yml
+ERR: yaml: unmarshal errors:
+  line 5: key "A" already set in map
+=== merge.yml
+basic_auth:
+  username: v
+  password: <secret>
+follow_redirects: true
+enable_http2: true
+=== null.yml
+follow_redirects: true
+enable_http2: true
+=== oauth.yml
+oauth2:
+  client_id: id
+  client_secret: <secret>
+  claims:
+    l:
+    - 1
+    - two
+    "n": 1
+    s: x
+  scopes:
+  - a
+  - b
+  token_url: http://t/token
+  endpoint_params:
+    a: "2"
+    z: "1"
+  tls_config:
+    insecure_skip_verify: true
+  proxy_url: http://p
+follow_redirects: true
+enable_http2: false
+=== proxy_env.yml
+follow_redirects: true
+enable_http2: true
+proxy_from_environment: true
+=== quotednull.yml
+authorization:
+  type: Bearer
+  credentials_file: "null"
+follow_redirects: true
+enable_http2: true
+=== seqitems.yml
+ERR: yaml: unmarshal errors:
+  line 4: cannot unmarshal !!map into string
+=== tlsbadver.yml
+ERR: unknown TLS version: TLS9
+=== tlsver.yml
+tls_config:
+  server_name: foo
+  insecure_skip_verify: true
+  min_version: TLS12
+  max_version: TLS13
+follow_redirects: true
+enable_http2: true
+=== types.yml
+ERR: yaml: unmarshal errors:
+  line 1: cannot unmarshal !!str `maybe` into bool
+  line 2: cannot unmarshal !!seq into bool
+  line 3: cannot unmarshal !!str `str` into config.plain
+=== unknown.yml
+ERR: yaml: unmarshal errors:
+  line 3: field passwd not found in type config.plain
+  line 4: field foo not found in type config.plain
+  line 6: field bad not found in type config.plain

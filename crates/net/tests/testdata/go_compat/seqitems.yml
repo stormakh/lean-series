@@ -1,0 +1,4 @@
+oauth2:
+  client_id: x
+  token_url: y
+  scopes: [a, {b: 1}, c]

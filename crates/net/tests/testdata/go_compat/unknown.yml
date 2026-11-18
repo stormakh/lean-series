@@ -1,0 +1,6 @@
+basic_auth:
+  username: a
+  passwd: b
+foo: 1
+tls_config:
+  bad: x
