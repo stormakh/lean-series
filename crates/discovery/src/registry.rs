@@ -40,9 +40,11 @@ pub struct Registration {
 /// The providers built into this crate. Adding a provider: one line here (see README.md).
 fn builtin() -> Vec<Registration> {
     vec![
+        registration::<crate::aws::ec2::Ec2SdConfig>(),
+        registration::<crate::aws::elasticache::ElasticacheSdConfig>(),
         registration::<crate::file::SdConfig>(),
         registration::<crate::http::SdConfig>(),
-        registration::<crate::aws::elasticache::ElasticacheSdConfig>(),
+        registration::<crate::aws::lightsail::LightsailSdConfig>(),
         registration::<crate::aws::rds::RdsSdConfig>(),
     ]
 }
