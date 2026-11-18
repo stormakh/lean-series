@@ -5,6 +5,9 @@ use std::io;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
+mod direct_io;
+pub use direct_io::*;
+
 /// Go `DirSize`: the total size of the files under `dir`. Files removed during the walk are ignored.
 pub fn dir_size(dir: &Path) -> io::Result<i64> {
     fn walk(p: &Path, size: &mut i64, root: bool) -> io::Result<()> {
@@ -64,7 +67,9 @@ fn read_dirs(src: &Path) -> io::Result<Vec<PathBuf>> {
                 out.push(rel.to_path_buf());
             }
         }
-        let Ok(md) = fs::symlink_metadata(p) else { return };
+        let Ok(md) = fs::symlink_metadata(p) else {
+            return;
+        };
         if !md.is_dir() {
             return;
         }
@@ -83,7 +88,10 @@ fn read_dirs(src: &Path) -> io::Result<Vec<PathBuf>> {
 /// Go `Rename`: renames a file and syncs the parent directory to persist the rename.
 pub fn rename(from: &Path, to: &Path) -> io::Result<()> {
     fs::rename(from, to)?;
-    let parent = to.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let parent = to
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
     let pdir = open_dir(parent)?;
     pdir.sync_all()
 }
@@ -136,18 +144,30 @@ impl Drop for Releaser {
 }
 
 /// Go `Flock`: locks the file `file_name` (exclusive, non-blocking `flock(2)` as Go does), creating it and its
-/// directory when missing. Returns the releaser and whether the file existed before.
-pub fn flock(file_name: &Path) -> io::Result<(Releaser, bool)> {
+/// directory when missing. Returns the releaser (or the error) and whether the file existed before.
+pub fn flock(file_name: &Path) -> (io::Result<Releaser>, bool) {
     if let Some(dir) = file_name.parent().filter(|p| !p.as_os_str().is_empty()) {
-        fs::create_dir_all(dir)?;
+        if let Err(e) = fs::create_dir_all(dir) {
+            return (Err(e), false);
+        }
     }
     let existed = fs::metadata(file_name).is_ok();
-    let f = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(file_name)?;
-    match f.try_lock() {
-        Ok(()) => Ok((Releaser { f: Some(f) }, existed)),
+    let f = match OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(file_name)
+    {
+        Ok(f) => f,
+        Err(e) => return (Err(e), existed),
+    };
+    let r = match f.try_lock() {
+        Ok(()) => Ok(Releaser { f: Some(f) }),
         Err(fs::TryLockError::WouldBlock) => Err(io::Error::from_raw_os_error(libc::EWOULDBLOCK)),
         Err(fs::TryLockError::Error(e)) => Err(e),
-    }
+    };
+    (r, existed)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -169,7 +189,11 @@ impl MmapFile {
     /// Go `OpenMmapFileWithSize`: maps the first `size` bytes, or the whole file when `size <= 0`.
     pub fn open_with_size(path: &Path, size: i64) -> io::Result<MmapFile> {
         let f = File::open(path).map_err(|e| wrap_io("try lock file", e))?;
-        let size = if size <= 0 { f.metadata().map_err(|e| wrap_io("stat", e))?.len() as i64 } else { size };
+        let size = if size <= 0 {
+            f.metadata().map_err(|e| wrap_io("stat", e))?.len() as i64
+        } else {
+            size
+        };
         let m = if size == 0 {
             // A zero length mapping is invalid; Go returns an error from mmap(2) (EINVAL).
             return Err(wrap_io(
@@ -226,7 +250,11 @@ pub fn preallocate(f: &File, size_in_bytes: i64, extend_file: bool) -> io::Resul
         // fallocate will return EINVAL if length is 0; skip.
         return Ok(());
     }
-    let mode = if extend_file { 0 } else { libc::FALLOC_FL_KEEP_SIZE };
+    let mode = if extend_file {
+        0
+    } else {
+        libc::FALLOC_FL_KEEP_SIZE
+    };
     // SAFETY: fallocate on a valid, open file descriptor owned by `f`; no memory is passed.
     let r = unsafe { libc::fallocate(f.as_raw_fd(), mode, 0, size_in_bytes as libc::off_t) };
     if r == 0 {

@@ -43,7 +43,11 @@ const fn make_tables() -> [[u32; 256]; 8] {
         let mut crc = i as u32;
         let mut j = 0;
         while j < 8 {
-            crc = if crc & 1 == 1 { (crc >> 1) ^ CASTAGNOLI_REFLECTED } else { crc >> 1 };
+            crc = if crc & 1 == 1 {
+                (crc >> 1) ^ CASTAGNOLI_REFLECTED
+            } else {
+                crc >> 1
+            };
             j += 1;
         }
         t[0][i] = crc;
@@ -207,7 +211,9 @@ impl Encbuf {
         Encbuf { b: Vec::new() }
     }
     pub fn with_capacity(n: usize) -> Encbuf {
-        Encbuf { b: Vec::with_capacity(n) }
+        Encbuf {
+            b: Vec::with_capacity(n),
+        }
     }
     #[inline]
     pub fn reset(&mut self) {
@@ -600,7 +606,10 @@ mod tests {
         // Streaming equals one shot at every split point.
         let data: Vec<u8> = (0..1000u32).map(|i| (i * 7 + 3) as u8).collect();
         for split in 0..data.len() {
-            assert_eq!(crc32c_update(crc32c(&data[..split]), &data[split..]), crc32c(&data));
+            assert_eq!(
+                crc32c_update(crc32c(&data[..split]), &data[split..]),
+                crc32c(&data)
+            );
         }
     }
 
@@ -620,6 +629,9 @@ mod tests {
         }
         assert_eq!(uvarint(&[0x80]), (0, 0));
         assert_eq!(uvarint(&[0xff; 11]), (0, -11));
-        assert_eq!(uvarint(&[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x02]), (0, -10));
+        assert_eq!(
+            uvarint(&[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x02]),
+            (0, -10)
+        );
     }
 }
