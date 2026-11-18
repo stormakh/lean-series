@@ -1453,6 +1453,8 @@ pub struct Head {
 
     pub(crate) chunk_snapshot_mtx: Mutex<()>,
     closed: Mutex<bool>,
+    /// The series state thread (`fast-startup` option): its stop channel and handle.
+    pub(crate) series_state_quit: Mutex<Option<(std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>)>>,
 
     pub stats: Arc<HeadStats>,
     write_notified: RwLock<Option<Arc<dyn WriteNotified>>>,
@@ -1593,6 +1595,7 @@ impl Head {
             chunk_disk_mapper,
             chunk_snapshot_mtx: Mutex::new(()),
             closed: Mutex::new(false),
+            series_state_quit: Mutex::new(None),
             stats,
             write_notified: RwLock::new(None),
             mem_truncation_in_process: AtomicBool::new(false),
@@ -2505,7 +2508,8 @@ impl Head {
     pub fn close(&self) -> Result<(), Error> {
         let mut closed = lock(&self.closed);
         *closed = true;
-        if self.opts.enable_fast_startup {
+        // Stop the background series_state.json writer.
+        if self.opts.enable_fast_startup && self.stop_series_state_ticker() {
             // Flush the final clean state.
             self.write_series_state(true);
         }
