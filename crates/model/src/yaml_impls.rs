@@ -127,7 +127,7 @@ impl Unmarshal for LabelName {
         d.custom(|d| {
             let mut s = String::new();
             d.inner(n, &mut s)?;
-            if !ValidationScheme::Utf8.is_valid_label_name(&s) {
+            if !ValidationScheme::Utf8.is_valid_label_name(&s) || !yaml::rawbytes::is_valid_utf8(&s) {
                 return Err(YError::Msg(format!("{} is not a valid label name", unicode::quote(&s))));
             }
             self.0 = s;

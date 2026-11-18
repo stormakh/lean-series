@@ -178,9 +178,8 @@ impl SyncReceiver {
 impl Manager {
     /// Go `NewManager`: the manager stops when `ctx` is cancelled. Fails when its metrics cannot be registered.
     pub fn new(ctx: &CancelToken, logger: Logger, registerer: &Arc<Registry>, sd_metrics: &SdMetrics, opts: ManagerOptions) -> Result<Manager, String> {
-        let metrics = ManagerMetrics::new(registerer, &opts.name).map_err(|e| {
-            logger.error("Failed to create discovery manager metrics", &[("manager", &opts.name), ("err", &e)]);
-            e
+        let metrics = ManagerMetrics::new(registerer, &opts.name).inspect_err(|e| {
+            logger.error("Failed to create discovery manager metrics", &[("manager", &opts.name), ("err", e)]);
         })?;
         let (tx, rx) = sync_channel(0);
         Ok(Manager {
@@ -470,9 +469,10 @@ impl Manager {
         let mut failed = 0;
         let mut added = false;
         for c in cfgs.iter() {
-            match self.add_provider(st, c.as_ref(), set_name) {
-                true => added = true,
-                false => failed += 1,
+            if self.add_provider(st, c.as_ref(), set_name) {
+                added = true;
+            } else {
+                failed += 1;
             }
         }
         if !added {

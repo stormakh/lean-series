@@ -119,6 +119,7 @@ pub fn go_quote(s: &str) -> String {
             '\x0c' => o.push_str("\\f"),
             '\x0b' => o.push_str("\\v"),
             c if (c as u32) < 0x20 || c as u32 == 0x7f => o.push_str(&format!("\\x{:02x}", c as u32)),
+            c if crate::rawbytes::raw_byte(c).is_some() => o.push_str(&format!("\\x{:02x}", crate::rawbytes::raw_byte(c).unwrap_or(0))),
             c if !c.is_control() => o.push(c),
             c if (c as u32) < 0x10000 => o.push_str(&format!("\\u{:04x}", c as u32)),
             c => o.push_str(&format!("\\U{:08x}", c as u32)),
@@ -351,7 +352,7 @@ impl Decoder {
         let (tag, r) = resolve(&n.tag, &n.value).map_err(|e| Error::Msg(format!("yaml: {e}")))?;
         if tag == BINARY_TAG {
             let data = base64_decode(&n.value).ok_or_else(|| Error::Msg("yaml: !!binary value contains invalid base64 data".to_string()))?;
-            return Ok((tag, Resolved::Str(String::from_utf8_lossy(&data).into_owned())));
+            return Ok((tag, Resolved::Str(crate::rawbytes::from_bytes(&data))));
         }
         Ok((tag, r))
     }

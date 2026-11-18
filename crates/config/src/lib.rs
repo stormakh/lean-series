@@ -309,10 +309,12 @@ impl GlobalConfig {
         }
         let scheme = self.metric_name_validation_scheme;
         self.external_labels.validate(|n, v| {
-            if !scheme.is_valid_label_name(n) {
+            if !scheme.is_valid_label_name(n) || !yaml::rawbytes::is_valid_utf8(n) {
                 return Err(format!("{} is not a valid label name", model::unicode::quote(n)));
             }
-            let _ = v; // label values are valid UTF-8 (Rust strings)
+            if !yaml::rawbytes::is_valid_utf8(v) {
+                return Err(format!("{} is not a valid label value", model::unicode::quote(v)));
+            }
             Ok(())
         })?;
         if self.scrape_interval.0 == 0 {
@@ -458,10 +460,20 @@ fn go_atoi(s: &str) -> Result<i64, ()> {
     s.trim_start_matches('+').parse::<i64>().map_err(|_| ())
 }
 
-/// Go `DefaultRuntimeConfig`.
+fn default_runtime() -> &'static RwLock<RuntimeConfig> {
+    static D: OnceLock<RwLock<RuntimeConfig>> = OnceLock::new();
+    D.get_or_init(|| RwLock::new(RuntimeConfig { gogc: get_go_gc(), log_level: LogLevel("info".to_string()) }))
+}
+
+/// Go `DefaultRuntimeConfig` (a variable: cmd/prometheus sets `LogLevel` from the --log.level flag).
 pub fn default_runtime_config() -> RuntimeConfig {
-    static G: OnceLock<i64> = OnceLock::new();
-    RuntimeConfig { gogc: *G.get_or_init(get_go_gc), log_level: LogLevel("info".to_string()) }
+    default_runtime().read().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// Changes `DefaultRuntimeConfig`. Go code assigns both `DefaultRuntimeConfig` and `DefaultConfig.Runtime`;
+/// here `default_config()` reads this value, so one call changes both.
+pub fn set_default_runtime_config(f: impl FnOnce(&mut RuntimeConfig)) {
+    f(&mut default_runtime().write().unwrap_or_else(|e| e.into_inner()));
 }
 
 // ---------------- ScrapeConfig ----------------
@@ -782,14 +794,10 @@ yaml::yaml_struct!(ScrapeConfigs, "config.ScrapeConfigs", [
 ]);
 
 /// Decoding of a `scrape_config_files` file: null scrape configs are an error when validated.
+#[derive(Default)]
 struct ScrapeConfigsFile {
     cfg: ScrapeConfigs,
     first_null: Option<usize>,
-}
-impl Default for ScrapeConfigsFile {
-    fn default() -> Self {
-        ScrapeConfigsFile { cfg: ScrapeConfigs::default(), first_null: None }
-    }
 }
 impl Unmarshal for ScrapeConfigsFile {
     fn unmarshal_yaml(&mut self, n: &Node, d: &mut Decoder) -> yaml::Result<bool> {

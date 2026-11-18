@@ -14,6 +14,7 @@ pub mod decode;
 pub mod emitter;
 pub mod encode;
 pub mod node;
+pub mod rawbytes;
 pub mod resolve;
 pub mod types;
 pub mod url;
