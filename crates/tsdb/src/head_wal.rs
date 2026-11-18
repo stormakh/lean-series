@@ -1817,7 +1817,7 @@ impl Head {
     // Series state file (the `fast-startup` option).
 
     /// Go `readSeriesStateFile`. A missing file gives an error with "no such file or directory".
-    pub(crate) fn read_series_state_file(&self) -> Result<SeriesLifecycleState, Error> {
+    pub fn read_series_state_file(&self) -> Result<SeriesLifecycleState, Error> {
         let Some(wal) = &self.wal else {
             return Err(Error::msg("open series_state.json: no such file or directory"));
         };
@@ -1909,7 +1909,7 @@ impl Head {
     }
 
     /// Go `findLastSeriesID`: a bounded reverse scan of WAL segments to find the highest series ID.
-    pub(crate) fn find_last_series_id(&self, state: &SeriesLifecycleState, end_segment: i64) -> Result<u64, Error> {
+    pub fn find_last_series_id(&self, state: &SeriesLifecycleState, end_segment: i64) -> Result<u64, Error> {
         let Some(wal) = &self.wal else {
             return Ok(state.last_series_id);
         };
