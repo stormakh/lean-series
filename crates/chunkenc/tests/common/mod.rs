@@ -315,3 +315,47 @@ pub fn generate_test_custom_buckets_histogram(i: i64) -> Histogram {
         ..Default::default()
     }
 }
+
+/// Go `tsdbutil.GenerateTestFloatHistograms`.
+pub fn generate_test_float_histograms(n: usize) -> Vec<model::histogram::FloatHistogram> {
+    (0..n)
+        .map(|i| {
+            let mut h = generate_test_float_histogram(i as i64);
+            if i > 0 {
+                h.counter_reset_hint = model::histogram::CounterResetHint::NotCounterReset;
+            }
+            h
+        })
+        .collect()
+}
+
+/// Go `tsdbutil.GenerateTestFloatHistogram`.
+pub fn generate_test_float_histogram(i: i64) -> model::histogram::FloatHistogram {
+    use model::histogram::{FloatHistogram, Span};
+    FloatHistogram {
+        count: 12.0 + (i * 9) as f64,
+        zero_count: 2.0 + i as f64,
+        zero_threshold: 0.001,
+        sum: 18.4 * (i + 1) as f64,
+        schema: 1,
+        positive_spans: vec![Span::new(0, 2), Span::new(1, 2)],
+        positive_buckets: vec![(i + 1) as f64, (i + 2) as f64, (i + 1) as f64, (i + 1) as f64],
+        negative_spans: vec![Span::new(0, 2), Span::new(1, 2)],
+        negative_buckets: vec![(i + 1) as f64, (i + 2) as f64, (i + 1) as f64, (i + 1) as f64],
+        ..Default::default()
+    }
+}
+
+/// Go `tsdbutil.GenerateTestCustomBucketsFloatHistogram`.
+pub fn generate_test_custom_buckets_float_histogram(i: i64) -> model::histogram::FloatHistogram {
+    use model::histogram::{CUSTOM_BUCKETS_SCHEMA, FloatHistogram, Span, custom_values};
+    FloatHistogram {
+        count: 5.0 + (i * 4) as f64,
+        sum: 18.4 * (i + 1) as f64,
+        schema: CUSTOM_BUCKETS_SCHEMA,
+        positive_spans: vec![Span::new(0, 2), Span::new(1, 2)],
+        positive_buckets: vec![(i + 1) as f64, (i + 2) as f64, (i + 1) as f64, (i + 1) as f64],
+        custom_values: custom_values(&[0.0, 1.0, 2.0, 3.0, 4.0]),
+        ..Default::default()
+    }
+}

@@ -875,7 +875,9 @@ pub fn get_bound_exponential(idx: i32, schema: i32) -> f64 {
 /// Bucket index in the target schema for bucket index `idx` in the original schema.
 #[inline]
 pub fn target_idx(idx: i32, origin_schema: i32, target_schema: i32) -> i32 {
-    (idx.wrapping_sub(1) >> (origin_schema - target_schema)).wrapping_add(1)
+    // Go's signed shift by 32 or more fills with the sign bit (0 or -1), as a shift by 31 does. The reserved
+    // schemas (up to 52) reduced to 8 shift by up to 44.
+    (idx.wrapping_sub(1) >> (origin_schema - target_schema).min(31)).wrapping_add(1)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
