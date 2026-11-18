@@ -1,7 +1,8 @@
 //! Port of Prometheus `model/` packages: labels, matchers, the fast regex matcher (with a Go `regexp/syntax`
-//! compatible parser), relabeling, exemplars, metadata, values and timestamps.
+//! compatible parser), relabeling, exemplars, histograms, metadata, values and timestamps.
 
 pub mod exemplar;
+pub mod histogram;
 pub mod labels;
 pub mod matcher;
 pub mod metadata;
