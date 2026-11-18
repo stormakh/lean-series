@@ -2,6 +2,8 @@
 //!
 //! Tests that need the DB (`tsdb.Open`, `db.Compact`, `db.Querier`) wait for the DB port; see the list at the end.
 
+#![allow(clippy::type_complexity, clippy::let_and_return)]
+
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 use std::sync::Arc;
