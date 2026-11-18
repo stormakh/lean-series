@@ -753,7 +753,8 @@ impl std::ops::Deref for TestHead {
 
 impl Drop for TestHead {
     fn drop(&mut self) {
-        if !self.head.is_closed() {
+        // Not while panicking: a second panic in close (for example a failing snapshot) would abort the test binary.
+        if !self.head.is_closed() && !std::thread::panicking() {
             self.head.close().expect("close head");
         }
     }
@@ -780,9 +781,9 @@ pub fn new_test_head(name: &str, chunk_range: i64, compress_wal: compression::Ty
         enable_exemplar_storage: true,
         ..HeadOptions::default()
     };
-    opts.max_exemplars.store(10, Ordering::Relaxed);
+    opts.max_exemplars.store(100_000, Ordering::Relaxed);
     if ooo_enabled {
-        opts.out_of_order_time_window.store(10 * 60 * 60 * 1000, Ordering::Relaxed);
+        opts.out_of_order_time_window.store(10 * 60 * 1000, Ordering::Relaxed);
     }
     new_test_head_with_options(name, compress_wal, opts)
 }

@@ -739,7 +739,7 @@ pub fn open_with_ranges(
         stripe_size: opts.stripe_size,
         series_callback: opts.series_lifecycle_callback.clone(),
         enable_exemplar_storage: opts.enable_exemplar_storage,
-        enable_memory_snapshot_on_shutdown: opts.enable_memory_snapshot_on_shutdown,
+        enable_memory_snapshot_on_shutdown: std::sync::atomic::AtomicBool::new(opts.enable_memory_snapshot_on_shutdown),
         enable_sharding: opts.enable_sharding,
         enable_st_as_zero_sample: opts.enable_st_as_zero_sample,
         enable_metadata_wal_records: opts.enable_metadata_wal_records,

@@ -639,7 +639,7 @@ pub struct HeadAppenderBase {
     /// Which (one) sample type each series holds in the most recent batch.
     pub(crate) types_in_batch: U64Map<SampleType>,
     pub(crate) append_id: u64,
-    pub(crate) cleanup_append_ids_below: u64,
+    pub cleanup_append_ids_below: u64,
     pub(crate) closed: bool,
     pub(crate) store_st: bool,
     pub(crate) use_xor2: bool,
@@ -1951,7 +1951,7 @@ impl Appender for InitAppender {
 impl Head {
     /// Go `initTime`: initializes a head with the first timestamp (only for a completely fresh head with an
     /// empty WAL).
-    pub(crate) fn init_time(&self, t: i64) {
+    pub fn init_time(&self, t: i64) {
         // maxTime must be set before minTime, because initialized() keys off minTime.
         if self
             .max_time

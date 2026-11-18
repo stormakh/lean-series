@@ -168,7 +168,8 @@ pub struct HeadOptions {
     pub stripe_size: usize,
     pub series_callback: Option<Arc<dyn SeriesLifecycleCallback>>,
     pub enable_exemplar_storage: bool,
-    pub enable_memory_snapshot_on_shutdown: bool,
+    /// An atomic (a plain field in Go) so that tests can switch it on a running head, as Go tests do.
+    pub enable_memory_snapshot_on_shutdown: AtomicBool,
     pub isolation_disabled: bool,
     /// Maximum number of threads for WAL replay; `<= 0` uses the number of CPUs.
     pub wal_replay_concurrency: i32,
@@ -207,7 +208,7 @@ impl Default for HeadOptions {
             stripe_size: DEFAULT_STRIPE_SIZE,
             series_callback: None,
             enable_exemplar_storage: false,
-            enable_memory_snapshot_on_shutdown: false,
+            enable_memory_snapshot_on_shutdown: AtomicBool::new(false),
             isolation_disabled: false,
             wal_replay_concurrency: default_wal_replay_concurrency(),
             enable_sharding: false,
@@ -1406,7 +1407,7 @@ struct CardinalityCache {
 /// Go `Head`: reads and writes of time series data within a time window.
 pub struct Head {
     me: Weak<Head>,
-    pub(crate) chunk_range: AtomicI64,
+    pub chunk_range: AtomicI64,
     pub(crate) num_series: AtomicU64,
     pub(crate) num_stale_series: AtomicU64,
     pub(crate) num_native_histogram_series: AtomicU64,
@@ -1414,13 +1415,13 @@ pub struct Head {
     pub(crate) min_ooo_time: AtomicI64,
     pub(crate) max_ooo_time: AtomicI64,
     /// `i64::MAX` while the head is not initialized.
-    pub(crate) min_time: AtomicI64,
-    pub(crate) max_time: AtomicI64,
+    pub min_time: AtomicI64,
+    pub max_time: AtomicI64,
     /// Mint allowed to be added to the head.
-    pub(crate) min_valid_time: AtomicI64,
-    pub(crate) last_wal_truncation_time: AtomicI64,
+    pub min_valid_time: AtomicI64,
+    pub last_wal_truncation_time: AtomicI64,
     pub(crate) last_memory_truncation_time: AtomicI64,
-    pub(crate) last_series_id: AtomicU64,
+    pub last_series_id: AtomicU64,
     /// All the ooo m-map chunks should be after this.
     pub(crate) min_ooo_mmap_ref: AtomicU64,
 
@@ -1453,6 +1454,8 @@ pub struct Head {
 
     pub(crate) chunk_snapshot_mtx: Mutex<()>,
     closed: Mutex<bool>,
+    /// The series state thread (`fast-startup` option): its stop channel and handle.
+    pub(crate) series_state_quit: Mutex<Option<(std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>)>>,
 
     pub stats: Arc<HeadStats>,
     write_notified: RwLock<Option<Arc<dyn WriteNotified>>>,
@@ -1593,6 +1596,7 @@ impl Head {
             chunk_disk_mapper,
             chunk_snapshot_mtx: Mutex::new(()),
             closed: Mutex::new(false),
+            series_state_quit: Mutex::new(None),
             stats,
             write_notified: RwLock::new(None),
             mem_truncation_in_process: AtomicBool::new(false),
@@ -1765,7 +1769,7 @@ impl Head {
     }
 
     /// Go `updateMinMaxTime`: expands the head time bounds to include the in-order range.
-    pub(crate) fn update_min_max_time(&self, mint: i64, maxt: i64) {
+    pub fn update_min_max_time(&self, mint: i64, maxt: i64) {
         self.min_time.fetch_min(mint, Ordering::AcqRel);
         self.max_time.fetch_max(maxt, Ordering::AcqRel);
     }
@@ -1977,13 +1981,13 @@ impl Head {
     }
 
     /// Go `getWALExpiry`.
-    pub(crate) fn get_wal_expiry(&self, id: HeadSeriesRef) -> Option<i64> {
+    pub fn get_wal_expiry(&self, id: HeadSeriesRef) -> Option<i64> {
         lock(&self.wal_expiries).get(&id).copied()
     }
 
     /// Go `updateWALExpiry`: keeps the higher of the current value and `keep_until`.
     #[allow(dead_code)] // Used by the WAL replay port.
-    pub(crate) fn update_wal_expiry(&self, id: HeadSeriesRef, keep_until: i64) {
+    pub fn update_wal_expiry(&self, id: HeadSeriesRef, keep_until: i64) {
         let mut g = lock(&self.wal_expiries);
         let e = g.entry(id).or_insert(0);
         *e = (*e).max(keep_until);
@@ -1991,7 +1995,7 @@ impl Head {
 
     /// Go `pinWBLSeriesRefs`.
     #[allow(dead_code)] // Used by the WAL replay port.
-    pub(crate) fn pin_wbl_series_refs(&self, refs: &HashSet<HeadSeriesRef>) {
+    pub fn pin_wbl_series_refs(&self, refs: &HashSet<HeadSeriesRef>) {
         lock(&self.wbl_pinned_series_refs).extend(refs.iter().copied());
     }
 
@@ -2001,7 +2005,7 @@ impl Head {
     }
 
     /// Go `releaseWBLPinnedSeriesRefs`.
-    pub(crate) fn release_wbl_pinned_series_refs(&self) {
+    pub fn release_wbl_pinned_series_refs(&self) {
         lock(&self.wbl_pinned_series_refs).clear();
     }
 
@@ -2296,7 +2300,7 @@ impl Head {
 
     /// Go `deleteSeriesByID`: deletes the series with the given references. Only used for WAL replay.
     #[allow(dead_code)] // Used by the WAL replay port.
-    pub(crate) fn delete_series_by_id(&self, refs: &[HeadSeriesRef]) {
+    pub fn delete_series_by_id(&self, refs: &[HeadSeriesRef]) {
         let mut deleted: HashSet<SeriesRef> = HashSet::new();
         let mut deleted_for_callback: HashMap<HeadSeriesRef, Labels> = HashMap::new();
         let mut affected = HashSet::new();
@@ -2505,7 +2509,8 @@ impl Head {
     pub fn close(&self) -> Result<(), Error> {
         let mut closed = lock(&self.closed);
         *closed = true;
-        if self.opts.enable_fast_startup {
+        // Stop the background series_state.json writer.
+        if self.opts.enable_fast_startup && self.stop_series_state_ticker() {
             // Flush the final clean state.
             self.write_series_state(true);
         }
@@ -2521,7 +2526,7 @@ impl Head {
             errs.push(wbl.close().err().map(wlog_err));
         }
         let mut err = Error::join(errs);
-        if err.is_none() && self.opts.enable_memory_snapshot_on_shutdown {
+        if err.is_none() && self.opts.enable_memory_snapshot_on_shutdown.load(Ordering::Relaxed) {
             err = Error::join([self.perform_chunk_snapshot().err()]);
         }
         match err {
@@ -2659,7 +2664,7 @@ impl Head {
         let mut ref_series: HashMap<HeadSeriesRef, Arc<MemSeries>> = HashMap::new();
         let mut snapshot_loaded = false;
         let mut chunk_snapshot_load_duration = Duration::ZERO;
-        if self.opts.enable_memory_snapshot_on_shutdown {
+        if self.opts.enable_memory_snapshot_on_shutdown.load(Ordering::Relaxed) {
             self.logger.info("Chunk snapshot is enabled, replaying from the snapshot", &[]);
             // If there are any WAL files, there should be at least one WAL file with an index that is current or
             // newer than the snapshot index. If the WAL index is behind the snapshot index somehow, the snapshot
