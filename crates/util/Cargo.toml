@@ -10,3 +10,4 @@ json = { path = "../json" }
 
 [dev-dependencies]
 model = { path = "../model" }
+regex = "1.13"
