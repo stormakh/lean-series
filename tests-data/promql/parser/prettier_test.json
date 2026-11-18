@@ -1,0 +1,266 @@
+{
+ "TestAggregateExprPretty": [
+  {
+   "in": "sum(foo)",
+   "out": "sum(foo)"
+  },
+  {
+   "in": "sum by() (task:errors:rate10s{job=\"s\"})",
+   "out": "sum(\n  task:errors:rate10s{job=\"s\"}\n)"
+  },
+  {
+   "in": "sum without(job,foo) (task:errors:rate10s{job=\"s\"})",
+   "out": "sum without (job, foo) (\n  task:errors:rate10s{job=\"s\"}\n)"
+  },
+  {
+   "in": "sum(task:errors:rate10s{job=\"s\"}) without(job,foo)",
+   "out": "sum without (job, foo) (\n  task:errors:rate10s{job=\"s\"}\n)"
+  },
+  {
+   "in": "sum by(job,foo) (task:errors:rate10s{job=\"s\"})",
+   "out": "sum by (job, foo) (\n  task:errors:rate10s{job=\"s\"}\n)"
+  },
+  {
+   "in": "sum (task:errors:rate10s{job=\"s\"}) by(job,foo)",
+   "out": "sum by (job, foo) (\n  task:errors:rate10s{job=\"s\"}\n)"
+  },
+  {
+   "in": "topk(10, ask:errors:rate10s{job=\"s\"})",
+   "out": "topk(\n  10,\n  ask:errors:rate10s{job=\"s\"}\n)"
+  },
+  {
+   "in": "sum by(job,foo) (sum by(job,foo) (task:errors:rate10s{job=\"s\"}))",
+   "out": "sum by (job, foo) (\n  sum by (job, foo) (\n    task:errors:rate10s{job=\"s\"}\n  )\n)"
+  },
+  {
+   "in": "sum by(job,foo) (sum by(job,foo) (sum by(job,foo) (task:errors:rate10s{job=\"s\"})))",
+   "out": "sum by (job, foo) (\n  sum by (job, foo) (\n    sum by (job, foo) (\n      task:errors:rate10s{job=\"s\"}\n    )\n  )\n)"
+  },
+  {
+   "in": "sum by(job,foo)\n(sum by(job,foo) (task:errors:rate10s{job=\"s\"}))",
+   "out": "sum by (job, foo) (\n  sum by (job, foo) (\n    task:errors:rate10s{job=\"s\"}\n  )\n)"
+  },
+  {
+   "in": "sum by(job,foo)\n(sum(task:errors:rate10s{job=\"s\"}) without(job,foo))",
+   "out": "sum by (job, foo) (\n  sum without (job, foo) (\n    task:errors:rate10s{job=\"s\"}\n  )\n)"
+  },
+  {
+   "in": "sum by(job,foo) # Comment 1.\n(sum by(job,foo) ( # Comment 2.\ntask:errors:rate10s{job=\"s\"}))",
+   "out": "sum by (job, foo) (\n  sum by (job, foo) (\n    task:errors:rate10s{job=\"s\"}\n  )\n)"
+  }
+ ],
+ "TestBinaryExprPretty": [
+  {
+   "in": "a+b",
+   "out": "a + b"
+  },
+  {
+   "in": "a == bool 1",
+   "out": "  a\n== bool\n  1"
+  },
+  {
+   "in": "a + ignoring(job) b",
+   "out": "  a\n+ ignoring (job)\n  b"
+  },
+  {
+   "in": "foo_1 + foo_2",
+   "out": "  foo_1\n+\n  foo_2"
+  },
+  {
+   "in": "foo_1 + foo_2 + foo_3",
+   "out": "    foo_1\n  +\n    foo_2\n+\n  foo_3"
+  },
+  {
+   "in": "foo + baar + foo_3",
+   "out": "  foo + baar\n+\n  foo_3"
+  },
+  {
+   "in": "foo_1 + foo_2 + foo_3 + foo_4",
+   "out": "      foo_1\n    +\n      foo_2\n  +\n    foo_3\n+\n  foo_4"
+  },
+  {
+   "in": "foo_1 + ignoring(foo) foo_2 + ignoring(job) group_left foo_3 + on(instance) group_right foo_4",
+   "out": "      foo_1\n    + ignoring (foo)\n      foo_2\n  + ignoring (job) group_left ()\n    foo_3\n+ on (instance) group_right ()\n  foo_4"
+  }
+ ],
+ "TestCallExprPretty": [
+  {
+   "in": "rate(foo[1m])",
+   "out": "rate(\n  foo[1m]\n)"
+  },
+  {
+   "in": "sum_over_time(foo[1m])",
+   "out": "sum_over_time(\n  foo[1m]\n)"
+  },
+  {
+   "in": "rate(long_vector_selector[10m:1m] @ start() offset 1m)",
+   "out": "rate(\n  long_vector_selector[10m:1m] @ start() offset 1m\n)"
+  },
+  {
+   "in": "histogram_quantile(0.9, rate(foo[1m]))",
+   "out": "histogram_quantile(\n  0.9,\n  rate(\n    foo[1m]\n  )\n)"
+  },
+  {
+   "in": "max_over_time(rate(demo_api_request_duration_seconds_count[1m])[1m:] @ start() offset 1m)",
+   "out": "max_over_time(\n  rate(\n    demo_api_request_duration_seconds_count[1m]\n  )[1m:] @ start() offset 1m\n)"
+  },
+  {
+   "in": "label_replace(up{job=\"api-server\",service=\"a:c\"}, \"foo\", \"$1\", \"service\", \"(.*):.*\")",
+   "out": "label_replace(\n  up{job=\"api-server\",service=\"a:c\"},\n  \"foo\",\n  \"$1\",\n  \"service\",\n  \"(.*):.*\"\n)"
+  },
+  {
+   "in": "label_replace(label_replace(up{job=\"api-server\",service=\"a:c\"}, \"foo\", \"$1\", \"service\", \"(.*):.*\"), \"foo\", \"$1\", \"service\", \"(.*):.*\")",
+   "out": "label_replace(\n  label_replace(\n    up{job=\"api-server\",service=\"a:c\"},\n    \"foo\",\n    \"$1\",\n    \"service\",\n    \"(.*):.*\"\n  ),\n  \"foo\",\n  \"$1\",\n  \"service\",\n  \"(.*):.*\"\n)"
+  }
+ ],
+ "TestDurationExprPretty": [
+  {
+   "in": "rate(foo[2*1h])",
+   "out": "rate(\n  foo[2 * 1h]\n)"
+  },
+  {
+   "in": "rate(foo[2*1h])",
+   "out": "rate(\n  foo[2 * 1h]\n)"
+  },
+  {
+   "in": "rate(foo[-5m+35m])",
+   "out": "rate(\n  foo[-5m + 35m]\n)"
+  }
+ ],
+ "TestExprPretty": [
+  {
+   "in": "(1 + 2)",
+   "out": "(1 + 2)"
+  },
+  {
+   "in": "(foo + bar)",
+   "out": "(\n  foo + bar\n)"
+  },
+  {
+   "in": "(foo_long + bar_long)",
+   "out": "(\n    foo_long\n  +\n    bar_long\n)"
+  },
+  {
+   "in": "(foo_long + bar_long + bar_2_long)",
+   "out": "(\n      foo_long\n    +\n      bar_long\n  +\n    bar_2_long\n)"
+  },
+  {
+   "in": "((foo_long + bar_long) + bar_2_long)",
+   "out": "(\n    (\n        foo_long\n      +\n        bar_long\n    )\n  +\n    bar_2_long\n)"
+  },
+  {
+   "in": "(1111 + 2222)",
+   "out": "(\n    1111\n  +\n    2222\n)"
+  },
+  {
+   "in": "(sum_over_time(foo[1m]))",
+   "out": "(\n  sum_over_time(\n    foo[1m]\n  )\n)"
+  },
+  {
+   "in": "histogram_quantile(0.9, rate(foo[1m] @ start()))",
+   "out": "histogram_quantile(\n  0.9,\n  rate(\n    foo[1m] @ start()\n  )\n)"
+  },
+  {
+   "in": "(label_replace(up{job=\"api-server\",service=\"a:c\"}, \"foo\", \"$1\", \"service\", \"(.*):.*\"))",
+   "out": "(\n  label_replace(\n    up{job=\"api-server\",service=\"a:c\"},\n    \"foo\",\n    \"$1\",\n    \"service\",\n    \"(.*):.*\"\n  )\n)"
+  },
+  {
+   "in": "(label_replace(label_replace(up{job=\"api-server\",service=\"a:c\"}, \"foo\", \"$1\", \"service\", \"(.*):.*\"), \"foo\", \"$1\", \"service\", \"(.*):.*\"))",
+   "out": "(\n  label_replace(\n    label_replace(\n      up{job=\"api-server\",service=\"a:c\"},\n      \"foo\",\n      \"$1\",\n      \"service\",\n      \"(.*):.*\"\n    ),\n    \"foo\",\n    \"$1\",\n    \"service\",\n    \"(.*):.*\"\n  )\n)"
+  },
+  {
+   "in": "(label_replace(label_replace((up{job=\"api-server\",service=\"a:c\"}), \"foo\", \"$1\", \"service\", \"(.*):.*\"), \"foo\", \"$1\", \"service\", \"(.*):.*\"))",
+   "out": "(\n  label_replace(\n    label_replace(\n      (\n        up{job=\"api-server\",service=\"a:c\"}\n      ),\n      \"foo\",\n      \"$1\",\n      \"service\",\n      \"(.*):.*\"\n    ),\n    \"foo\",\n    \"$1\",\n    \"service\",\n    \"(.*):.*\"\n  )\n)"
+  },
+  {
+   "in": "(node_filesystem_avail_bytes{job=\"node\",fstype!=\"\"} / node_filesystem_size_bytes{job=\"node\",fstype!=\"\"} * 100 \u003c 40 and predict_linear(node_filesystem_avail_bytes{job=\"node\",fstype!=\"\"}[6h], 24*60*60) \u003c 0 and node_filesystem_readonly{job=\"node\",fstype!=\"\"} == 0)",
+   "out": "(\n            node_filesystem_avail_bytes{fstype!=\"\",job=\"node\"}\n          /\n            node_filesystem_size_bytes{fstype!=\"\",job=\"node\"}\n        *\n          100\n      \u003c\n        40\n    and\n        predict_linear(\n          node_filesystem_avail_bytes{fstype!=\"\",job=\"node\"}[6h],\n            24 * 60\n          *\n            60\n        )\n      \u003c\n        0\n  and\n      node_filesystem_readonly{fstype!=\"\",job=\"node\"}\n    ==\n      0\n)"
+  },
+  {
+   "in": "(node_filesystem_avail_bytes{job=\"node\",fstype!=\"\"} / node_filesystem_size_bytes{job=\"node\",fstype!=\"\"} * 100 \u003c 20 and predict_linear(node_filesystem_avail_bytes{job=\"node\",fstype!=\"\"}[6h], 4*60*60) \u003c 0 and node_filesystem_readonly{job=\"node\",fstype!=\"\"} == 0)",
+   "out": "(\n            node_filesystem_avail_bytes{fstype!=\"\",job=\"node\"}\n          /\n            node_filesystem_size_bytes{fstype!=\"\",job=\"node\"}\n        *\n          100\n      \u003c\n        20\n    and\n        predict_linear(\n          node_filesystem_avail_bytes{fstype!=\"\",job=\"node\"}[6h],\n            4 * 60\n          *\n            60\n        )\n      \u003c\n        0\n  and\n      node_filesystem_readonly{fstype!=\"\",job=\"node\"}\n    ==\n      0\n)"
+  },
+  {
+   "in": "(node_timex_offset_seconds \u003e 0.05 and deriv(node_timex_offset_seconds[5m]) \u003e= 0) or (node_timex_offset_seconds \u003c -0.05 and deriv(node_timex_offset_seconds[5m]) \u003c= 0)",
+   "out": "  (\n        node_timex_offset_seconds\n      \u003e\n        0.05\n    and\n        deriv(\n          node_timex_offset_seconds[5m]\n        )\n      \u003e=\n        0\n  )\nor\n  (\n        node_timex_offset_seconds\n      \u003c\n        -0.05\n    and\n        deriv(\n          node_timex_offset_seconds[5m]\n        )\n      \u003c=\n        0\n  )"
+  },
+  {
+   "in": "1 - ((node_memory_MemAvailable_bytes{job=\"node\"} or (node_memory_Buffers_bytes{job=\"node\"} + node_memory_Cached_bytes{job=\"node\"} + node_memory_MemFree_bytes{job=\"node\"} + node_memory_Slab_bytes{job=\"node\"}) ) / node_memory_MemTotal_bytes{job=\"node\"})",
+   "out": "  1\n-\n  (\n      (\n          node_memory_MemAvailable_bytes{job=\"node\"}\n        or\n          (\n                  node_memory_Buffers_bytes{job=\"node\"}\n                +\n                  node_memory_Cached_bytes{job=\"node\"}\n              +\n                node_memory_MemFree_bytes{job=\"node\"}\n            +\n              node_memory_Slab_bytes{job=\"node\"}\n          )\n      )\n    /\n      node_memory_MemTotal_bytes{job=\"node\"}\n  )"
+  },
+  {
+   "in": "min by (job, integration) (rate(alertmanager_notifications_failed_total{job=\"alertmanager\", integration=~\".*\"}[5m]) / rate(alertmanager_notifications_total{job=\"alertmanager\", integration=\"~.*\"}[5m])) \u003e 0.01",
+   "out": "  min by (job, integration) (\n      rate(\n        alertmanager_notifications_failed_total{integration=~\".*\",job=\"alertmanager\"}[5m]\n      )\n    /\n      rate(\n        alertmanager_notifications_total{integration=\"~.*\",job=\"alertmanager\"}[5m]\n      )\n  )\n\u003e\n  0.01"
+  },
+  {
+   "in": "(count by (job) (changes(process_start_time_seconds{job=\"alertmanager\"}[10m]) \u003e 4) / count by (job) (up{job=\"alertmanager\"})) \u003e= 0.5",
+   "out": "  (\n      count by (job) (\n          changes(\n            process_start_time_seconds{job=\"alertmanager\"}[10m]\n          )\n        \u003e\n          4\n      )\n    /\n      count by (job) (\n        up{job=\"alertmanager\"}\n      )\n  )\n\u003e=\n  0.5"
+  }
+ ],
+ "TestParenExprPretty": [
+  {
+   "in": "(foo)",
+   "out": "(foo)"
+  },
+  {
+   "in": "(_foo_long_)",
+   "out": "(\n  _foo_long_\n)"
+  },
+  {
+   "in": "((foo_long))",
+   "out": "(\n  (foo_long)\n)"
+  },
+  {
+   "in": "((_foo_long_))",
+   "out": "(\n  (\n    _foo_long_\n  )\n)"
+  },
+  {
+   "in": "(((foo_long)))",
+   "out": "(\n  (\n    (foo_long)\n  )\n)"
+  }
+ ],
+ "TestStepInvariantExpr": [
+  {
+   "in": "a @ 1",
+   "out": "a @ 1.000"
+  },
+  {
+   "in": "a @ start()",
+   "out": "a @ start()"
+  },
+  {
+   "in": "vector_selector @ start()",
+   "out": "vector_selector @ start()"
+  }
+ ],
+ "TestUnaryPretty": [
+  {
+   "in": "-1",
+   "out": "-1"
+  },
+  {
+   "in": "-vector_selector",
+   "out": "-vector_selector"
+  },
+  {
+   "in": "(-vector_selector)",
+   "out": "(\n  -vector_selector\n)"
+  },
+  {
+   "in": "-histogram_quantile(0.9,rate(foo[1m]))",
+   "out": "-histogram_quantile(\n  0.9,\n  rate(\n    foo[1m]\n  )\n)"
+  },
+  {
+   "in": "-histogram_quantile(0.99, sum by (le) (rate(foo[1m])))",
+   "out": "-histogram_quantile(\n  0.99,\n  sum by (le) (\n    rate(\n      foo[1m]\n    )\n  )\n)"
+  },
+  {
+   "in": "-histogram_quantile(0.9, -rate(foo[1m] @ start()))",
+   "out": "-histogram_quantile(\n  0.9,\n  -rate(\n    foo[1m] @ start()\n  )\n)"
+  },
+  {
+   "in": "(-histogram_quantile(0.9, -rate(foo[1m] @ start())))",
+   "out": "(\n  -histogram_quantile(\n    0.9,\n    -rate(\n      foo[1m] @ start()\n    )\n  )\n)"
+  }
+ ]
+}

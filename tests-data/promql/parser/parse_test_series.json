@@ -1,0 +1,667 @@
+[
+ {
+  "expectedMetric": [],
+  "expectedValues": [
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "1"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "2"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "3"
+   }
+  ],
+  "fail": false,
+  "input": "{} 1 2 3"
+ },
+ {
+  "expectedMetric": [
+   [
+    "a",
+    "b"
+   ]
+  ],
+  "expectedValues": [
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "-1"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "2"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "3"
+   }
+  ],
+  "fail": false,
+  "input": "{a=\"b\"} -1 2 3"
+ },
+ {
+  "expectedMetric": [
+   [
+    "__name__",
+    "my_metric"
+   ]
+  ],
+  "expectedValues": [
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "1"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "2"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "3"
+   }
+  ],
+  "fail": false,
+  "input": "my_metric 1 2 3"
+ },
+ {
+  "expectedMetric": [
+   [
+    "__name__",
+    "my_metric"
+   ]
+  ],
+  "expectedValues": [
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "1"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "2"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "3"
+   }
+  ],
+  "fail": false,
+  "input": "my_metric{} 1 2 3"
+ },
+ {
+  "expectedMetric": [
+   [
+    "__name__",
+    "my_metric"
+   ],
+   [
+    "a",
+    "b"
+   ]
+  ],
+  "expectedValues": [
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "1"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "2"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "3"
+   }
+  ],
+  "fail": false,
+  "input": "my_metric{a=\"b\"} 1 2 3"
+ },
+ {
+  "expectedMetric": [
+   [
+    "__name__",
+    "my_metric"
+   ],
+   [
+    "a",
+    "b"
+   ]
+  ],
+  "expectedValues": [
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "1"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "2"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "3"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "-7"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "-17"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "-27"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "-37"
+   }
+  ],
+  "fail": false,
+  "input": "my_metric{a=\"b\"} 1 2 3-10x4"
+ },
+ {
+  "expectedMetric": [
+   [
+    "__name__",
+    "my_metric"
+   ],
+   [
+    "a",
+    "b"
+   ]
+  ],
+  "expectedValues": [
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "1"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "2"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "3"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "3"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "3"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "3"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "3"
+   }
+  ],
+  "fail": false,
+  "input": "my_metric{a=\"b\"} 1 2 3-0x4"
+ },
+ {
+  "fail": true,
+  "input": "{} 1+1"
+ },
+ {
+  "expectedMetric": [],
+  "expectedValues": [
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "1"
+   }
+  ],
+  "fail": false,
+  "input": "{} 1x0"
+ },
+ {
+  "expectedMetric": [],
+  "expectedValues": [
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "1"
+   }
+  ],
+  "fail": false,
+  "input": "{} 1+1x0"
+ },
+ {
+  "expectedMetric": [
+   [
+    "__name__",
+    "my_metric"
+   ],
+   [
+    "a",
+    "b"
+   ]
+  ],
+  "expectedValues": [
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "1"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "3"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": true,
+    "Value": "0"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "5"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": true,
+    "Value": "0"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": true,
+    "Value": "0"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": true,
+    "Value": "0"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": true,
+    "Value": "0"
+   }
+  ],
+  "fail": false,
+  "input": "my_metric{a=\"b\"} 1 3 _ 5 _x4"
+ },
+ {
+  "fail": true,
+  "input": "my_metric{a=\"b\"} 1 3 _ 5 _a4"
+ },
+ {
+  "expectedMetric": [
+   [
+    "__name__",
+    "my_metric"
+   ],
+   [
+    "a",
+    "b"
+   ]
+  ],
+  "expectedValues": [
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "1"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "-1"
+   }
+  ],
+  "fail": false,
+  "input": "my_metric{a=\"b\"} 1 -1"
+ },
+ {
+  "expectedMetric": [
+   [
+    "__name__",
+    "my_metric"
+   ],
+   [
+    "a",
+    "b"
+   ]
+  ],
+  "expectedValues": [
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "1"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "1"
+   }
+  ],
+  "fail": false,
+  "input": "my_metric{a=\"b\"} 1 +1"
+ },
+ {
+  "expectedMetric": [
+   [
+    "__name__",
+    "my_metric"
+   ],
+   [
+    "a",
+    "b"
+   ]
+  ],
+  "expectedValues": [
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "1"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "-1"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "-3"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "-13"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "-23"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "-33"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "-43"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "7"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "9"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "5"
+   }
+  ],
+  "fail": false,
+  "input": "my_metric{a=\"b\"} 1 -1 -3-10x4 7 9 +5"
+ },
+ {
+  "expectedMetric": [
+   [
+    "__name__",
+    "my_metric"
+   ],
+   [
+    "a",
+    "b"
+   ]
+  ],
+  "expectedValues": [
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "1"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "1"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "4"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "-6"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "-2"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "8"
+   }
+  ],
+  "fail": false,
+  "input": "my_metric{a=\"b\"} 1 +1 +4 -6 -2 8"
+ },
+ {
+  "expectedMetric": [
+   [
+    "__name__",
+    "my_metric"
+   ],
+   [
+    "a",
+    "b"
+   ]
+  ],
+  "expectedValues": [
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "1"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "2"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "3"
+   }
+  ],
+  "fail": false,
+  "input": "my_metric{a=\"b\"} 1 2 3    "
+ },
+ {
+  "expectedMetric": [
+   [
+    "__name__",
+    "my_metric"
+   ],
+   [
+    "a",
+    "炬"
+   ]
+  ],
+  "expectedValues": [
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "1"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "2"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "3"
+   }
+  ],
+  "fail": false,
+  "input": "my_metric{a=\"\\u70ac\"} 1 2 3"
+ },
+ {
+  "expectedMetric": [
+   [
+    "__name__",
+    "my_metric"
+   ],
+   [
+    "a",
+    "炬 = torch"
+   ]
+  ],
+  "expectedValues": [
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "1"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "2"
+   },
+   {
+    "CounterResetHintSet": false,
+    "Histogram": null,
+    "Omitted": false,
+    "Value": "3"
+   }
+  ],
+  "fail": false,
+  "input": "my_metric{a=\"\\u70ac = torch\"} 1 2 3"
+ },
+ {
+  "fail": true,
+  "input": "my_metric{a=\"b\"} -3-3 -3"
+ },
+ {
+  "fail": true,
+  "input": "my_metric{a=\"b\"} -3 -3-3"
+ },
+ {
+  "fail": true,
+  "input": "my_metric{a=\"b\"} -3 _-2"
+ },
+ {
+  "fail": true,
+  "input": "my_metric{a=\"b\"} -3 3+3x4-4"
+ }
+]
