@@ -1104,3 +1104,109 @@ fn test_query_cost_limit_resolution() {
         }
     }
 }
+
+// -----------------------------------------------------------------------------------------------------------------
+// @ modifier.
+
+use model::labels::{Labels, from_strings};
+use storage::{AppenderTransaction, AppenderV2};
+use promql::{FPoint, Sample, Scalar, Series, StringValue, Value};
+
+fn new_test_engine() -> Engine {
+    promqltest::new_test_engine(false, Duration::ZERO, promqltest::DEFAULT_MAX_SAMPLES_PER_QUERY)
+}
+
+fn sort_value(v: &mut Value) {
+    if let Value::Matrix(m) = v {
+        promql::sort_matrix(m);
+    }
+}
+
+#[test]
+fn test_at_modifier() {
+    let engine = new_test_engine();
+    let store = promqltest::loaded_storage(
+        r#"
+load 10s
+  metric{job="1"} 0+1x1000
+  metric{job="2"} 0+2x1000
+  metric_topk{instance="1"} 0+1x1000
+  metric_topk{instance="2"} 0+2x1000
+  metric_topk{instance="3"} 1000-1x1000
+
+load 1ms
+  metric_ms 0+1x10000
+"#,
+    )
+    .unwrap();
+    let lbls1 = from_strings(&["__name__", "metric", "job", "1"]);
+    let lbls2 = from_strings(&["__name__", "metric", "job", "2"]);
+    let lblstopk2 = from_strings(&["__name__", "metric_topk", "instance", "2"]);
+    let lblstopk3 = from_strings(&["__name__", "metric_topk", "instance", "3"]);
+    let lblsms = from_strings(&["__name__", "metric_ms"]);
+    let lblsneg = from_strings(&["__name__", "metric_neg"]);
+
+    // Add some samples with negative timestamp.
+    let opts = storage::AppendV2Options::default();
+    let mut app = store.appender_v2();
+    let r = app.append(0, &lblsneg, 0, -1_000_000, 1000.0, None, None, &opts).unwrap();
+    let mut ts = -1_000_000 + 1000;
+    while ts <= 0 {
+        app.append(r, &lblsneg, 0, ts, -((ts / 1000) as f64) + 1.0, None, None, &opts).unwrap();
+        ts += 1000;
+    }
+    // To test the fix for https://github.com/prometheus/prometheus/issues/8433.
+    app.append(0, &from_strings(&["__name__", "metric_timestamp"]), 0, 3600 * 1000, 1000.0, None, None, &opts).unwrap();
+    assert!(app.commit().is_none());
+
+    let mut failures = Vec::new();
+    for (query, start, end, interval, mut want) in
+        at_modifier_cases(&lbls1, &lbls2, &lblstopk2, &lblstopk3, &lblsms, &lblsneg)
+    {
+        let interval = if interval == 0 { 1 } else { interval };
+        let ctx = Context::background();
+        let q: Arc<dyn storage::Queryable> = Arc::new(store.clone());
+        let mut qry = if end == 0 {
+            engine.new_instant_query(&ctx, q, None, query, start * 1000).unwrap()
+        } else {
+            engine.new_range_query(&ctx, q, None, query, start * 1000, end * 1000, interval * 1000).unwrap()
+        };
+        let res = qry.exec(&ctx);
+        if let Some(e) = res.err {
+            failures.push(format!("{}: {}", query, e));
+            continue;
+        }
+        let mut got = res.value.unwrap();
+        sort_value(&mut want);
+        sort_value(&mut got);
+        if got != want {
+            failures.push(format!("query {:?} failed:\n  want {:?}\n  got  {:?}", query, want, got));
+        }
+    }
+    assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.join("\n"));
+}
+
+fn at_modifier_cases(lbls1: &Labels, lbls2: &Labels, lblstopk2: &Labels, lblstopk3: &Labels, lblsms: &Labels, lblsneg: &Labels) -> Vec<(&'static str, i64, i64, i64, Value)> {
+    let (lbls1, lbls2, lblstopk2, lblstopk3, lblsms, lblsneg) = (lbls1.clone(), lbls2.clone(), lblstopk2.clone(), lblstopk3.clone(), lblsms.clone(), lblsneg.clone());
+    vec![
+        (r#"metric_neg @ 0"#, 100, 0, 0, Value::Vector(vec![Sample { t: 100000, f: 1.0, metric: lblsneg.clone(), ..Default::default() }])),
+        (r#"metric_neg @ -200"#, 100, 0, 0, Value::Vector(vec![Sample { t: 100000, f: 201.0, metric: lblsneg.clone(), ..Default::default() }])),
+        (r#"metric{job="2"} @ 50"#, - 2, 2, 1, Value::Matrix(vec![Series { floats: vec![FPoint { f: 10.0, t: - 2000 }, FPoint { f: 10.0, t: - 1000 }, FPoint { f: 10.0, t: 0 }, FPoint { f: 10.0, t: 1000 }, FPoint { f: 10.0, t: 2000 }], metric: lbls2.clone(), ..Default::default() }])),
+        ("metric[20s] @ 300", 10, 0, 0, Value::Matrix(vec![Series { floats: vec![FPoint { f: 29.0, t: 290000 }, FPoint { f: 30.0, t: 300000 }], metric: lbls1.clone(), ..Default::default() }, Series { floats: vec![FPoint { f: 58.0, t: 290000 }, FPoint { f: 60.0, t: 300000 }], metric: lbls2.clone(), ..Default::default() }])),
+        (r#"metric_neg[2s] @ 0"#, 100, 0, 0, Value::Matrix(vec![Series { floats: vec![FPoint { f: 2.0, t: - 1000 }, FPoint { f: 1.0, t: 0 }], metric: lblsneg.clone(), ..Default::default() }])),
+        (r#"metric_neg[3s] @ -500"#, 100, 0, 0, Value::Matrix(vec![Series { floats: vec![FPoint { f: 503.0, t: - 502000 }, FPoint { f: 502.0, t: - 501000 }, FPoint { f: 501.0, t: - 500000 }], metric: lblsneg.clone(), ..Default::default() }])),
+        (r#"metric_ms[3ms] @ 2.345"#, 100, 0, 0, Value::Matrix(vec![Series { floats: vec![FPoint { f: 2343.0, t: 2343 }, FPoint { f: 2344.0, t: 2344 }, FPoint { f: 2345.0, t: 2345 }], metric: lblsms.clone(), ..Default::default() }])),
+        ("metric[100s:25s] @ 300", 100, 0, 0, Value::Matrix(vec![Series { floats: vec![FPoint { f: 22.0, t: 225000 }, FPoint { f: 25.0, t: 250000 }, FPoint { f: 27.0, t: 275000 }, FPoint { f: 30.0, t: 300000 }], metric: lbls1.clone(), ..Default::default() }, Series { floats: vec![FPoint { f: 44.0, t: 225000 }, FPoint { f: 50.0, t: 250000 }, FPoint { f: 54.0, t: 275000 }, FPoint { f: 60.0, t: 300000 }], metric: lbls2.clone(), ..Default::default() }])),
+        ("metric[100s1ms:25s] @ 300", 100, 0, 0, Value::Matrix(vec![Series { floats: vec![FPoint { f: 20.0, t: 200000 }, FPoint { f: 22.0, t: 225000 }, FPoint { f: 25.0, t: 250000 }, FPoint { f: 27.0, t: 275000 }, FPoint { f: 30.0, t: 300000 }], metric: lbls1.clone(), ..Default::default() }, Series { floats: vec![FPoint { f: 40.0, t: 200000 }, FPoint { f: 44.0, t: 225000 }, FPoint { f: 50.0, t: 250000 }, FPoint { f: 54.0, t: 275000 }, FPoint { f: 60.0, t: 300000 }], metric: lbls2.clone(), ..Default::default() }])),
+        ("metric_neg[50s:25s] @ 0", 100, 0, 0, Value::Matrix(vec![Series { floats: vec![FPoint { f: 26.0, t: - 25000 }, FPoint { f: 1.0, t: 0 }], metric: lblsneg.clone(), ..Default::default() }])),
+        ("metric_neg[50s1ms:25s] @ 0", 100, 0, 0, Value::Matrix(vec![Series { floats: vec![FPoint { f: 51.0, t: - 50000 }, FPoint { f: 26.0, t: - 25000 }, FPoint { f: 1.0, t: 0 }], metric: lblsneg.clone(), ..Default::default() }])),
+        ("metric_neg[50s:25s] @ -100", 100, 0, 0, Value::Matrix(vec![Series { floats: vec![FPoint { f: 126.0, t: - 125000 }, FPoint { f: 101.0, t: - 100000 }], metric: lblsneg.clone(), ..Default::default() }])),
+        ("metric_neg[50s1ms:25s] @ -100", 100, 0, 0, Value::Matrix(vec![Series { floats: vec![FPoint { f: 151.0, t: - 150000 }, FPoint { f: 126.0, t: - 125000 }, FPoint { f: 101.0, t: - 100000 }], metric: lblsneg.clone(), ..Default::default() }])),
+        (r#"metric_ms[101ms:25ms] @ 2.345"#, 100, 0, 0, Value::Matrix(vec![Series { floats: vec![FPoint { f: 2250.0, t: 2250 }, FPoint { f: 2275.0, t: 2275 }, FPoint { f: 2300.0, t: 2300 }, FPoint { f: 2325.0, t: 2325 }], metric: lblsms.clone(), ..Default::default() }])),
+        (r#"metric_topk and topk(1, sum_over_time(metric_topk[50s] @ 100))"#, 50, 80, 10, Value::Matrix(vec![Series { floats: vec![FPoint { f: 995.0, t: 50000 }, FPoint { f: 994.0, t: 60000 }, FPoint { f: 993.0, t: 70000 }, FPoint { f: 992.0, t: 80000 }], metric: lblstopk3.clone(), ..Default::default() }])),
+        (r#"metric_topk and topk(1, sum_over_time(metric_topk[50s] @ 5000))"#, 50, 80, 10, Value::Matrix(vec![Series { floats: vec![FPoint { f: 10.0, t: 50000 }, FPoint { f: 12.0, t: 60000 }, FPoint { f: 14.0, t: 70000 }, FPoint { f: 16.0, t: 80000 }], metric: lblstopk2.clone(), ..Default::default() }])),
+        (r#"metric_topk and topk(1, sum_over_time(metric_topk[50s] @ end()))"#, 70, 100, 10, Value::Matrix(vec![Series { floats: vec![FPoint { f: 993.0, t: 70000 }, FPoint { f: 992.0, t: 80000 }, FPoint { f: 991.0, t: 90000 }, FPoint { f: 990.0, t: 100000 }], metric: lblstopk3.clone(), ..Default::default() }])),
+        (r#"metric_topk and topk(1, sum_over_time(metric_topk[50s] @ start()))"#, 100, 130, 10, Value::Matrix(vec![Series { floats: vec![FPoint { f: 990.0, t: 100000 }, FPoint { f: 989.0, t: 110000 }, FPoint { f: 988.0, t: 120000 }, FPoint { f: 987.0, t: 130000 }], metric: lblstopk3.clone(), ..Default::default() }])),
+        (r#"timestamp(metric_timestamp @ 3600)"#, 0, 7 * 60, 60, Value::Matrix(vec![Series { floats: vec![FPoint { f: 3600.0, t: 0 }, FPoint { f: 3600.0, t: 60 * 1000 }, FPoint { f: 3600.0, t: 2 * 60 * 1000 }, FPoint { f: 3600.0, t: 3 * 60 * 1000 }, FPoint { f: 3600.0, t: 4 * 60 * 1000 }, FPoint { f: 3600.0, t: 5 * 60 * 1000 }, FPoint { f: 3600.0, t: 6 * 60 * 1000 }, FPoint { f: 3600.0, t: 7 * 60 * 1000 }], metric: Labels::empty(), drop_name: true, ..Default::default() }])),
+    ]
+}
