@@ -1568,3 +1568,1044 @@ fn test_ooo_histogram_counter_reset_headers() {
         check(&[(C, 300, 350, 5)]);
     }
 }
+
+#[test]
+fn test_append_histogram_error_does_not_set_pending_commit() {
+    let cases: Vec<(&str, Option<Histogram>, Option<FloatHistogram>)> = vec![
+        ("integer", Some(tu::generate_test_histogram(0)), None),
+        ("float", None, Some(tu::generate_test_float_histogram(0))),
+    ];
+    for (name, h, fh) in cases {
+        let head = new_test_head("append-hist-err-pending", 1000, compression::Type::None, false);
+        head.init(0).unwrap();
+        let lbls = ls(&["a", "b"]);
+
+        // Seed an in-order sample so the series exists with maxTime=200.
+        let mut app = head.appender(&bg());
+        app.append_histogram(0, &lbls, 200, h.as_ref(), fh.as_ref()).unwrap();
+        commit_ok(&mut app);
+
+        let (ms, _) = head.get_or_create(lbls.hash(), &lbls, false).unwrap();
+        let pc = ms.lock().has_pending_commit();
+        assert!(!pc, "{name}: pending state should be cleared after a successful commit");
+
+        // Attempt an out-of-order append: same series, earlier timestamp, OOO time window disabled.
+        // appendableHistogram returns ErrOutOfOrderSample, so the sample is never recorded in the appender's batch
+        // and Commit/Rollback never clears pending state for this series.
+        let mut app = head.appender(&bg());
+        let err = app.append_histogram(0, &lbls, 100, h.as_ref(), fh.as_ref()).unwrap_err();
+        assert!(err.is(&storage::ERR_OUT_OF_ORDER_SAMPLE), "{name}: {err}");
+        assert!(app.rollback().is_none());
+
+        let pc = ms.lock().has_pending_commit();
+        assert!(!pc, "{name}: pending state should remain clear after a failed AppendHistogram");
+    }
+}
+
+/// A head in its own directory with options built by the test (Go `NewHead(nil, nil, wal, wbl, opts, nil)`).
+fn own_head(dir: TempDir, wal: Option<Arc<WL>>, wbl: Option<Arc<WL>>, mut opts: HeadOptions) -> TestHead {
+    opts.chunk_dir_root = dir.path().to_path_buf();
+    let head = Head::new(wal.clone(), wbl, opts, None).expect("new head");
+    TestHead { head, wal, dir }
+}
+
+fn new_wl(dir: &std::path::Path, name: &str, c: compression::Type) -> Arc<WL> {
+    Arc::new(WL::new_size(dir.join(name), 32768, c).expect("wl"))
+}
+
+// Tests https://github.com/prometheus/prometheus/issues/9725.
+#[test]
+fn test_chunk_snapshot_replay_bug() {
+    for enable_st_storage in [false, true] {
+        let dir = TempDir::new();
+        let wal = new_wl(dir.path(), "wal", compression::Type::Snappy);
+
+        // Write few series records and samples such that the series references are not in order in the WAL for
+        // status_code="200".
+        let enc = tsdb_format::record::Encoder { enable_st_storage };
+        for i in 1..=1000u64 {
+            let r = if i <= 500 { i * 100 } else { (i - 500) * 50 };
+            let series_rec = tsdb_format::record::RefSeries {
+                r#ref: r,
+                labels: ls(&["__name__", "request_duration", "status_code", "200", "foo", &format!("baz{}", rand_u63())]),
+            };
+            // Add a sample so that the series is not garbage collected.
+            let samples_rec = tsdb_format::record::RefSample { r#ref: r, st: 0, t: 1000, v: 1000.0 };
+            let mut buf = Vec::new();
+            enc.series(&[series_rec], &mut buf);
+            wal.log(&buf).unwrap();
+            buf.clear();
+            enc.samples(&[samples_rec], &mut buf);
+            wal.log(&buf).unwrap();
+        }
+
+        // Write a corrupt snapshot to fail the replay on startup.
+        let cpdir = dir.path().join(tsdb::head_wal::chunk_snapshot_dir(0, 100));
+        std::fs::create_dir_all(&cpdir).unwrap();
+        std::fs::write(cpdir.join("00000000"), [1u8, 5, 3, 5, 6, 7, 4, 2, 2]).unwrap();
+
+        let opts = HeadOptions::default();
+        opts.enable_memory_snapshot_on_shutdown.store(true, Ordering::SeqCst);
+        let head = own_head(dir, Some(wal), None, opts);
+        head.init(i64::MIN).unwrap();
+
+        // Snapshot replay should error out.
+        assert_eq!(1.0, head.metrics.snapshot_replay_error_total.get());
+
+        // Querying `request_duration{status_code!="200"}` should return no series since all of them have
+        // status_code="200".
+        let series = query_head(
+            &head,
+            i64::MIN,
+            i64::MAX,
+            &[m(MatchType::Equal, "__name__", "request_duration"), m(MatchType::NotEqual, "status_code", "200")],
+        );
+        assert!(series.is_empty(), "there should be no series found");
+        head.close().unwrap();
+    }
+}
+
+#[test]
+fn test_chunk_snapshot_taken_after_incomplete_snapshot() {
+    let dir = TempDir::new();
+    let wl_temp = new_wl(dir.path(), "wal", compression::Type::Snappy);
+
+    // Write a snapshot with .tmp suffix. This used to fail taking any further snapshots or replay of snapshots.
+    let cpdir = dir.path().join(tsdb::head_wal::chunk_snapshot_dir(0, 100) + ".tmp");
+    std::fs::create_dir_all(&cpdir).unwrap();
+
+    let opts = HeadOptions::default();
+    opts.enable_memory_snapshot_on_shutdown.store(true, Ordering::SeqCst);
+    let head = own_head(dir, Some(wl_temp), None, opts);
+    head.init(i64::MIN).unwrap();
+
+    assert_eq!(0.0, head.metrics.snapshot_replay_error_total.get());
+
+    // Add some samples for the snapshot.
+    let mut app = head.appender(&bg());
+    app.append(0, &ls(&["foo", "bar"]), 10, 10.0).unwrap();
+    commit_ok(&mut app);
+
+    // Should not return any error for a successful snapshot.
+    head.close().unwrap();
+
+    // Verify the snapshot.
+    let (name, idx, offset) = tsdb::head_wal::last_chunk_snapshot(head.dir.path()).unwrap();
+    assert!(!name.as_os_str().is_empty());
+    assert_eq!(0, idx);
+    assert!(offset > 0);
+}
+
+const MINUTE: i64 = 60 * 1000;
+
+/// Go `requireEqualSamples(..., requireEqualSamplesIgnoreCounterResets)`.
+fn require_equal_samples_ignore_counter_resets(name: &str, expected: &[Sample], actual: &[Sample]) {
+    assert_eq!(expected.len(), actual.len(), "Length not equal to expected for {name}");
+    for (i, (e, a)) in expected.iter().zip(actual).enumerate() {
+        assert_eq!(e.t, a.t, "Different timestamps for {name}[{i}]");
+        assert_eq!(e.typ(), a.typ(), "Different types for {name}[{i}] at ts {}", e.t);
+        if let Some(eh) = &e.h {
+            let mut eh = (**eh).clone();
+            let mut ah = a.h.as_deref().unwrap().clone();
+            if eh.counter_reset_hint != CounterResetHint::GaugeType {
+                eh.counter_reset_hint = CounterResetHint::UnknownCounterReset;
+                ah.counter_reset_hint = CounterResetHint::UnknownCounterReset;
+            } else {
+                assert_eq!(eh.counter_reset_hint, ah.counter_reset_hint, "Sample header doesn't match for {name}[{i}]");
+            }
+            assert_eq!(eh, ah, "Sample doesn't match for {name}[{i}] at ts {}", e.t);
+        } else if let Some(efh) = &e.fh {
+            let mut efh = (**efh).clone();
+            let mut afh = a.fh.as_deref().unwrap().clone();
+            efh.counter_reset_hint = CounterResetHint::UnknownCounterReset;
+            afh.counter_reset_hint = CounterResetHint::UnknownCounterReset;
+            assert_eq!(efh, afh, "Sample doesn't match for {name}[{i}] at ts {}", e.t);
+        } else {
+            assert_eq!(e.f, a.f, "Sample doesn't match for {name}[{i}] at ts {}", e.t);
+        }
+    }
+}
+
+fn wal_wbl_head(dir: TempDir, opts: HeadOptions) -> TestHead {
+    let wal = new_wl(dir.path(), "wal", compression::Type::Snappy);
+    let wbl = new_wl(dir.path(), wlog::WBL_DIR_NAME, compression::Type::Snappy);
+    own_head(dir, Some(wal), Some(wbl), opts)
+}
+
+/// Closes the head and opens a new one with WAL and WBL on the same directory and a copy of its options.
+fn restart_wal_wbl(th: &mut TestHead, init: i64) {
+    th.head.close().unwrap();
+    let opts = clone_opts(&th.head.opts);
+    let wal = new_wl(th.dir.path(), "wal", compression::Type::Snappy);
+    let wbl = new_wl(th.dir.path(), wlog::WBL_DIR_NAME, compression::Type::Snappy);
+    th.head = Head::new(Some(wal.clone()), Some(wbl), opts, None).expect("new head");
+    th.wal = Some(wal);
+    th.head.init(init).expect("init"); // Replay happens here.
+}
+
+/// TestWBLReplay checks the replay at a low level.
+#[test]
+fn test_wbl_replay() {
+    for (name, scenario) in crate::common::sample_type_scenarios() {
+        wbl_replay_case(name, scenario);
+    }
+}
+
+fn wbl_replay_case(name: &str, scenario: crate::common::SampleTypeScenario) {
+    let opts = HeadOptions { chunk_range: 1000, ..Default::default() };
+    opts.out_of_order_time_window.store(30 * MINUTE, Ordering::SeqCst);
+    let mut h = wal_wbl_head(TempDir::new(), opts);
+    h.init(0).unwrap();
+
+    let mut exp_ooo_samples: Vec<Sample> = Vec::new();
+    let l = ls(&["foo", "bar"]);
+    let mut append_sample = |h: &Head, mins: i64, is_ooo: bool| {
+        let mut app = h.appender(&bg());
+        let (r, s) = scenario.append(&mut *app, &l, mins * MINUTE, mins);
+        r.unwrap();
+        commit_ok(&mut app);
+        if is_ooo {
+            exp_ooo_samples.push(s);
+        }
+    };
+
+    // In-order sample.
+    append_sample(&h, 60, false);
+
+    // Out of order samples.
+    for mins in [40, 35, 50, 55, 59, 31] {
+        append_sample(&h, mins, true);
+    }
+
+    // Check that Head's time ranges are set properly.
+    assert_eq!(60 * MINUTE, h.min_time(), "{name}");
+    assert_eq!(60 * MINUTE, h.max_time(), "{name}");
+    assert_eq!(31 * MINUTE, h.min_ooo_time(), "{name}");
+    assert_eq!(59 * MINUTE, h.max_ooo_time(), "{name}");
+
+    // Restart head.
+    restart_wal_wbl(&mut h, 0);
+
+    // Get the ooo samples from the Head.
+    let (ms, created) = h.get_or_create(l.hash(), &l, false).unwrap();
+    assert!(!created);
+
+    let chks = {
+        let mut g = ms.lock();
+        g.ooo_mut().unwrap().ooo_head_chunk.as_mut().unwrap().chunk.to_encoded_chunks(i64::MIN, i64::MAX, false, false).unwrap()
+    };
+    assert_eq!(1, chks.len());
+
+    let mut it = chks[0].chunk.iterator(None);
+    let act_ooo_samples = storage::expand_samples(&mut it).unwrap();
+
+    // OOO chunk will be sorted. Hence sort the expected samples.
+    exp_ooo_samples.sort_by_key(|s| s.t);
+
+    // Ignoring counter resets prevents differences in counter reset headers from being factored in to the sample
+    // comparison.
+    require_equal_samples_ignore_counter_resets(&l.to_string(), &exp_ooo_samples, &act_ooo_samples);
+
+    h.close().unwrap();
+}
+
+/// TestOOOMmapReplay checks the replay at a low level.
+#[test]
+fn test_ooo_mmap_replay() {
+    for (name, scenario) in crate::common::sample_type_scenarios() {
+        ooo_mmap_replay_case(name, scenario);
+    }
+}
+
+fn ooo_mmap_replay_case(name: &str, scenario: crate::common::SampleTypeScenario) {
+    let opts = HeadOptions { chunk_range: 1000, ..Default::default() };
+    opts.out_of_order_cap_max.store(30, Ordering::SeqCst);
+    opts.out_of_order_time_window.store(1000 * MINUTE, Ordering::SeqCst);
+    let mut h = wal_wbl_head(TempDir::new(), opts);
+    h.init(0).unwrap();
+
+    let l = ls(&["foo", "bar"]);
+    let append_sample = |h: &Head, mins: i64| {
+        let mut app = h.appender(&bg());
+        scenario.append(&mut *app, &l, mins * MINUTE, mins).0.unwrap();
+        commit_ok(&mut app);
+    };
+
+    // In-order sample.
+    append_sample(&h, 200);
+
+    // Out of order samples. 92 samples to create 3 m-map chunks.
+    for mins in 100..=191 {
+        append_sample(&h, mins);
+    }
+
+    let check = |h: &Head| {
+        let (ms, created) = h.get_or_create(l.hash(), &l, false).unwrap();
+        assert!(!created, "{name}");
+        let chunks = ms.lock().ooo().unwrap().ooo_mmapped_chunks.clone();
+        // Verify that we can access the chunks without error.
+        for m in &chunks {
+            let chk = h.chunk_disk_mapper.chunk(m.r#ref).unwrap();
+            assert_eq!(m.num_samples as usize, chk.num_samples(), "{name}");
+        }
+        chunks
+    };
+    let exp_mmap_chunks = check(&h);
+    assert_eq!(3, exp_mmap_chunks.len(), "{name}");
+
+    // Restart head.
+    restart_wal_wbl(&mut h, 0);
+
+    // Get the mmap chunks from the Head.
+    let act_mmap_chunks = check(&h);
+    assert_eq!(exp_mmap_chunks, act_mmap_chunks, "{name}");
+
+    h.close().unwrap();
+}
+
+/// TestWALReplayMmapsChunks is a regression test ensuring that chunks are mmapped during WAL replay, not
+/// accumulated in the in-memory list.
+#[test]
+fn test_wal_replay_mmaps_chunks() {
+    type AppendFn = fn(&mut dyn Appender, &Labels, i64) -> Result<SeriesRef, Error>;
+    let cases: Vec<(&str, AppendFn)> = vec![
+        ("floats", |app, l, ts| app.append(0, l, ts, ts as f64)),
+        ("histograms", |app, l, ts| app.append_histogram(0, l, ts, Some(&tu::generate_test_histogram(ts)), None)),
+        ("float histograms", |app, l, ts| {
+            app.append_histogram(0, l, ts, None, Some(&tu::generate_test_float_histogram(ts)))
+        }),
+    ];
+    for (name, append) in cases {
+        let dir = TempDir::new();
+        let wal = new_wl(dir.path(), "wal", compression::Type::Snappy);
+        let mut h = own_head(dir, Some(wal), None, HeadOptions { chunk_range: 1000, ..Default::default() });
+        h.init(0).unwrap();
+
+        let l = ls(&["foo", "bar"]);
+
+        // Append 250 samples at 1-minute intervals. With ChunkRange=1000 and DefaultSamplesPerChunk=120, this
+        // creates multiple chunks that should be mmapped during WAL replay.
+        let mut app = h.appender(&bg());
+        for i in 0..250 {
+            append(&mut *app, &l, i * MINUTE).unwrap();
+        }
+        commit_ok(&mut app);
+
+        h.close().unwrap();
+
+        // Remove mmapped chunk files so WAL replay must recreate all chunks.
+        std::fs::remove_dir_all(h.dir.path().join("chunks_head")).unwrap();
+
+        // Reopen Head — WAL replay happens in Init.
+        let wal = new_wl(h.dir.path(), "wal", compression::Type::Snappy);
+        let opts = clone_opts(&h.opts);
+        h.head = Head::new(Some(wal.clone()), None, opts, None).unwrap();
+        h.wal = Some(wal);
+        h.init(0).unwrap();
+
+        let (ms, created) = h.get_or_create(l.hash(), &l, false).unwrap();
+        assert!(!created, "{name}");
+
+        let g = ms.lock();
+        // Chunks must be mmapped during replay, not left in the head chunk list.
+        assert!(!g.mmapped_chunks.is_empty(), "{name}: expected chunks to be mmapped during WAL replay");
+        assert_eq!(1, g.head_chunks.len(), "{name}: expected only one head chunk after replay");
+
+        // Verify each mmapped chunk is readable from disk.
+        for m in &g.mmapped_chunks {
+            let chk = h.chunk_disk_mapper.chunk(m.r#ref).unwrap();
+            assert_eq!(m.num_samples as usize, chk.num_samples(), "{name}");
+        }
+        drop(g);
+
+        h.close().unwrap();
+    }
+}
+
+const UNSUPPORTED_MASK: u8 = 0b1000_0000;
+const ENC_UNSUPPORTED_XOR: chunkenc::Encoding = chunkenc::Encoding(chunkenc::ENC_XOR.0 | UNSUPPORTED_MASK);
+
+/// Go `unsupportedChunk`: a XOR chunk whose encoding is unknown.
+#[derive(Debug)]
+struct UnsupportedChunk(chunkenc::XorChunk);
+
+impl Chunk for UnsupportedChunk {
+    fn bytes(&self) -> &[u8] {
+        Chunk::bytes(&self.0)
+    }
+    fn encoding(&self) -> chunkenc::Encoding {
+        ENC_UNSUPPORTED_XOR
+    }
+    fn appender(&mut self) -> Result<chunkenc::Appender, chunkenc::Error> {
+        Chunk::appender(&mut self.0)
+    }
+    fn iterator<'a>(&'a self, it: Option<chunkenc::AnyIterator<'a>>) -> chunkenc::AnyIterator<'a> {
+        Chunk::iterator(&self.0, it)
+    }
+    fn num_samples(&self) -> usize {
+        Chunk::num_samples(&self.0)
+    }
+    fn compact(&mut self) {
+        Chunk::compact(&mut self.0)
+    }
+    fn reset(&mut self, stream: Vec<u8>) {
+        Chunk::reset(&mut self.0, stream)
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
+#[test]
+fn test_head_init_discard_chunks_with_unsupported_encoding() {
+    let mut h = new_test_head("discard-unsupported", 1000, compression::Type::None, false);
+    h.init(0).unwrap();
+
+    let series_labels = ls(&["a", "1"]);
+    let mut app = h.appender(&bg());
+    let mut series_ref = 0;
+    for i in 0..400 {
+        series_ref = app.append(0, &series_labels, i, i as f64).unwrap();
+    }
+    commit_ok(&mut app);
+    assert!(h.metrics.chunks_created.get() > 1.0);
+
+    // Make this chunk not overlap with the previous and the next.
+    let uc: Arc<dyn Chunk> = Arc::new(UnsupportedChunk(chunkenc::XorChunk::new()));
+    h.chunk_disk_mapper.write_chunk(series_ref, 500, 600, uc, false, Some(Box::new(|e| assert!(e.is_ok()))));
+
+    let mut app = h.appender(&bg());
+    for i in 700..1200 {
+        app.append(0, &series_labels, i, i as f64).unwrap();
+    }
+    commit_ok(&mut app);
+    assert!(h.metrics.chunks_created.get() > 4.0);
+
+    let (series, created) = h.get_or_create(series_labels.hash(), &series_labels, false).unwrap();
+    assert!(!created, "should already exist");
+    let exp_chunks = {
+        let mut g = series.lock();
+        g.mmap_chunks(&h.chunk_disk_mapper, series.r#ref);
+        g.mmapped_chunks.clone()
+    };
+
+    h.close().unwrap();
+    restart(&mut h, 0);
+
+    let (series, created) = h.get_or_create(series_labels.hash(), &series_labels, false).unwrap();
+    assert!(!created, "should already exist");
+    assert_eq!(exp_chunks, series.lock().mmapped_chunks);
+}
+
+fn corrupt_bytes(path: &std::path::Path, off: u64, b: &[u8]) {
+    use std::os::unix::fs::FileExt;
+    let f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+    f.write_all_at(b, off).unwrap();
+}
+
+// Tests https://github.com/prometheus/prometheus/issues/10277.
+#[test]
+fn test_mmap_panic_after_mmap_replay_corruption() {
+    let dir = TempDir::new();
+    let new_opts = || {
+        let opts = HeadOptions {
+            chunk_range: tsdb::head::DEFAULT_BLOCK_DURATION,
+            enable_exemplar_storage: true,
+            ..Default::default()
+        };
+        opts.max_exemplars.store(100000, Ordering::SeqCst); // Go config.DefaultExemplarsConfig.MaxExemplars.
+        opts
+    };
+    let wal = new_wl(dir.path(), "wal", compression::Type::None);
+    let mut h = own_head(dir, Some(wal), None, new_opts());
+    h.init(0).unwrap();
+
+    let mut last_ts = 0i64;
+    let mut r: SeriesRef = 0;
+    let lbls = ls(&["__name__", "testing", "foo", "bar"]);
+    let mut add_chunks = |h: &Head| {
+        let interval = tsdb::head::DEFAULT_BLOCK_DURATION / (4 * 120);
+        let mut app = h.appender(&bg());
+        for i in 0..250 {
+            // Go ignores the append error here.
+            if let Ok(nr) = app.append(r, &lbls, last_ts, last_ts as f64) {
+                r = nr;
+            }
+            last_ts += interval;
+            if i % 10 == 0 {
+                commit_ok(&mut app);
+                app = h.appender(&bg());
+            }
+        }
+        commit_ok(&mut app);
+    };
+
+    add_chunks(&h);
+
+    h.close().unwrap();
+    let wal = new_wl(h.dir.path(), "wal", compression::Type::None);
+
+    corrupt_bytes(&h.dir.path().join("chunks_head").join("000001"), 17, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+
+    let mut opts = new_opts();
+    opts.chunk_dir_root = h.dir.path().to_path_buf();
+    h.head = Head::new(Some(wal.clone()), None, opts, None).unwrap();
+    h.wal = Some(wal);
+    h.init(0).unwrap();
+
+    add_chunks(&h);
+
+    h.close().unwrap();
+}
+
+// Tests https://github.com/prometheus/prometheus/issues/10277.
+#[test]
+fn test_replay_after_mmap_replay_error() {
+    let dir = TempDir::new();
+    let open_head = |dir: &std::path::Path| -> Arc<Head> {
+        let wal = new_wl(dir, "wal", compression::Type::None);
+        let opts = HeadOptions {
+            chunk_range: tsdb::head::DEFAULT_BLOCK_DURATION,
+            chunk_dir_root: dir.to_path_buf(),
+            ..Default::default()
+        };
+        opts.enable_memory_snapshot_on_shutdown.store(true, Ordering::SeqCst);
+        opts.max_exemplars.store(100000, Ordering::SeqCst); // Go config.DefaultExemplarsConfig.MaxExemplars.
+        let h = Head::new(Some(wal), None, opts, None).unwrap();
+        h.init(0).unwrap();
+        h
+    };
+
+    let mut h = open_head(dir.path());
+
+    let itvl = 15 * 1000;
+    let mut last_ts = 0i64;
+    let lbls = ls(&["__name__", "testing", "foo", "bar"]);
+    let mut exp_samples: Vec<Sample> = Vec::new();
+    let mut add_samples = |h: &Head, num_samples: usize| {
+        let mut app = h.appender(&bg());
+        let mut r: SeriesRef = 0;
+        for i in 0..num_samples {
+            r = app.append(r, &lbls, last_ts, last_ts as f64).unwrap();
+            exp_samples.push(Sample::float(0, last_ts, last_ts as f64));
+            last_ts += itvl;
+            if i % 10 == 0 {
+                commit_ok(&mut app);
+                app = h.appender(&bg());
+            }
+        }
+        commit_ok(&mut app);
+    };
+
+    // Creating multiple m-map files.
+    for i in 0..5 {
+        add_samples(&h, 250);
+        h.close().unwrap();
+        if i != 4 {
+            // Don't open head for the last iteration.
+            h = open_head(dir.path());
+        }
+    }
+
+    let count_files = || std::fs::read_dir(dir.path().join("chunks_head")).unwrap().count();
+    assert_eq!(5, count_files());
+
+    // Corrupt a m-map file.
+    corrupt_bytes(&dir.path().join("chunks_head").join("000002"), 17, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+
+    h = open_head(dir.path());
+    h.mmap_head_chunks();
+
+    // There should be less m-map files due to corruption.
+    assert_eq!(2, count_files());
+
+    // Querying should not panic.
+    let res = query_head(&h, 0, last_ts, &[m(MatchType::Equal, "__name__", "testing")]);
+    assert_eq!(BTreeMap::from([(lbls.to_string(), exp_samples)]), res);
+
+    h.close().unwrap();
+}
+
+#[test]
+fn test_ooo_append_with_no_series() {
+    for (name, scenario) in crate::common::sample_type_scenarios() {
+        ooo_append_with_no_series_case(name, scenario);
+    }
+}
+
+fn ooo_append_with_no_series_case(name: &str, scenario: crate::common::SampleTypeScenario) {
+    let opts = HeadOptions::default();
+    opts.out_of_order_cap_max.store(30, Ordering::SeqCst);
+    opts.out_of_order_time_window.store(120 * MINUTE, Ordering::SeqCst);
+    let h = wal_wbl_head(TempDir::new(), opts);
+    h.init(0).unwrap();
+
+    let append_sample = |lbls: &Labels, ts: i64| {
+        let mut app = h.appender(&bg());
+        scenario.append(&mut *app, lbls, ts * MINUTE, ts).0.unwrap();
+        commit_ok(&mut app);
+    };
+
+    let verify_ooo_samples = |lbls: &Labels, exp_samples: usize| {
+        let (ms, created) = h.get_or_create(lbls.hash(), lbls, false).unwrap();
+        assert!(!created, "{name}");
+        let g = ms.lock();
+        assert!(g.head_chunks.is_empty(), "{name}");
+        let ooo = g.ooo().expect("ooo");
+        assert_eq!(exp_samples, ooo.ooo_head_chunk.as_ref().expect("ooo head chunk").chunk.num_samples(), "{name}");
+    };
+
+    let verify_in_order_samples = |lbls: &Labels, exp_samples: usize| {
+        let (ms, created) = h.get_or_create(lbls.hash(), lbls, false).unwrap();
+        assert!(!created, "{name}");
+        let g = ms.lock();
+        assert!(g.ooo().is_none(), "{name}");
+        assert_eq!(exp_samples, g.head_chunk().expect("head chunk").chunk.num_samples(), "{name}");
+    };
+
+    let new_labels = |idx: i32| ls(&["foo", &idx.to_string()]);
+
+    let s1 = new_labels(1);
+    append_sample(&s1, 300); // At 300m.
+    verify_in_order_samples(&s1, 1);
+
+    // At 239m, the sample cannot be appended to in-order chunk since it is beyond the minValidTime. So it should go
+    // in OOO chunk. Series does not exist for s2 yet.
+    let s2 = new_labels(2);
+    append_sample(&s2, 239); // OOO sample.
+    verify_ooo_samples(&s2, 1);
+
+    // Similar for 180m.
+    let s3 = new_labels(3);
+    append_sample(&s3, 180); // OOO sample.
+    verify_ooo_samples(&s3, 1);
+
+    // Now 179m is too old.
+    let s4 = new_labels(4);
+    let mut app = h.appender(&bg());
+    let (r, _) = scenario.append(&mut *app, &s4, 179 * MINUTE, 179);
+    assert_eq!(Some(storage::ERR_TOO_OLD_SAMPLE), r.err(), "{name}");
+    assert!(app.rollback().is_none());
+    verify_ooo_samples(&s3, 1);
+
+    // Samples still go into in-order chunk for samples within appendable minValidTime.
+    let s5 = new_labels(5);
+    append_sample(&s5, 240);
+    verify_in_order_samples(&s5, 1);
+}
+
+#[test]
+fn test_head_min_ooo_time_update() {
+    for (_, scenario) in crate::common::sample_type_scenarios() {
+        if scenario.sample_type == "float" {
+            head_min_ooo_time_update_case(scenario);
+        }
+    }
+}
+
+fn head_min_ooo_time_update_case(scenario: crate::common::SampleTypeScenario) {
+    let opts = HeadOptions::default();
+    opts.out_of_order_time_window.store(10 * MINUTE, Ordering::SeqCst);
+    let h = wal_wbl_head(TempDir::new(), opts);
+    h.init(0).unwrap();
+
+    let append_sample = |ts: i64| {
+        let mut app = h.appender(&bg());
+        scenario.append(&mut *app, &ls(&["a", "b"]), ts * MINUTE, ts).0.unwrap();
+        commit_ok(&mut app);
+    };
+
+    append_sample(300); // In-order sample.
+    assert_eq!(i64::MAX, h.min_ooo_time());
+
+    append_sample(295); // OOO sample.
+    assert_eq!(295 * MINUTE, h.min_ooo_time());
+
+    // Allowed window for OOO is >=290, which is before the earliest ooo sample 295, so it gets set to the lower
+    // value.
+    h.truncate_ooo(0, tsdb_format::chunks::ChunkDiskMapperRef(1)).unwrap();
+    assert_eq!(290 * MINUTE, h.min_ooo_time());
+
+    append_sample(310); // In-order sample.
+    append_sample(305); // OOO sample.
+    assert_eq!(290 * MINUTE, h.min_ooo_time());
+
+    // Now the OOO sample 295 was not gc'ed yet. And allowed window for OOO is now >=300. So the lowest among them,
+    // 295, is set as minOOOTime.
+    h.truncate_ooo(0, tsdb_format::chunks::ChunkDiskMapperRef(2)).unwrap();
+    assert_eq!(295 * MINUTE, h.min_ooo_time());
+}
+
+/// The records of a WAL (Go `readTestWAL`'s `[]any`).
+#[derive(Clone, Debug, PartialEq)]
+enum Rec {
+    Series(Vec<tsdb_format::record::RefSeries>),
+    Samples(Vec<tsdb_format::record::RefSample>),
+    Histograms(Vec<tsdb_format::record::RefHistogramSample>),
+    FloatHistograms(Vec<tsdb_format::record::RefFloatHistogramSample>),
+    Tombstones(Vec<Stone>),
+    Metadata(Vec<tsdb_format::record::RefMetadata>),
+    Exemplars(Vec<tsdb_format::record::RefExemplar>),
+}
+
+/// Go `readTestWAL`.
+fn read_test_wal(dir: &std::path::Path) -> Vec<Rec> {
+    use tsdb_format::record::Type;
+    let sr = wlog::new_segments_reader(dir).unwrap();
+    let mut dec = tsdb_format::record::Decoder::new(tsdb::Logger::default());
+    let mut r = wlog::Reader::new(sr);
+    let mut recs = Vec::new();
+    while r.next() {
+        let rec = r.record();
+        match dec.r#type(rec) {
+            Type::Series => {
+                let mut v = Vec::new();
+                dec.series(rec, &mut v).unwrap();
+                recs.push(Rec::Series(v));
+            }
+            Type::Samples | Type::SamplesV2 => {
+                let mut v = Vec::new();
+                dec.samples(rec, &mut v).unwrap();
+                recs.push(Rec::Samples(v));
+            }
+            Type::HistogramSamples | Type::CustomBucketsHistogramSamples | Type::HistogramSamplesV2 => {
+                let mut v = Vec::new();
+                dec.histogram_samples(rec, &mut v).unwrap();
+                recs.push(Rec::Histograms(v));
+            }
+            Type::FloatHistogramSamples | Type::CustomBucketsFloatHistogramSamples | Type::FloatHistogramSamplesV2 => {
+                let mut v = Vec::new();
+                dec.float_histogram_samples(rec, &mut v).unwrap();
+                recs.push(Rec::FloatHistograms(v));
+            }
+            Type::Tombstones => {
+                let mut v = Vec::new();
+                dec.tombstones(rec, &mut v).unwrap();
+                recs.push(Rec::Tombstones(v));
+            }
+            Type::Metadata => {
+                let mut v = Vec::new();
+                dec.metadata(rec, &mut v).unwrap();
+                recs.push(Rec::Metadata(v));
+            }
+            Type::Exemplars => {
+                let mut v = Vec::new();
+                dec.exemplars(rec, &mut v).unwrap();
+                recs.push(Rec::Exemplars(v));
+            }
+            Type::MinValidTime => {
+                // Internal checkpoint bookkeeping, not WAL content callers care about.
+                dec.min_valid_time(rec).unwrap();
+            }
+            t => panic!("unknown record type {t:?}"),
+        }
+    }
+    assert!(r.err().is_none());
+    recs
+}
+
+#[test]
+fn test_gauge_histogram_wal_and_chunk_header() {
+    gauge_histogram_wal_and_chunk_header(false);
+}
+
+#[test]
+fn test_gauge_float_histogram_wal_and_chunk_header() {
+    gauge_histogram_wal_and_chunk_header(true);
+}
+
+/// Go `TestGaugeHistogramWALAndChunkHeader` (`float` = false) and `TestGaugeFloatHistogramWALAndChunkHeader`.
+fn gauge_histogram_wal_and_chunk_header(float: bool) {
+    let l = ls(&["a", "b"]);
+    let mut head = new_test_head("gauge-hist-wal", 1000, compression::Type::None, false);
+    head.init(0).unwrap();
+
+    let mut hists = tu::generate_test_gauge_histograms(5);
+    let mut fhists = tu::generate_test_gauge_float_histograms(5);
+    hists[0].counter_reset_hint = CounterResetHint::UnknownCounterReset;
+    fhists[0].counter_reset_hint = CounterResetHint::UnknownCounterReset;
+    hists[3].counter_reset_hint = CounterResetHint::UnknownCounterReset;
+    fhists[3].counter_reset_hint = CounterResetHint::UnknownCounterReset;
+
+    let mut ts = 0i64;
+    let mut append_histogram = |head: &Head, i: usize| {
+        ts += 1;
+        let mut app = head.appender(&bg());
+        if float {
+            app.append_histogram(0, &l, ts, None, Some(&fhists[i].clone())).unwrap();
+        } else {
+            app.append_histogram(0, &l, ts, Some(&hists[i].clone()), None).unwrap();
+        }
+        commit_ok(&mut app);
+    };
+    for i in [0, 1, 2, 3, 3, 4] {
+        append_histogram(&head, i);
+    }
+
+    let check_headers = |head: &Head| {
+        head.mmap_head_chunks();
+        let (ms, _) = head.get_or_create(l.hash(), &l, false).unwrap();
+        let g = ms.lock();
+        assert_eq!(3, g.mmapped_chunks.len());
+        let exp_headers = if float {
+            [
+                CounterResetHeader::UNKNOWN_COUNTER_RESET,
+                CounterResetHeader::GAUGE_TYPE,
+                CounterResetHeader::UNKNOWN_COUNTER_RESET,
+                CounterResetHeader::GAUGE_TYPE,
+            ]
+        } else {
+            [
+                CounterResetHeader::UNKNOWN_COUNTER_RESET,
+                CounterResetHeader::GAUGE_TYPE,
+                CounterResetHeader::NOT_COUNTER_RESET,
+                CounterResetHeader::GAUGE_TYPE,
+            ]
+        };
+        for (i, mmap_chunk) in g.mmapped_chunks.iter().enumerate() {
+            let chk = head.chunk_disk_mapper.chunk(mmap_chunk.r#ref).unwrap();
+            assert_eq!(exp_headers[i], counter_reset_header(&*chk, float, false));
+        }
+        assert_eq!(exp_headers[3], counter_reset_header(&*g.head_chunk().unwrap().chunk, float, false));
+    };
+    check_headers(&head);
+
+    let recs = read_test_wal(head.wal().unwrap().dir());
+    let mut exp = vec![Rec::Series(vec![tsdb_format::record::RefSeries { r#ref: 1, labels: ls(&["a", "b"]) }])];
+    for (t, i) in [(1, 0), (2, 1), (3, 2), (4, 3), (5, 3), (6, 4)] {
+        if float {
+            exp.push(Rec::FloatHistograms(vec![tsdb_format::record::RefFloatHistogramSample {
+                r#ref: 1,
+                st: 0,
+                t,
+                fh: Arc::new(fhists[i].clone()),
+            }]));
+        } else {
+            exp.push(Rec::Histograms(vec![tsdb_format::record::RefHistogramSample {
+                r#ref: 1,
+                st: 0,
+                t,
+                h: Arc::new(hists[i].clone()),
+            }]));
+        }
+    }
+    assert_eq!(exp, recs);
+
+    // Restart Head without mmap chunks to expect the WAL replay to recognize gauge histograms.
+    head.close().unwrap();
+    std::fs::remove_dir_all(tsdb::head::mmapped_chunks_dir(&head.opts.chunk_dir_root)).unwrap();
+    restart(&mut head, 0);
+
+    check_headers(&head);
+}
+
+#[test]
+fn test_snapshot_ahead_of_wal_error() {
+    let mut head = new_test_head("snapshot-ahead-of-wal", 120 * 4, compression::Type::None, false);
+    head.opts.enable_memory_snapshot_on_shutdown.store(true, Ordering::SeqCst);
+    // Add a sample to fill WAL.
+    let mut app = head.appender(&bg());
+    app.append(0, &ls(&["foo", "bar"]), 10, 10.0).unwrap();
+    commit_ok(&mut app);
+
+    // Increment snapshot index to create sufficiently large difference.
+    for _ in 0..2 {
+        head.wal().unwrap().next_segment().unwrap();
+    }
+    head.close().unwrap(); // This will create a snapshot.
+
+    let (_, idx, _) = tsdb::head_wal::last_chunk_snapshot(&head.opts.chunk_dir_root).unwrap();
+    assert_eq!(2, idx);
+
+    // Restart the WAL while keeping the old snapshot. The new head is created manually in this case in order to
+    // keep using the same snapshot directory instead of a random one.
+    let wal_dir = head.wal().unwrap().dir().to_path_buf();
+    std::fs::remove_dir_all(&wal_dir).unwrap();
+    head.opts.enable_memory_snapshot_on_shutdown.store(false, Ordering::SeqCst);
+    let opts = clone_opts(&head.opts);
+    reopen(&mut head, opts, None).unwrap();
+    // Add a sample to fill WAL.
+    let mut app = head.appender(&bg());
+    app.append(0, &ls(&["foo", "bar"]), 10, 10.0).unwrap();
+    commit_ok(&mut app);
+    let (last_segment, _) = head.wal().unwrap().last_segment_and_offset().unwrap();
+    assert_eq!(0, last_segment);
+    head.close().unwrap();
+
+    // New WAL is saved, but old snapshot still exists.
+    let (_, idx, _) = tsdb::head_wal::last_chunk_snapshot(&head.opts.chunk_dir_root).unwrap();
+    assert_eq!(2, idx);
+
+    // Create new Head which should detect the incorrect index and delete the snapshot.
+    head.opts.enable_memory_snapshot_on_shutdown.store(true, Ordering::SeqCst);
+    restart(&mut head, i64::MIN);
+
+    // Verify that snapshot directory does not exist anymore.
+    let err = tsdb::head_wal::last_chunk_snapshot(&head.opts.chunk_dir_root).unwrap_err();
+    assert!(err.is(&storage::ERR_NOT_FOUND), "{err}");
+    assert_eq!(tsdb_format::record::ERR_NOT_FOUND, err.to_string());
+
+    head.opts.enable_memory_snapshot_on_shutdown.store(false, Ordering::SeqCst);
+    head.close().unwrap();
+}
+
+#[test]
+fn test_cutting_new_head_chunks() {
+    let ctx = bg();
+    type FloatFn = Box<dyn Fn(usize) -> f64>;
+    type HistFn = Box<dyn Fn(usize) -> Histogram>;
+    let big = |n: usize, b: usize| -> HistFn {
+        let hists = model::histogram::generate_big_test_histograms(n, b);
+        Box::new(move |i| hists[i].clone())
+    };
+    let cases: Vec<(&str, usize, bool, Option<FloatFn>, Option<HistFn>, Vec<(usize, usize)>)> = vec![
+        ("float samples", 180, false, Some(Box::new(|_| 1.0)), None, vec![(120, 46), (60, 32)]),
+        (
+            // Normally 120 samples would fit into a single chunk but these chunks violate the 1005 byte soft cap.
+            "large float samples",
+            120,
+            true,
+            // Flipping between these two make each sample val take at least 64 bits.
+            Some(Box::new(|i| [f64::MAX, 0.0][i % 2])),
+            None,
+            vec![(99, 1008), (21, 219)],
+        ),
+        ("small histograms", 240, false, None, Some(big(240, 10)), vec![(120, 1087), (120, 1039)]),
+        (
+            "large histograms",
+            240,
+            false,
+            None,
+            Some(big(240, 100)),
+            vec![(40, 896), (40, 899), (40, 896), (30, 690), (30, 691), (30, 694), (30, 693)],
+        ),
+        (
+            // Really large histograms; each chunk can only contain a single histogram but we have a 10 sample
+            // minimum per chunk.
+            "really large histograms",
+            11,
+            false,
+            None,
+            Some(big(11, 100000)),
+            vec![(10, 200103), (1, 87540)],
+        ),
+    ];
+    for (name, num_total_samples, timestamp_jitter, float_val, hist_val, expected_chks) in cases {
+        let h = new_test_head("cutting-new-head-chunks", tsdb::head::DEFAULT_BLOCK_DURATION, compression::Type::None, false);
+        let mut a = h.appender(&bg());
+
+        let mut ts = 10000i64;
+        let lbls = ls(&["foo", "bar"]);
+        let jitter = [0i64, 1]; // A bit of jitter to prevent dod=0.
+
+        for i in 0..num_total_samples {
+            if let Some(f) = &float_val {
+                a.append(0, &lbls, ts, f(i)).unwrap();
+            } else if let Some(hf) = &hist_val {
+                a.append_histogram(0, &lbls, ts, Some(&hf(i)), None).unwrap();
+            }
+            ts += 60 * 1000;
+            if timestamp_jitter {
+                ts += jitter[i % jitter.len()];
+            }
+        }
+        commit_ok(&mut a);
+
+        let idx_reader = h.index();
+        let chk_reader = h.chunks().unwrap();
+        let mut p = idx_reader.postings(&ctx, "foo", &["bar"]).unwrap();
+        let mut lbl_builder = ScratchBuilder::default();
+        while p.next() {
+            let s_ref = p.at();
+            let mut chk_metas = Vec::new();
+            idx_reader.series(s_ref, &mut lbl_builder, &mut chk_metas).unwrap();
+            assert_eq!(expected_chks.len(), chk_metas.len(), "{name}");
+            for (i, (num_samples, num_bytes)) in expected_chks.iter().enumerate() {
+                let chk = match tsdb::ChunkReader::chunk_or_iterable(&chk_reader, &chk_metas[i]).unwrap() {
+                    tsdb::ChunkOrIterable::Chunk(c) => c,
+                    tsdb::ChunkOrIterable::Iterable(_) => panic!("{name}: unexpected iterable"),
+                };
+                assert_eq!(*num_samples, chk.num_samples(), "{name} chunk {i}");
+                assert_eq!(*num_bytes, chk.bytes().len(), "{name} chunk {i}");
+            }
+        }
+    }
+}
+
+/// TestHeadDetectsDuplicateSampleAtSizeLimit tests a regression where a duplicate sample is appended to the head,
+/// right when the head chunk is at the size limit. The test adds all samples as duplicate, thus expecting that
+/// the result has exactly half of the samples.
+#[test]
+fn test_head_detects_duplicate_sample_at_size_limit() {
+    let num_samples = 1000;
+    let base_ts = 1695209650i64;
+
+    let h = new_test_head("duplicate-at-size-limit", tsdb::head::DEFAULT_BLOCK_DURATION, compression::Type::None, false);
+    let mut a = h.appender(&bg());
+    // Use the worst case scenario for the XOR encoding. Otherwise we hit the sample limit before the size limit.
+    let vals = [f64::MAX, 0.0];
+    for i in 0..num_samples {
+        let ts = base_ts + (i / 2) as i64 * 10000;
+        let _ = a.append(0, &ls(&["foo", "bar"]), ts, vals[(i / 2) % vals.len()]);
+        commit_ok(&mut a);
+        a = h.appender(&bg());
+    }
+
+    let index_reader = h.index();
+    let mut chunks = Vec::new();
+    let mut builder = ScratchBuilder::default();
+    index_reader.series(1, &mut builder, &mut chunks).unwrap();
+
+    let chunk_reader = h.chunks().unwrap();
+    let mut stored_sample_count = 0;
+    for chunk_meta in &chunks {
+        match tsdb::ChunkReader::chunk_or_iterable(&chunk_reader, chunk_meta).unwrap() {
+            tsdb::ChunkOrIterable::Chunk(c) => stored_sample_count += c.num_samples(),
+            tsdb::ChunkOrIterable::Iterable(_) => panic!("unexpected iterable"),
+        }
+    }
+
+    assert_eq!(num_samples / 2, stored_sample_count);
+}
+
+#[test]
+fn test_wal_sample_and_exemplar_order() {
+    let lbls = ls(&["foo", "bar"]);
+    type AppendF = fn(&mut dyn Appender, &Labels, i64) -> Result<SeriesRef, Error>;
+    let cases: Vec<(&str, AppendF, fn(&Rec) -> bool)> = vec![
+        ("float sample", |app, l, ts| app.append(0, l, ts, 1.0), |r| matches!(r, Rec::Samples(_))),
+        (
+            "histogram sample",
+            |app, l, ts| app.append_histogram(0, l, ts, Some(&tu::generate_test_histogram(1)), None),
+            |r| matches!(r, Rec::Histograms(_)),
+        ),
+        (
+            "float histogram sample",
+            |app, l, ts| app.append_histogram(0, l, ts, None, Some(&tu::generate_test_float_histogram(1))),
+            |r| matches!(r, Rec::FloatHistograms(_)),
+        ),
+    ];
+    for (name, append_f, expected_type) in cases {
+        let h = new_test_head("wal-sample-exemplar-order", 1000, compression::Type::None, false);
+
+        let mut app = h.appender(&bg());
+        let r = append_f(&mut *app, &lbls, 10).unwrap();
+        let _ = app.append_exemplar(r, &lbls, &Exemplar { value: 1.0, ts: 5, ..Default::default() });
+        let _ = app.commit();
+
+        let recs = read_test_wal(h.wal.as_ref().unwrap().dir());
+        assert_eq!(3, recs.len(), "{name}");
+        assert!(matches!(recs[0], Rec::Series(_)), "{name}: expected first record to be a RefSeries");
+        assert!(expected_type(&recs[1]), "{name}: unexpected second record {:?}", recs[1]);
+        assert!(matches!(recs[2], Rec::Exemplars(_)), "{name}: expected third record to be a RefExemplar");
+    }
+}
+
+// Not ported yet: they need the DB (`tsdb::db::open`, `db.compact`, `db.querier`), which is ported in parallel.
+// TestOutOfOrderSamplesMetric, TestOutOfOrderSamplesMetricNativeHistogramOOODisabled, TestChunkNotFoundHeadGCRace,
+// TestDataMissingOnQueryDuringCompaction, TestIsQuerierCollidingWithTruncation, TestWaitForPendingReadersInTimeRange,
+// TestQuerierDoesNotBlockHeadTruncation, TestQueryOOOHeadDuringTruncate, TestChunkQueryOOOHeadDuringTruncate,
+// TestAppendingDifferentEncodingToSameSeries.
