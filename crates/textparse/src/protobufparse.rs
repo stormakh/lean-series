@@ -1,6 +1,8 @@
 //! Port of `protobufparse.go`: presents the Prometheus protobuf format (varint-delimited `MetricFamily`
 //! messages) through the text-style [`Parser`] interface.
 
+use std::cell::Cell;
+
 use model::exemplar::Exemplar;
 use model::histogram::{CounterResetHint, FloatHistogram, Histogram, Span};
 use model::labels::{Labels, ScratchBuilder};
@@ -20,7 +22,9 @@ pub struct ProtobufParser<'a> {
     /// Position within a summary or classic histogram: -2 is the count, -1 the sum, otherwise the index of the
     /// quantile or bucket.
     field_pos: isize,
-    fields_done: bool,
+    /// True if no more fields of a summary or classic histogram are to be processed. A `Cell` because `series()`
+    /// (`&self`) sets it for a summary without quantiles, as Go's `Series` does.
+    fields_done: Cell<bool>,
     redo_classic: bool,
     exemplar_pos: usize,
     exemplar_returned: bool,
@@ -62,7 +66,7 @@ impl<'a> ProtobufParser<'a> {
             builder: ScratchBuilder::new(16),
             ex_builder: ScratchBuilder::new(4),
             field_pos: 0,
-            fields_done: false,
+            fields_done: Cell::new(false),
             redo_classic: false,
             exemplar_pos: 0,
             exemplar_returned: false,
@@ -142,11 +146,11 @@ impl<'a> ProtobufParser<'a> {
             PbType::SUMMARY => {
                 let qq = &self.dec.summary.quantile;
                 if pos >= qq.len() {
-                    self.fields_done = true;
+                    self.fields_done.set(true);
                     return None;
                 }
                 let q = qq[pos].quantile;
-                self.fields_done = pos == qq.len() - 1;
+                self.fields_done.set(pos == qq.len() - 1);
                 self.value_buf.clear();
                 model::labels::append_open_metrics_float(&mut self.value_buf, q);
                 Some("quantile")
@@ -154,13 +158,13 @@ impl<'a> ProtobufParser<'a> {
             PbType::HISTOGRAM | PbType::GAUGE_HISTOGRAM => {
                 let bb = &self.dec.histogram.bucket;
                 if pos >= bb.len() {
-                    self.fields_done = true;
+                    self.fields_done.set(true);
                     self.value_buf.clear();
                     self.value_buf.push_str("+Inf");
                     return Some("le");
                 }
                 let ub = bb[pos].upper_bound;
-                self.fields_done = ub == f64::INFINITY;
+                self.fields_done.set(ub == f64::INFINITY);
                 self.value_buf.clear();
                 model::labels::append_open_metrics_float(&mut self.value_buf, ub);
                 Some("le")
@@ -318,7 +322,13 @@ impl Parser for ProtobufParser<'_> {
                 let s = &self.dec.summary;
                 match self.field_pos {
                     -2 => s.sample_count as f64,
-                    -1 => s.sample_sum,
+                    -1 => {
+                        // Need to detect summaries without quantile here.
+                        if s.quantile.is_empty() {
+                            self.fields_done.set(true);
+                        }
+                        s.sample_sum
+                    }
                     p => s.quantile[p as usize].value,
                 }
             }
@@ -586,13 +596,13 @@ impl Parser for ProtobufParser<'_> {
                         let skip_series = self.convert_classic_histograms_to_nhcb
                             && is_classic_histogram
                             && !self.parse_classic_histograms;
-                        if !self.fields_done && !skip_series {
+                        if !self.fields_done.get() && !skip_series {
                             self.field_pos += 1;
                             self.on_series_or_histogram_update()?;
                             return Ok(self.state);
                         }
                         self.field_pos = -2;
-                        self.fields_done = false;
+                        self.fields_done.set(false);
                         self.exemplar_pos = 0;
                         if Self::is_histogram_type(t) {
                             if is_classic_histogram && self.convert_classic_histograms_to_nhcb {
@@ -614,7 +624,7 @@ impl Parser for ProtobufParser<'_> {
                         if must_check_next_series_kind {
                             if self.is_classic() {
                                 self.field_pos = -3;
-                                self.fields_done = false;
+                                self.fields_done.set(false);
                                 continue;
                             }
                             if let Err(e) = check_native_histogram_consistency(&self.dec.histogram) {
@@ -629,7 +639,7 @@ impl Parser for ProtobufParser<'_> {
                     if self.redo_classic {
                         self.redo_classic = false;
                         self.field_pos = -3;
-                        self.fields_done = false;
+                        self.fields_done.set(false);
                         self.state = Entry::Series;
                         continue;
                     }
@@ -640,7 +650,7 @@ impl Parser for ProtobufParser<'_> {
                     if self.is_classic() {
                         self.redo_classic = false;
                         self.field_pos = -3;
-                        self.fields_done = false;
+                        self.fields_done.set(false);
                         self.state = Entry::Series;
                         continue;
                     }
