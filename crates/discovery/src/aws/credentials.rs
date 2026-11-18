@@ -96,51 +96,6 @@ fn now_unix() -> SystemTime {
     SystemTime::now()
 }
 
-/// Parses an RFC 3339 / ISO 8601 UTC time ("2006-01-02T15:04:05Z", fractions and offsets allowed).
-pub fn parse_iso8601(s: &str) -> Option<SystemTime> {
-    let s = s.trim();
-    if s.len() < 19 {
-        return None;
-    }
-    let num = |a: usize, b: usize| s.get(a..b).and_then(|x| x.parse::<i64>().ok());
-    let (y, mo, d, h, mi, se) = (num(0, 4)?, num(5, 7)?, num(8, 10)?, num(11, 13)?, num(14, 16)?, num(17, 19)?);
-    let mut rest = &s[19..];
-    let mut nanos = 0u32;
-    if let Some(r) = rest.strip_prefix('.') {
-        let n = r.bytes().take_while(|c| c.is_ascii_digit()).count();
-        let frac = &r[..n];
-        let mut v: u64 = 0;
-        for (i, c) in frac.bytes().take(9).enumerate() {
-            v += (c - b'0') as u64 * 10u64.pow(8 - i as u32);
-        }
-        nanos = v as u32;
-        rest = &r[n..];
-    }
-    let offset = match rest {
-        "" | "Z" | "z" => 0,
-        o if o.len() == 6 && (o.starts_with('+') || o.starts_with('-')) => {
-            let hh: i64 = o[1..3].parse().ok()?;
-            let mm: i64 = o[4..6].parse().ok()?;
-            let v = hh * 3600 + mm * 60;
-            if o.starts_with('-') { -v } else { v }
-        }
-        _ => return None,
-    };
-    // days from civil (Howard Hinnant)
-    let yy = if mo <= 2 { y - 1 } else { y };
-    let era = yy.div_euclid(400);
-    let yoe = yy - era * 400;
-    let mp = (mo + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146097 + doe - 719468;
-    let secs = days * 86400 + h * 3600 + mi * 60 + se - offset;
-    if secs < 0 {
-        return None;
-    }
-    Some(UNIX_EPOCH + Duration::new(secs as u64, nanos))
-}
-
 /// Where credentials come from (one link of the chain).
 #[derive(Clone, Debug)]
 pub enum Source {
@@ -374,7 +329,7 @@ fn sts_creds(root: &xml::Element, result: &str) -> Result<Creds, String> {
             secret_access_key: c.text_at("SecretAccessKey").unwrap_or("").to_string(),
             session_token: c.text_at("SessionToken").unwrap_or("").to_string(),
         },
-        expires: c.text_at("Expiration").and_then(parse_iso8601),
+        expires: c.text_at("Expiration").and_then(crate::util::parse_rfc3339),
     })
 }
 
@@ -411,7 +366,7 @@ fn creds_from_json(j: &json::Json, token_key: &str) -> Result<Creds, String> {
     }
     Ok(Creds {
         creds: Credentials { access_key_id: a.to_string(), secret_access_key: s.to_string(), session_token: j.str_of(token_key).to_string() },
-        expires: j.get("Expiration").and_then(|e| e.as_str()).and_then(parse_iso8601),
+        expires: j.get("Expiration").and_then(|e| e.as_str()).and_then(crate::util::parse_rfc3339),
     })
 }
 
