@@ -13,7 +13,7 @@ use crate::{Entry, Parser};
 #[derive(Clone, Debug, Default)]
 pub struct ParsedEntry {
     /// In all but comment entries.
-    pub m: String,
+    pub m: Vec<u8>,
     /// In histogram entries.
     pub shs: Option<Histogram>,
     pub fhs: Option<FloatHistogram>,
@@ -53,12 +53,12 @@ pub fn test_parse(p: &mut dyn Parser) -> Vec<ParsedEntry> {
             Entry::Series | Entry::Histogram => {
                 if et == Entry::Series {
                     let (m, ts, v) = p.series();
-                    got.m = s(m);
+                    got.m = m.to_vec();
                     got.t = ts;
                     got.v = v;
                 } else {
                     let (m, ts, h, fh) = p.histogram();
-                    got.m = s(m);
+                    got.m = m.to_vec();
                     got.t = ts;
                     got.shs = h.cloned();
                     got.fhs = fh.cloned();
@@ -72,17 +72,17 @@ pub fn test_parse(p: &mut dyn Parser) -> Vec<ParsedEntry> {
             }
             Entry::Type => {
                 let (m, t) = p.typ();
-                got.m = s(m);
+                got.m = m.to_vec();
                 got.typ = t;
             }
             Entry::Help => {
                 let (m, h) = p.help();
-                got.m = s(m);
+                got.m = m.to_vec();
                 got.help = s(h);
             }
             Entry::Unit => {
                 let (m, u) = p.unit();
-                got.m = s(m);
+                got.m = m.to_vec();
                 got.unit = s(u);
             }
             Entry::Comment => {
