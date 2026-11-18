@@ -2,7 +2,7 @@
 //!
 //! `FloatHistogramChunkT<false>` is encoding 3, `FloatHistogramChunkT<true>` encoding 6 (with start timestamps).
 
-use crate::Iterator as _;
+use crate::ChunkIterator as _;
 use crate::bstream::{Bstream, BstreamReader};
 use crate::histogram::{
     CounterResetHeader, HISTOGRAM_HEADER_SIZE, copy_vec, count_spans, header_counter_reset, header_num_samples,
@@ -833,7 +833,7 @@ impl<'a, const ST: bool> FloatHistogramIteratorT<'a, ST> {
     }
 }
 
-impl<const ST: bool> crate::Iterator for FloatHistogramIteratorT<'_, ST> {
+impl<const ST: bool> crate::ChunkIterator for FloatHistogramIteratorT<'_, ST> {
     fn next(&mut self) -> ValueType {
         if !ST {
             return self.next_base();

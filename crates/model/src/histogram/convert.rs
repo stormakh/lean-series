@@ -81,3 +81,55 @@ pub fn classic_bucket_counts(nhcb: Option<HistogramRef<'_>>, mut buf: Vec<f64>) 
     let count = if is_stale { sum } else { count };
     Ok((buf, count, sum))
 }
+
+/// Converts a native histogram with custom buckets (NHCB) to classic histogram series (`_bucket` per bound and
+/// +Inf, `_count`, `_sum`), calling `emit_series` for each (Go `ConvertNHCBToClassic`). The caller must ensure that
+/// `nhcb` is a valid NHCB. `lset_builder` is restored to its labels at the start when the function returns.
+pub fn convert_nhcb_to_classic<E, F>(
+    nhcb: Option<HistogramRef<'_>>,
+    lset: &crate::labels::Labels,
+    lset_builder: &mut crate::labels::Builder,
+    mut emit_series: F,
+) -> Result<(), E>
+where
+    E: From<Error>,
+    F: FnMut(crate::labels::Labels, f64) -> Result<(), E>,
+{
+    use crate::labels::{BUCKET_LABEL, METRIC_NAME, format_open_metrics_float};
+    let base_name = lset.get(METRIC_NAME);
+    if base_name.is_empty() {
+        return Err(Error::plain("metric name label '__name__' is missing").into());
+    }
+    // Preserve the original labels of the builder and restore them after the conversion.
+    let old_labels = lset_builder.labels();
+    let r = (|| {
+        let (buckets, count, sum) = classic_bucket_counts(nhcb, Vec::new())?;
+        let custom_values: &[f64] = match nhcb {
+            Some(HistogramRef::Int(h)) => h.custom_values_slice(),
+            Some(HistogramRef::Float(h)) => h.custom_values_slice(),
+            None => &[],
+        };
+        let bucket_name = format!("{}_bucket", base_name);
+        for (i, &val) in custom_values.iter().enumerate() {
+            lset_builder.reset(lset.clone());
+            lset_builder.set(METRIC_NAME, &bucket_name);
+            lset_builder.set(BUCKET_LABEL, &format_open_metrics_float(val));
+            emit_series(lset_builder.labels(), buckets[i])?;
+        }
+        lset_builder.reset(lset.clone());
+        lset_builder.set(METRIC_NAME, &bucket_name);
+        lset_builder.set(BUCKET_LABEL, &format_open_metrics_float(f64::INFINITY));
+        emit_series(lset_builder.labels(), buckets[custom_values.len()])?;
+
+        lset_builder.reset(lset.clone());
+        lset_builder.set(METRIC_NAME, &format!("{}_count", base_name));
+        emit_series(lset_builder.labels(), count)?;
+
+        lset_builder.reset(lset.clone());
+        lset_builder.set(METRIC_NAME, &format!("{}_sum", base_name));
+        emit_series(lset_builder.labels(), sum)?;
+        Ok(())
+    })();
+    lset_builder.reset(old_labels);
+    r
+}

@@ -2,7 +2,7 @@
 
 mod common;
 
-use chunkenc::Iterator as _;
+use chunkenc::ChunkIterator as _;
 use chunkenc::st::MAX_FIRST_ST_CHANGE_ON;
 use chunkenc::{Chunk, CounterResetHeader, ENC_HISTOGRAM_ST, HistogramStChunk, ValueType};
 use common::{generate_test_histogram, generate_test_histograms};

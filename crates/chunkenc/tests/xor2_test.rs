@@ -2,7 +2,7 @@
 
 mod common;
 
-use chunkenc::Iterator as _;
+use chunkenc::ChunkIterator as _;
 use chunkenc::{Bstream, BstreamReader, Chunk, ENC_XOR2, Error, ValueType, Xor2Chunk, Xor2Iterator, from_data};
 use common::{Rand, SampleCase, Triple, triple};
 

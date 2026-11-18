@@ -2,9 +2,9 @@
 
 mod common;
 
-use chunkenc::Iterator as _;
+use chunkenc::ChunkIterator as _;
 use chunkenc::{
-    Appender, Bstream, Chunk, ChunkIterator, ENC_FLOAT_HISTOGRAM, ENC_FLOAT_HISTOGRAM_ST, ENC_HISTOGRAM,
+    Appender, Bstream, Chunk, AnyIterator, ENC_FLOAT_HISTOGRAM, ENC_FLOAT_HISTOGRAM_ST, ENC_HISTOGRAM,
     ENC_HISTOGRAM_ST, ENC_NONE, ENC_XOR, ENC_XOR2, Encoding, Error, FloatHistogramChunk, FloatHistogramStChunk,
     HistogramChunk, HistogramStChunk, Pool, ValueType, Xor2Chunk, XorChunk, compatible_values, new_pool,
 };
@@ -71,7 +71,7 @@ fn test_chunk_impl(name: &str, rng: &mut Rand, c: &mut dyn Chunk, supports_st: b
     assert_eq!(exp, res1, "{name}");
 
     // 2. Expand second iterator while reusing first one.
-    let mut it2: ChunkIterator<'_> = c.iterator(Some(it1));
+    let mut it2: AnyIterator<'_> = c.iterator(Some(it1));
     let mut res2 = Vec::new();
     while it2.next() == ValueType::Float {
         let (ts, v) = it2.at();
@@ -201,7 +201,7 @@ impl Chunk for FakeChunk {
     fn appender(&mut self) -> Result<Appender, Error> {
         unimplemented!("nil Chunk")
     }
-    fn iterator<'a>(&'a self, _it: Option<ChunkIterator<'a>>) -> ChunkIterator<'a> {
+    fn iterator<'a>(&'a self, _it: Option<AnyIterator<'a>>) -> AnyIterator<'a> {
         unimplemented!("nil Chunk")
     }
     fn num_samples(&self) -> usize {

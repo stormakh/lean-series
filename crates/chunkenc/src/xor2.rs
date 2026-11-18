@@ -22,7 +22,7 @@
 use crate::bstream::{Bstream, BstreamReader, mask, shl, shr};
 use crate::varbit::{put_varbit_int_fast, read_varbit_int};
 use crate::xor::{put_u16, read_u16, write_uvarint, write_varint};
-use crate::Iterator as _;
+use crate::ChunkIterator as _;
 use crate::{CHUNK_ALLOCATION_SIZE, CHUNK_HEADER_SIZE, ENC_XOR2, Encoding, Error, STALE_NAN, ValueType, is_stale_nan};
 use model::histogram::{FloatHistogram, Histogram};
 
@@ -686,7 +686,7 @@ impl<'a> Xor2Iterator<'a> {
     }
 }
 
-impl crate::Iterator for Xor2Iterator<'_> {
+impl crate::ChunkIterator for Xor2Iterator<'_> {
     fn seek(&mut self, t: i64) -> ValueType {
         if self.err.is_some() {
             return ValueType::None;

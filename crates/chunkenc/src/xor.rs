@@ -2,7 +2,7 @@
 
 use crate::bstream::{Bstream, BstreamReader, mask, shl, shr};
 use crate::varbit::bit_range;
-use crate::Iterator as _;
+use crate::ChunkIterator as _;
 use crate::{CHUNK_ALLOCATION_SIZE, CHUNK_HEADER_SIZE, ENC_XOR, Encoding, Error, ValueType};
 use model::histogram::{FloatHistogram, Histogram};
 
@@ -221,7 +221,7 @@ impl<'a> XorIterator<'a> {
     }
 }
 
-impl crate::Iterator for XorIterator<'_> {
+impl crate::ChunkIterator for XorIterator<'_> {
     fn seek(&mut self, t: i64) -> ValueType {
         if self.err.is_some() {
             return ValueType::None;
@@ -395,7 +395,8 @@ pub fn xor_read(br: &mut BstreamReader<'_>, value: &mut f64, leading: &mut u8, t
         return Ok(());
     }
     let bit = br.read_bit_any().ok_or(Error::Eof)?;
-    let (new_trailing, mbits);
+    let new_trailing;
+    let mbits;
     if !bit {
         new_trailing = *trailing;
         mbits = 64u8.wrapping_sub(*leading).wrapping_sub(*trailing);

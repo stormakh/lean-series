@@ -2,7 +2,7 @@
 //! `st_helper_test.go`, and Go's `math/rand/v2` PCG source so random test data matches Go exactly).
 #![allow(dead_code)]
 
-use chunkenc::Iterator as _;
+use chunkenc::ChunkIterator as _;
 use chunkenc::{Chunk, Encoding, ValueType, new_empty_chunk};
 use model::histogram::{FloatHistogram, Histogram};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -167,7 +167,7 @@ pub fn test_chunk_st_handling(vt: ValueType, chunk_factory: fn() -> Box<dyn Chun
         ValueType::None => panic!("unsupported value type {vt}"),
     };
 
-    let get = |it: &chunkenc::ChunkIterator<'_>| -> (i64, i64, f64) {
+    let get = |it: &chunkenc::AnyIterator<'_>| -> (i64, i64, f64) {
         match vt {
             ValueType::Float => {
                 let (ts, v) = it.at();

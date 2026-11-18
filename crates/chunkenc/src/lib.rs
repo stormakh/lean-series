@@ -4,7 +4,7 @@
 //! Design: chunks own their bytes. Appenders hold only the encoder state; every append call gets the chunk it
 //! appends to (`app.append(&mut chunk, st, t, v)`), so a chunk can be read while its appender lives. Iterators
 //! borrow the chunk bytes (`XorIterator<'a>` reads a `&'a [u8]`), so they also work on mmapped bytes without a
-//! copy. The [`Chunk`] trait, the [`ChunkIterator`] enum and the [`Appender`] enum give dynamic dispatch over the
+//! copy. The [`Chunk`] trait, the [`AnyIterator`] enum and the [`Appender`] enum give dynamic dispatch over the
 //! encodings (Go's interfaces).
 
 pub mod bstream;
@@ -230,8 +230,9 @@ pub(crate) fn invalid_encoding(e: Encoding) -> Error {
     Error::Msg(Cow::Owned(format!("invalid chunk encoding \"{}\"", e.as_str())))
 }
 
-/// Iterates over the samples of a chunk (Go `chunkenc.Iterator`).
-pub trait Iterator {
+/// Iterates over the samples of a chunk (Go `chunkenc.Iterator`; renamed so that it does not shadow std's
+/// `Iterator`).
+pub trait ChunkIterator {
     /// Advances the iterator by one and returns the type of the value at the new position (or `ValueType::None`
     /// if the iterator is exhausted).
     fn next(&mut self) -> ValueType;
@@ -251,7 +252,7 @@ pub trait Iterator {
     fn err(&self) -> Option<&Error>;
 }
 
-impl<T: Iterator + ?Sized> Iterator for Box<T> {
+impl<T: ChunkIterator + ?Sized> ChunkIterator for Box<T> {
     fn next(&mut self) -> ValueType {
         (**self).next()
     }
@@ -287,7 +288,7 @@ pub trait Chunk: Any + Send + Sync + fmt::Debug {
     /// An appender (state) to append samples to this chunk. Reads the chunk to restore the state.
     fn appender(&mut self) -> Result<Appender, Error>;
     /// An iterator over the chunk; `it` is reused when it is of the right kind.
-    fn iterator<'a>(&'a self, it: Option<ChunkIterator<'a>>) -> ChunkIterator<'a>;
+    fn iterator<'a>(&'a self, it: Option<AnyIterator<'a>>) -> AnyIterator<'a>;
     /// The number of samples in the chunk.
     fn num_samples(&self) -> usize;
     /// Called when the chunk is expected to be complete; may shrink the allocation.
@@ -298,8 +299,8 @@ pub trait Chunk: Any + Send + Sync + fmt::Debug {
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
-/// Dynamic iterator over any chunk encoding (enum dispatch, no allocation).
-pub enum ChunkIterator<'a> {
+/// Dynamic iterator over any chunk encoding (enum dispatch, no allocation). Go returns the `Iterator` interface.
+pub enum AnyIterator<'a> {
     Nop(NopIterator),
     Xor(XorIterator<'a>),
     Xor2(Xor2Iterator<'a>),
@@ -307,51 +308,51 @@ pub enum ChunkIterator<'a> {
     FloatHistogram(FloatHistogramIterator<'a>),
     HistogramSt(HistogramStIterator<'a>),
     FloatHistogramSt(FloatHistogramStIterator<'a>),
-    Other(Box<dyn Iterator + 'a>),
+    Other(Box<dyn ChunkIterator + 'a>),
 }
 
-impl<'a> ChunkIterator<'a> {
+impl<'a> AnyIterator<'a> {
     /// An iterator over chunk bytes of encoding `e` (no copy).
-    pub fn new(e: Encoding, b: &'a [u8]) -> Result<ChunkIterator<'a>, Error> {
+    pub fn new(e: Encoding, b: &'a [u8]) -> Result<AnyIterator<'a>, Error> {
         Ok(match e {
-            ENC_XOR => ChunkIterator::Xor(XorIterator::new(b)),
-            ENC_XOR2 => ChunkIterator::Xor2(Xor2Iterator::new(b)),
-            ENC_HISTOGRAM => ChunkIterator::Histogram(HistogramIterator::new(b)),
-            ENC_FLOAT_HISTOGRAM => ChunkIterator::FloatHistogram(FloatHistogramIterator::new(b)),
-            ENC_HISTOGRAM_ST => ChunkIterator::HistogramSt(HistogramStIterator::new(b)),
-            ENC_FLOAT_HISTOGRAM_ST => ChunkIterator::FloatHistogramSt(FloatHistogramStIterator::new(b)),
+            ENC_XOR => AnyIterator::Xor(XorIterator::new(b)),
+            ENC_XOR2 => AnyIterator::Xor2(Xor2Iterator::new(b)),
+            ENC_HISTOGRAM => AnyIterator::Histogram(HistogramIterator::new(b)),
+            ENC_FLOAT_HISTOGRAM => AnyIterator::FloatHistogram(FloatHistogramIterator::new(b)),
+            ENC_HISTOGRAM_ST => AnyIterator::HistogramSt(HistogramStIterator::new(b)),
+            ENC_FLOAT_HISTOGRAM_ST => AnyIterator::FloatHistogramSt(FloatHistogramStIterator::new(b)),
             _ => return Err(invalid_encoding(e)),
         })
     }
 
     /// Resets the iterator to new bytes of encoding `e`, reusing its buffers when the kind matches.
-    pub fn reset_to(self, e: Encoding, b: &'a [u8]) -> Result<ChunkIterator<'a>, Error> {
+    pub fn reset_to(self, e: Encoding, b: &'a [u8]) -> Result<AnyIterator<'a>, Error> {
         Ok(match (self, e) {
-            (ChunkIterator::Xor(mut it), ENC_XOR) => {
+            (AnyIterator::Xor(mut it), ENC_XOR) => {
                 it.reset(b);
-                ChunkIterator::Xor(it)
+                AnyIterator::Xor(it)
             }
-            (ChunkIterator::Xor2(mut it), ENC_XOR2) => {
+            (AnyIterator::Xor2(mut it), ENC_XOR2) => {
                 it.reset(b);
-                ChunkIterator::Xor2(it)
+                AnyIterator::Xor2(it)
             }
-            (ChunkIterator::Histogram(mut it), ENC_HISTOGRAM) => {
+            (AnyIterator::Histogram(mut it), ENC_HISTOGRAM) => {
                 it.reset(b);
-                ChunkIterator::Histogram(it)
+                AnyIterator::Histogram(it)
             }
-            (ChunkIterator::FloatHistogram(mut it), ENC_FLOAT_HISTOGRAM) => {
+            (AnyIterator::FloatHistogram(mut it), ENC_FLOAT_HISTOGRAM) => {
                 it.reset(b);
-                ChunkIterator::FloatHistogram(it)
+                AnyIterator::FloatHistogram(it)
             }
-            (ChunkIterator::HistogramSt(mut it), ENC_HISTOGRAM_ST) => {
+            (AnyIterator::HistogramSt(mut it), ENC_HISTOGRAM_ST) => {
                 it.reset(b);
-                ChunkIterator::HistogramSt(it)
+                AnyIterator::HistogramSt(it)
             }
-            (ChunkIterator::FloatHistogramSt(mut it), ENC_FLOAT_HISTOGRAM_ST) => {
+            (AnyIterator::FloatHistogramSt(mut it), ENC_FLOAT_HISTOGRAM_ST) => {
                 it.reset(b);
-                ChunkIterator::FloatHistogramSt(it)
+                AnyIterator::FloatHistogramSt(it)
             }
-            (_, e) => ChunkIterator::new(e, b)?,
+            (_, e) => AnyIterator::new(e, b)?,
         })
     }
 }
@@ -359,19 +360,19 @@ impl<'a> ChunkIterator<'a> {
 macro_rules! dispatch_it {
     ($self:expr, $it:ident => $e:expr) => {
         match $self {
-            ChunkIterator::Nop($it) => $e,
-            ChunkIterator::Xor($it) => $e,
-            ChunkIterator::Xor2($it) => $e,
-            ChunkIterator::Histogram($it) => $e,
-            ChunkIterator::FloatHistogram($it) => $e,
-            ChunkIterator::HistogramSt($it) => $e,
-            ChunkIterator::FloatHistogramSt($it) => $e,
-            ChunkIterator::Other($it) => $e,
+            AnyIterator::Nop($it) => $e,
+            AnyIterator::Xor($it) => $e,
+            AnyIterator::Xor2($it) => $e,
+            AnyIterator::Histogram($it) => $e,
+            AnyIterator::FloatHistogram($it) => $e,
+            AnyIterator::HistogramSt($it) => $e,
+            AnyIterator::FloatHistogramSt($it) => $e,
+            AnyIterator::Other($it) => $e,
         }
     };
 }
 
-impl Iterator for ChunkIterator<'_> {
+impl ChunkIterator for AnyIterator<'_> {
     #[inline]
     fn next(&mut self) -> ValueType {
         dispatch_it!(self, it => it.next())
@@ -524,7 +525,7 @@ pub fn mock_series_iterator(start_timestamps: Vec<i64>, timestamps: Vec<i64>, va
     MockSeriesIterator { start_timestamps, timestamps, values, curr_index: -1 }
 }
 
-impl Iterator for MockSeriesIterator {
+impl ChunkIterator for MockSeriesIterator {
     fn next(&mut self) -> ValueType {
         if self.curr_index < self.timestamps.len() as isize - 1 {
             self.curr_index += 1;
@@ -566,7 +567,7 @@ pub fn new_nop_iterator() -> NopIterator {
     NopIterator
 }
 
-impl Iterator for NopIterator {
+impl ChunkIterator for NopIterator {
     fn next(&mut self) -> ValueType {
         ValueType::None
     }
@@ -692,13 +693,13 @@ macro_rules! impl_chunk {
             fn appender(&mut self) -> Result<$crate::Appender, $crate::Error> {
                 <$t>::appender(self).map($crate::Appender::$variant)
             }
-            fn iterator<'a>(&'a self, it: Option<$crate::ChunkIterator<'a>>) -> $crate::ChunkIterator<'a> {
+            fn iterator<'a>(&'a self, it: Option<$crate::AnyIterator<'a>>) -> $crate::AnyIterator<'a> {
                 match it {
-                    Some($crate::ChunkIterator::$variant(mut it)) => {
+                    Some($crate::AnyIterator::$variant(mut it)) => {
                         it.reset(<$t>::bytes(self));
-                        $crate::ChunkIterator::$variant(it)
+                        $crate::AnyIterator::$variant(it)
                     }
-                    _ => $crate::ChunkIterator::$variant(<$t>::iterator(self)),
+                    _ => $crate::AnyIterator::$variant(<$t>::iterator(self)),
                 }
             }
             fn num_samples(&self) -> usize {

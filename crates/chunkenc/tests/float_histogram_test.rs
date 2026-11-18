@@ -3,9 +3,9 @@
 mod common;
 use common::{generate_test_custom_buckets_float_histogram, generate_test_float_histogram};
 
-use chunkenc::Iterator as _;
+use chunkenc::ChunkIterator as _;
 use chunkenc::{
-    Chunk, ChunkIterator, CounterResetHeader, ENC_FLOAT_HISTOGRAM, FloatHistogramAppender, FloatHistogramChunk,
+    Chunk, AnyIterator, CounterResetHeader, ENC_FLOAT_HISTOGRAM, FloatHistogramAppender, FloatHistogramChunk,
     ValueType,
 };
 use model::histogram::{
@@ -44,7 +44,7 @@ fn assert_first_float_histogram_sample_hint(c: &dyn Chunk, expected: CounterRese
     assert_eq!(expected, v.counter_reset_hint);
 }
 
-fn collect(it: &mut ChunkIterator<'_>) -> Vec<FloatResult> {
+fn collect(it: &mut AnyIterator<'_>) -> Vec<FloatResult> {
     let mut act = Vec::new();
     while it.next() == ValueType::FloatHistogram {
         let (t, h) = it.at_float_histogram(None);

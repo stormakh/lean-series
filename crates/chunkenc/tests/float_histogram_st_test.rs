@@ -3,7 +3,7 @@
 mod common;
 use common::{generate_test_float_histogram, generate_test_float_histograms};
 
-use chunkenc::Iterator as _;
+use chunkenc::ChunkIterator as _;
 use chunkenc::st::MAX_FIRST_ST_CHANGE_ON;
 use chunkenc::{
     Chunk, CounterResetHeader, ENC_FLOAT_HISTOGRAM_ST, Error, FloatHistogramStAppender, FloatHistogramStChunk,

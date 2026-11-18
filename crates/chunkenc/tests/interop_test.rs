@@ -6,7 +6,7 @@
 //! Manifest lines: `encoding <n>`, `resume <k>`, `bytes <hex>`, `sample <st> <t> <f64 bits hex>` (input, in
 //! append order), `decoded <st> <t> <f64 bits hex>` (Go iterator output).
 
-use chunkenc::Iterator as _;
+use chunkenc::ChunkIterator as _;
 use chunkenc::{Appender, Chunk, Encoding, ValueType, from_data, new_empty_chunk};
 use model::histogram::{CounterResetHint, FloatHistogram, Histogram, Span};
 use std::path::PathBuf;

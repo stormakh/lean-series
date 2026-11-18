@@ -4,7 +4,7 @@
 //! start timestamps (5). They share all code; the ST variant has another header layout (sample count masked to 14
 //! bits, counter reset bits in byte 0, ST header in byte 2) and encodes the ST after each sample.
 
-use crate::Iterator as _;
+use crate::ChunkIterator as _;
 use crate::bstream::{Bstream, BstreamReader};
 use crate::histogram_meta::*;
 use crate::st::{HISTOGRAM_ST_SAMPLE_COUNT_MASK, StDecoder, StEncoder, read_st_header};
@@ -1031,7 +1031,7 @@ pub(crate) fn stale_float_histogram(fh: Option<FloatHistogram>, sum: f64) -> Flo
     fh
 }
 
-impl<const ST: bool> crate::Iterator for HistogramIteratorT<'_, ST> {
+impl<const ST: bool> crate::ChunkIterator for HistogramIteratorT<'_, ST> {
     fn next(&mut self) -> ValueType {
         if !ST {
             return self.next_base();

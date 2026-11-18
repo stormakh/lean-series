@@ -2,7 +2,7 @@
 
 mod common;
 
-use chunkenc::Iterator as _;
+use chunkenc::ChunkIterator as _;
 use chunkenc::{
     Chunk, CounterResetHeader, ENC_HISTOGRAM, HistogramAppendable, HistogramAppender, HistogramChunk, ValueType,
 };
