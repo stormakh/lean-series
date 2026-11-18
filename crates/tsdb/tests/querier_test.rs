@@ -1,5 +1,4 @@
-//! Port of `tsdb/querier_test.go`. Tests that need the head run their body with `--cfg head` and are ignored
-//! until the head is merged.
+//! Port of `tsdb/querier_test.go`.
 
 #![allow(clippy::needless_update, clippy::type_complexity, clippy::unnecessary_to_owned, clippy::cloned_ref_to_slice_refs)]
 
@@ -308,9 +307,7 @@ fn test_block_base_querier_label_names_limit() {
 }
 
 #[test]
-#[ignore = "needs head"]
 fn test_block_querier_against_head_with_open_chunks() {
-    #[cfg(head)]
     {
         use tsdb::head::{Head, HeadOptions, HeadStats, RangeHead};
         use tsdb::BlockReader;
@@ -349,8 +346,13 @@ fn test_block_querier_against_head_with_open_chunks() {
             ),
         ];
         for c in &cases {
-            let opts = HeadOptions { chunk_range: 2 * 60 * 60 * 1000, ..HeadOptions::default() };
-            let h = Head::new(None, None, opts, Arc::new(HeadStats::default())).unwrap();
+            let chunk_dir = TempDir::new();
+            let opts = HeadOptions {
+                chunk_range: 2 * 60 * 60 * 1000,
+                chunk_dir_root: chunk_dir.path().to_path_buf(),
+                ..HeadOptions::default()
+            };
+            let h = Head::new(None, None, opts, Some(HeadStats::new())).unwrap();
             let mut app = h.appender(&Context::background());
             for s in test_data() {
                 for chk in &s.chunks {
@@ -2221,14 +2223,12 @@ fn test_postings_for_matchers() {
         ir.close().unwrap();
     }
     block.close().unwrap();
-
-    #[cfg(head)]
     {
         use tsdb::head::{Head, HeadOptions, HeadStats};
         let chunk_dir = TempDir::new();
         let opts =
             HeadOptions { chunk_range: 1000, chunk_dir_root: chunk_dir.path().to_path_buf(), ..HeadOptions::default() };
-        let h = Head::new(None, None, opts, Arc::new(HeadStats::default())).unwrap();
+        let h = Head::new(None, None, opts, Some(HeadStats::new())).unwrap();
         let mut app = h.appender(&Context::background());
         for l in &series {
             let _ = app.append(0, l, 0, 0.0);
@@ -2241,9 +2241,7 @@ fn test_postings_for_matchers() {
 }
 
 #[test]
-#[ignore = "needs db"]
 fn test_querier_index_queries_race() {
-    #[cfg(head)]
     {
         use std::sync::atomic::{AtomicBool, Ordering};
         const TEST_REPEATS: usize = 1000;
@@ -2255,8 +2253,8 @@ fn test_querier_index_queries_race() {
             vec![m(MatchType::NotEqual, "always_0", "0"), m(MatchType::Equal, "__name__", "metric")],
         ];
         for matchers in test_cases {
-            let db = tsdb::db::new_test_db(tsdb::db::with_opts(tsdb::db::DefaultOptions()));
-            let h = db.head();
+            let db = new_test_db(vec![with_opts(tsdb::db::default_options())]);
+            let h = db.head().clone();
             let stop = Arc::new(AtomicBool::new(false));
             let s2 = stop.clone();
             let appender = std::thread::spawn(move || {
@@ -2287,14 +2285,12 @@ fn test_querier_index_queries_race() {
 
 // Ensures that calling Close more than once doesn't block and doesn't panic.
 #[test]
-#[ignore = "needs db"]
 fn test_close() {
-    #[cfg(head)]
     {
         let dir = TempDir::new();
         create_block(dir.path(), &gen_series(1, 1, 0, 10));
         create_block(dir.path(), &gen_series(1, 1, 10, 20));
-        let db = tsdb::db::open(dir.path(), None, None, tsdb::db::DefaultOptions(), None)
+        let db = tsdb::db::open(dir.path(), None, Some(tsdb::db::default_options()), None)
             .expect("Opening test storage failed");
         let mut q = db.querier(0, 20).unwrap();
         assert!(q.close().is_none());
@@ -2432,9 +2428,7 @@ fn test_block_base_series_set() {
 }
 
 #[test]
-#[ignore = "needs db"]
 fn test_query_with_deleted_histograms() {
-    #[cfg(head)]
     {
         type Gen = Box<dyn Fn(i64) -> (Option<Histogram>, Option<FloatHistogram>)>;
         let ctx = Context::background();
@@ -2446,7 +2440,7 @@ fn test_query_with_deleted_histograms() {
             ("floatGauge", Box::new(move |_| (None, Some(tu::generate_test_gauge_float_histogram(rnd()))))),
         ];
         for (name, tc) in cases {
-            let db = tsdb::db::new_test_db(tsdb::db::with_opts(tsdb::db::DefaultOptions()));
+            let db = new_test_db(vec![with_opts(tsdb::db::default_options())]);
             let mut app = db.appender(&ctx);
             let lbs = ls(&["__name__", "test", "type", name]);
             let mut series_ref = 0;
@@ -2482,12 +2476,10 @@ fn test_query_with_deleted_histograms() {
 }
 
 #[test]
-#[ignore = "needs db"]
 fn test_query_with_one_chunk_completely_deleted() {
-    #[cfg(head)]
     {
         let ctx = Context::background();
-        let db = tsdb::db::new_test_db(tsdb::db::with_opts(tsdb::db::DefaultOptions()));
+        let db = new_test_db(vec![with_opts(tsdb::db::default_options())]);
         let mut app = db.appender(&ctx);
         let lbs = ls(&["__name__", "test"]);
         let mut series_ref = 0;
@@ -2540,20 +2532,16 @@ fn test_query_with_one_chunk_completely_deleted() {
 }
 
 #[test]
-#[ignore = "needs db"]
 fn test_chunk_querier_overlapping_in_order_and_ooo_chunks() {
-    #[cfg(head)]
     {
         for store_st in [false, true] {
             for val_type in [ValueType::Float, ValueType::Histogram, ValueType::FloatHistogram] {
-                test_chunk_querier_overlapping_in_order_and_ooo_chunks(val_type, store_st);
+                run_chunk_querier_overlapping_in_order_and_ooo_chunks(val_type, store_st);
             }
         }
     }
 }
-
-#[cfg(head)]
-fn test_chunk_querier_overlapping_in_order_and_ooo_chunks(val_type: ValueType, store_st: bool) {
+fn run_chunk_querier_overlapping_in_order_and_ooo_chunks(val_type: ValueType, store_st: bool) {
     const OOO_CAP_MAX: i64 = 32;
     // Pick more OOO samples than any chunk encoding can hold so the querier is forced to cut the merged iterable
     // into multiple chunks.
@@ -2561,14 +2549,14 @@ fn test_chunk_querier_overlapping_in_order_and_ooo_chunks(val_type: ValueType, s
     const FIRST_INDEX: i64 = 0;
     const LAST_INDEX: i64 = OOO_SAMPLES_TO_APPEND + 1;
 
-    let mut opts = tsdb::db::DefaultOptions();
+    let mut opts = tsdb::db::default_options();
     opts.out_of_order_cap_max = OOO_CAP_MAX;
     opts.out_of_order_time_window = 24 * 60 * 60 * 1000;
     opts.enable_st_storage = store_st;
     if store_st {
         opts.float_chunk_encoding = chunkenc::ENC_XOR2;
     }
-    let db = tsdb::db::new_test_db(tsdb::db::with_opts(opts));
+    let db = new_test_db(vec![with_opts(opts)]);
     db.disable_compactions();
     let lbls = ls(&["foo", "bar"]);
     let append_sample = |app: &mut Box<dyn storage::Appender>, ts: i64| match val_type {
@@ -2829,15 +2817,14 @@ fn for_each_search_backend(label_sets: &[Labels], f: &dyn Fn(&dyn storage::Searc
         assert!(q.close().is_none());
     }
     block.close().unwrap();
-    #[cfg(head)]
     {
-        let h = tsdb::head::new_test_head(1000, false);
+        let h = new_test_head("querier", 1000, tsdb_format::wlog::compression::Type::None, false);
         let mut app = h.appender(&Context::background());
         for l in label_sets {
             app.append(0, l, 2100, 1.0).unwrap();
         }
         assert!(app.commit().is_none());
-        let mut q = tsdb::querier::new_block_querier(&*h, 1500, 2500).unwrap();
+        let mut q = tsdb::querier::new_block_querier(&**h, 1500, 2500).unwrap();
         f(q.as_searcher().unwrap());
         assert!(q.close().is_none());
     }
@@ -2915,9 +2902,7 @@ fn test_search_label_values_limit_applied_after_ordering() {
 // Checks the merged case: the merge truncates the k-way merge of its children, which is only correct if every child
 // returned its own smallest N.
 #[test]
-#[ignore = "needs head"]
 fn test_search_label_values_limit_across_merged_queriers() {
-    #[cfg(head)]
     {
         let ctx = Context::background();
         let dir = TempDir::new();
@@ -2928,13 +2913,13 @@ fn test_search_label_values_limit_across_merged_queriers() {
         let block = tsdb::block::open_block(None, &create_block(dir.path(), &entries), None, None).unwrap();
         let block_q = tsdb::querier::new_block_querier(&block, 1500, 2500).unwrap();
         // Appended in descending order so the head's value list is unordered.
-        let head = tsdb::head::new_test_head(1000, false);
+        let head = new_test_head("querier", 1000, tsdb_format::wlog::compression::Type::None, false);
         let mut app = head.appender(&ctx);
         for name in ["z_metric", "m_metric", "a_metric"] {
             app.append(0, &ls(&["__name__", name, "job", "api"]), 2100, 1.0).unwrap();
         }
         assert!(app.commit().is_none());
-        let head_q = tsdb::querier::new_block_querier(&*head, 1500, 2500).unwrap();
+        let head_q = tsdb::querier::new_block_querier(&**head, 1500, 2500).unwrap();
         let mut q = storage::new_merge_querier(vec![head_q, block_q], vec![], Arc::new(storage::chained_series_merge));
         {
             let rs = q.as_searcher().unwrap().search_label_values(

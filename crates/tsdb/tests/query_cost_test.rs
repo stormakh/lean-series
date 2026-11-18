@@ -1,14 +1,9 @@
-//! Port of `tsdb/query_cost_test.go`. The test drives the DB (`db.CostSamplingQueryable`), which is ported
-//! separately: the body compiles with `--cfg head` and the test is ignored until the DB is merged. The DB API
-//! below is the expected snake_case port of Go's (`new_test_db`, `with_dir`, `with_opts`, `DefaultOptions`,
-//! `disable_compactions`, `appender`, `cost_sampling_queryable`, `set_block_chunk_querier_func`).
+//! Port of `tsdb/query_cost_test.go`.
 
 mod common;
 
 #[test]
-#[ignore = "needs db"]
 fn test_db_cost_sampling_queryable() {
-    #[cfg(head)]
     {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -16,8 +11,8 @@ fn test_db_cost_sampling_queryable() {
         use common::*;
         use model::labels;
         use model::matcher::{MatchType, Matcher};
-        use storage::{ChunkQueryable, Context, Error, LabelQuerier, Queryable};
-        use tsdb::db::{DefaultOptions, new_test_db, with_dir, with_opts};
+        use storage::{Context, Error, LabelQuerier};
+        use tsdb::db::default_options as DefaultOptions;
 
         // Layouts.
         struct Case {
@@ -43,7 +38,7 @@ fn test_db_cost_sampling_queryable() {
             }
             let mut opts = DefaultOptions();
             opts.out_of_order_time_window = 1000;
-            let db = new_test_db(with_dir(dir.path()), with_opts(opts));
+            let db = new_test_db(vec![with_dir(dir.path()), with_opts(opts)]);
             db.disable_compactions();
             if tc.head {
                 let mut app = db.appender(&Context::background());
@@ -73,7 +68,7 @@ fn test_db_cost_sampling_queryable() {
         {
             let mut opts = DefaultOptions();
             opts.out_of_order_time_window = 1000;
-            let db = new_test_db(with_opts(opts));
+            let db = new_test_db(vec![with_opts(opts)]);
             let metric = labels::from_strings(&[DEFAULT_LABEL_NAME, "0"]);
             let mut app = db.appender(&Context::background());
             app.append(0, &metric, 20, 1.0).unwrap();
@@ -116,7 +111,7 @@ fn test_db_cost_sampling_queryable() {
                 let dir = TempDir::new();
                 create_block(dir.path(), &gen_series(1, 1, 0, 50));
                 create_block(dir.path(), &gen_series(1, 1, 50, 100));
-                let db = new_test_db(with_dir(dir.path()), with_opts(DefaultOptions()));
+                let db = new_test_db(vec![with_dir(dir.path()), with_opts(DefaultOptions())]);
                 db.disable_compactions();
                 let opens = Arc::new(AtomicUsize::new(0));
                 let closes = Arc::new(AtomicUsize::new(0));

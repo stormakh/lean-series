@@ -418,8 +418,15 @@ pub fn mem_block_from_series(series: &[SeriesArc]) -> MemBlock {
     }
 }
 
-/// Go `createBlock` (adapted: without the head, see the module comment). Returns the block directory.
+/// Go `createBlock`: writes the series to a block in `dir` through a head (`tsdb::tsdbblockutil::create_block`).
+/// Returns the block directory.
 pub fn create_block(dir: &Path, series: &[SeriesArc]) -> PathBuf {
+    std::fs::create_dir_all(dir).unwrap();
+    tsdb::tsdbblockutil::create_block(series, dir, 0, tsdb::Logger::nop()).unwrap()
+}
+
+/// The old `create_block` without the head: chunks of at most 120 samples written with the leveled compactor.
+pub fn create_block_without_head(dir: &Path, series: &[SeriesArc]) -> PathBuf {
     let b = mem_block_from_series(series);
     let compactor =
         new_leveled_compactor(&Context::background(), None, vec![DEFAULT_BLOCK_DURATION], None, None).unwrap();
@@ -427,6 +434,72 @@ pub fn create_block(dir: &Path, series: &[SeriesArc]) -> PathBuf {
     // Add +1 millisecond to block maxt because block intervals are half-open: [b.MinTime, b.MaxTime).
     let ids = compactor.write(dir, &b, b.meta.min_time, b.meta.max_time + 1, None).unwrap();
     dir.join(ids.first().copied().unwrap_or_default().to_string())
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Test DBs (Go newTestDB, withDir, withOpts, withRngs; util/teststorage).
+
+/// An option of [`new_test_db`].
+pub enum TestDbOpt {
+    Dir(PathBuf),
+    Opts(tsdb::db::Options),
+    Rngs(Vec<i64>),
+}
+
+/// Go `withDir`.
+pub fn with_dir(dir: &Path) -> TestDbOpt {
+    TestDbOpt::Dir(dir.to_path_buf())
+}
+
+/// Go `withOpts`.
+pub fn with_opts(opts: tsdb::db::Options) -> TestDbOpt {
+    TestDbOpt::Opts(opts)
+}
+
+/// Go `withRngs`.
+pub fn with_rngs(rngs: &[i64]) -> TestDbOpt {
+    TestDbOpt::Rngs(rngs.to_vec())
+}
+
+/// A DB opened by [`new_test_db`]; closed on drop (Go `t.Cleanup(db.Close)`), and its temporary directory
+/// removed.
+pub struct TestDb {
+    pub db: Arc<tsdb::db::DB>,
+    pub tmp: Option<TempDir>,
+}
+
+impl std::ops::Deref for TestDb {
+    type Target = Arc<tsdb::db::DB>;
+    fn deref(&self) -> &Arc<tsdb::db::DB> {
+        &self.db
+    }
+}
+
+impl Drop for TestDb {
+    fn drop(&mut self) {
+        // Always close. DB is safe for close-after-close.
+        let r = self.db.close();
+        if !std::thread::panicking() {
+            r.expect("close db");
+        }
+    }
+}
+
+/// Go `newTestDB`: a DB in a temporary directory (or the given one) with the given options and block ranges.
+pub fn new_test_db(opts: Vec<TestDbOpt>) -> TestDb {
+    let (mut dir, mut o, mut rngs) = (None, None, Vec::new());
+    for opt in opts {
+        match opt {
+            TestDbOpt::Dir(d) => dir = Some(d),
+            TestDbOpt::Opts(x) => o = Some(x),
+            TestDbOpt::Rngs(r) => rngs = r,
+        }
+    }
+    let tmp = if dir.is_none() { Some(TempDir::new()) } else { None };
+    let dir = dir.unwrap_or_else(|| tmp.as_ref().unwrap().path().to_path_buf());
+    let (o, rngs) = tsdb::db::validate_opts(Some(o.unwrap_or_default()), rngs).unwrap();
+    let db = tsdb::db::open_with_ranges(&dir, None, o, rngs, None).unwrap();
+    TestDb { db, tmp }
 }
 
 // ---------------------------------------------------------------------------------------------------------------

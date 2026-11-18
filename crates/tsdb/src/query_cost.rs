@@ -18,7 +18,7 @@ pub enum PinnedChunkQuerier {
 }
 
 impl PinnedChunkQuerier {
-    fn close(&mut self) -> Option<Error> {
+    pub(crate) fn close(&mut self) -> Option<Error> {
         use storage::LabelQuerier;
         match self {
             PinnedChunkQuerier::Native(q) => q.close(),
