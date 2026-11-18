@@ -876,6 +876,16 @@ impl<'a> Evaluator<'a> {
         Ok((mat, warnings))
     }
 
+    /// Go `gatherVector` without series helpers.
+    pub(crate) fn gather_vector_pub(&mut self, ts: i64, input: &mut CursorMatrix, output: &mut Vector) -> EvalResult<()> {
+        self.gather_vector(ts, input, output, None)
+    }
+
+    /// Go `expandSeriesSet`.
+    pub(crate) fn expand_series_set_pub(&mut self, it: BoxSeriesSet) -> (Vec<SeriesArc>, Annotations, Option<Error>) {
+        self.expand_series_set(it)
+    }
+
     /// Go `gatherVector`.
     fn gather_vector(
         &mut self,

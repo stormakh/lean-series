@@ -9,7 +9,7 @@
 
 mod aggregate;
 mod binop;
-mod eval;
+pub(crate) mod eval;
 mod preprocess;
 
 use std::collections::HashMap;
