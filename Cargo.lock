@@ -386,6 +386,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "scrape"
+version = "0.1.0"
+dependencies = [
+ "config",
+ "discovery",
+ "flate2",
+ "http",
+ "json",
+ "model",
+ "net",
+ "storage",
+ "textparse",
+ "util",
+ "yaml",
+ "zstd",
+]
+
+[[package]]
 name = "security-framework"
 version = "3.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

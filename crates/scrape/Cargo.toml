@@ -1,0 +1,21 @@
+[package]
+name = "scrape"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+model = { path = "../model" }
+textparse = { path = "../textparse" }
+config = { path = "../config" }
+discovery = { path = "../discovery" }
+net = { path = "../net" }
+storage = { path = "../storage" }
+yaml = { path = "../yaml" }
+json = { path = "../json" }
+flate2 = "=1.1.10"
+zstd = { version = "0.13", default-features = false }
+
+[dev-dependencies]
+util = { path = "../util" }
+http = { path = "../http" }

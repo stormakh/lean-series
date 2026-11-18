@@ -6,6 +6,5 @@ license.workspace = true
 
 [dependencies]
 storage = { path = "../storage" }
-
-[dev-dependencies]
 model = { path = "../model" }
+
