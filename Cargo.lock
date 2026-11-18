@@ -103,6 +103,7 @@ dependencies = [
  "json",
  "model",
  "net",
+ "ring",
  "yaml",
 ]
 

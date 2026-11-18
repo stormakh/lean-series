@@ -5,3 +5,5 @@ mod common;
 mod ionos;
 #[path = "server_test/stackit.rs"]
 mod stackit;
+#[path = "server_test/stackit_mock.rs"]
+mod stackit_mock;

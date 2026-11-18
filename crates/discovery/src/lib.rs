@@ -11,12 +11,17 @@ pub mod chan;
 pub mod file;
 pub mod glob;
 pub mod http;
+pub mod ionos;
 pub mod log;
 pub mod manager;
 pub mod metrics;
+pub mod outscale;
+pub mod ovhcloud;
 pub mod refresh;
 pub mod registry;
+pub(crate) mod sd_json;
 pub mod sdutil;
+pub mod stackit;
 pub mod targetgroup;
 
 use std::any::Any;

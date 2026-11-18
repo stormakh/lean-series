@@ -42,6 +42,10 @@ fn builtin() -> Vec<Registration> {
     vec![
         registration::<crate::file::SdConfig>(),
         registration::<crate::http::SdConfig>(),
+        registration::<crate::ionos::SdConfig>(),
+        registration::<crate::outscale::SdConfig>(),
+        registration::<crate::ovhcloud::SdConfig>(),
+        registration::<crate::stackit::SdConfig>(),
     ]
 }
 

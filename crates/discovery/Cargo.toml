@@ -10,6 +10,8 @@ json = { path = "../json" }
 model = { path = "../model" }
 net = { path = "../net" }
 crypto = { path = "../crypto" }
+# RSA PKCS#1 signing for the STACKIT key flow (RS512 JWT); already in the tree through net
+ring = "0.17"
 
 [dev-dependencies]
 http = { path = "../http" }
