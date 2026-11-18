@@ -143,7 +143,10 @@ impl Abort {
 
 /// A receiver of body bytes: called with each piece; returning false stops reading (the connection closes).
 #[derive(Clone)]
-pub struct BodySink(pub Arc<Mutex<dyn FnMut(&[u8]) -> bool + Send>>);
+pub struct BodySink(pub Arc<Mutex<SinkFn>>);
+
+/// The function of a [`BodySink`].
+pub type SinkFn = dyn FnMut(&[u8]) -> bool + Send;
 
 impl BodySink {
     pub fn new(f: impl FnMut(&[u8]) -> bool + Send + 'static) -> BodySink {

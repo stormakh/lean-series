@@ -17,10 +17,12 @@ struct Watcher {
     stopped: bool,
 }
 
+/// (namespace, name) -> (resource version, object)
+type Objects = BTreeMap<(String, String), (i64, Object)>;
+
 #[derive(Default)]
 struct State {
-    /// kind -> (namespace, name) -> (resource version, object)
-    objects: HashMap<Kind, BTreeMap<(String, String), (i64, Object)>>,
+    objects: HashMap<Kind, Objects>,
     rvs: HashMap<Kind, i64>,
     watchers: Vec<Watcher>,
     next_id: u64,

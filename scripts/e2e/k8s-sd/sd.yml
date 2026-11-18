@@ -1,0 +1,40 @@
+# The kubernetes_sd_configs of the comparison; job "k<i>" of prometheus.yml uses entry i (run.py builds it).
+- role: node
+  api_server: http://127.0.0.1:9800
+  bearer_token: secret-token
+- role: pod
+  api_server: http://127.0.0.1:9800
+- role: pod
+  api_server: http://127.0.0.1:9800
+  namespaces:
+    names: [default]
+  attach_metadata: {node: true, namespace: true, deployment: true, job: true, cronjob: true}
+- role: service
+  api_server: http://127.0.0.1:9800
+  attach_metadata: {namespace: true}
+- role: endpoints
+  api_server: http://127.0.0.1:9800
+  attach_metadata: {node: true, namespace: true}
+- role: endpointslice
+  api_server: http://127.0.0.1:9800
+  attach_metadata: {node: true, namespace: true, deployment: true}
+- role: ingress
+  api_server: http://127.0.0.1:9800
+  attach_metadata: {namespace: true}
+- role: pod
+  api_server: http://127.0.0.1:9800
+  attach_metadata: {node: true}
+  selectors:
+    - role: node
+      label: tier=gold
+- role: endpoints
+  kubeconfig_file: KUBECONFIG_PATH
+- role: service
+  api_server: http://127.0.0.1:9800
+  namespaces:
+    names: [kube-system, monitoring]
+  selectors:
+    - role: service
+      label: k8s-app=kube-dns
+- role: endpointslice
+  api_server: http://127.0.0.1:9800

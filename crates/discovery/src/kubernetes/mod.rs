@@ -914,6 +914,26 @@ pub(crate) fn run_queue(ctx: &CancelToken, up: &Sender, queue: &Arc<informer::Wo
     }
 }
 
+/// Go `retryOnError`: calls `f` until it succeeds, waiting `interval` between calls; true when `ctx` was
+/// cancelled first.
+pub fn retry_on_error(ctx: &CancelToken, interval: std::time::Duration, mut f: impl FnMut() -> Result<(), String>) -> bool {
+    let mut r = f();
+    loop {
+        if r.is_ok() {
+            return false;
+        }
+        if ctx.wait_timeout(interval) {
+            return true;
+        }
+        r = f();
+    }
+}
+
+/// Go `nodeName`: the node name of a handler event, also of a tombstone (its key).
+pub fn node_name(e: &informer::Event) -> Result<String, String> {
+    Ok(e.key())
+}
+
 /// An event counter of a role (Go `eventCount.WithLabelValues(role, event)`).
 pub(crate) fn event_counter(ec: &CounterVec, role: &str, event: &str) -> Arc<crate::metrics::Value> {
     ec.with_label_values(&[role, event])
