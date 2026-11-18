@@ -45,6 +45,7 @@ fn builtin() -> Vec<Registration> {
         registration::<crate::file::SdConfig>(),
         registration::<crate::http::SdConfig>(),
         registration::<crate::aws::lightsail::LightsailSdConfig>(),
+        registration::<crate::oci::SdConfig>(),
         registration::<crate::aws::rds::RdsSdConfig>(),
     ]
 }
