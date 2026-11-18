@@ -177,7 +177,31 @@ fn dump_wals(dir: &Path, out: &mut String) {
     }
 }
 
+fn make_checkpoint(w: &WL, to: i64) {
+    let keep = |id: u64| id % 3 != 0;
+    wlog::checkpoint(w, 0, to, &keep, CHECKPOINT_MINT, false, true).unwrap();
+}
+
+fn dump_checkpoint(dec: &mut Decoder, name: &str, wdir: &Path, out: &mut String) {
+    let (cp, idx) = wlog::last_checkpoint(wdir).unwrap();
+    let _ = writeln!(out, "checkpoint {name} {} {idx}", cp.file_name().unwrap().to_string_lossy());
+    let mut md = Vec::new();
+    for rec in read_records(&cp) {
+        if dec.r#type(&rec) == Type::Metadata {
+            dec.metadata(&rec, &mut md).unwrap();
+            continue;
+        }
+        let _ = writeln!(out, "cprec {name} {} {}", rec[0], hex(&rec));
+    }
+    // Go writes the metadata records from a map, in random order: dump them sorted.
+    md.sort_by_key(|m| m.r#ref);
+    for m in md {
+        let _ = writeln!(out, "cpmeta {name} {} {} {}\t{}", m.r#ref, m.r#type, m.unit, m.help);
+    }
+}
+
 const WAL_SEGMENT_SIZE: usize = 4 * 32 * 1024;
+const COMPRESSED_WAL_SEGMENT_SIZE: usize = 32 * 32 * 1024;
 const CHECKPOINT_MINT: i64 = 1_000_000;
 
 /// Re-encodes every Go record (asserting identical bytes) and writes them to Rust WALs, then makes a checkpoint
@@ -186,8 +210,12 @@ fn rewrite_wals(go: &Path, out: &Path) {
     let mut dec = Decoder::new(Default::default());
     for (name, c) in COMPRESSIONS {
         let recs = read_records(&go.join(format!("wal-{name}")));
-        let w = WL::new_size(out.join(format!("wal-{name}")), WAL_SEGMENT_SIZE, c).unwrap();
+        let size = if c == compression::Type::None { WAL_SEGMENT_SIZE } else { COMPRESSED_WAL_SEGMENT_SIZE };
+        let w = WL::new_size(out.join(format!("wal-{name}")), size, c).unwrap();
         for (i, rec) in recs.iter().enumerate() {
+            if i == recs.len() / 2 {
+                w.next_segment().unwrap();
+            }
             let again = reencode(&mut dec, rec);
             assert!(again == *rec, "wal-{name} record {i} (type {}): Rust re-encoding differs from Go", rec[0]);
             w.log(rec).unwrap();
@@ -205,4 +233,30 @@ fn dump(_dir: &Path) -> String {
 
 fn rewrite(_go: &Path, _out: &Path) {
     unimplemented!()
+}
+
+#[test]
+fn tmp_wal_only() {
+    let root = root();
+    let go = root.join("go");
+    let want: String = fs::read_to_string(root.join("go.dump.txt"))
+        .unwrap()
+        .lines()
+        .filter(|l| ["wal ", "rec ", "checkpoint ", "cprec ", "cpmeta ", "tombstone "].iter().any(|p| l.starts_with(p)))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    let mut got = String::new();
+    dump_wals(&go, &mut got);
+    dump_tombstones(&go, &mut got);
+    compare_dumps("wal go", &want, &got);
+    let out = root.join("rust");
+    let _ = fs::remove_dir_all(&out);
+    fs::create_dir_all(&out).unwrap();
+    rewrite_wals(&go, &out);
+    let (tr, _) = tombstones::read_tombstones(&go).unwrap();
+    tombstones::write_file(&Default::default(), &out, &tr).unwrap();
+    let mut got = String::new();
+    dump_wals(&out, &mut got);
+    dump_tombstones(&out, &mut got);
+    compare_dumps("wal rust", &want, &got);
 }

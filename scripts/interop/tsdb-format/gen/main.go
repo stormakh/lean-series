@@ -50,6 +50,8 @@ const (
 	numSeries         = 300
 	chunkSegmentSize  = 64 * 1024
 	walSegmentSize    = 4 * 32 * 1024
+	// compressedWALSegmentSize is large enough that snappy and zstd WALs never cut a segment because it is full.
+	compressedWALSegmentSize = 32 * 32 * 1024
 	checkpointMint    = 1_000_000
 	headCutAfterChunk = 150
 )
@@ -355,9 +357,19 @@ func write(root string) error {
 	// WALs with one checkpoint each.
 	recs := walRecords()
 	for _, c := range []compression.Type{compression.None, compression.Snappy, compression.Zstd} {
-		w, err := wlog.NewSize(logger, nil, filepath.Join(dir, "wal-"+string(c)), walSegmentSize, c)
+		// The uncompressed WAL cuts segments when they are full; compressed WALs get large segments, because the
+		// compressed sizes depend on the compressor implementation. All WALs also cut a segment at a fixed record.
+		size := walSegmentSize
+		if c != compression.None {
+			size = compressedWALSegmentSize
+		}
+		w, err := wlog.NewSize(logger, nil, filepath.Join(dir, "wal-"+string(c)), size, c)
 		must(err)
-		for _, r := range recs {
+		for i, r := range recs {
+			if i == len(recs)/2 {
+				_, err := w.NextSegment()
+				must(err)
+			}
 			must(w.Log(r))
 		}
 		_, last, err := wlog.Segments(w.Dir())
