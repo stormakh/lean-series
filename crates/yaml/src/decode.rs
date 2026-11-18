@@ -73,6 +73,11 @@ pub trait Struct {
     fn marshal_fields(&self, out: &mut Vec<(Value, Value)>) -> std::result::Result<(), String>;
     /// Go `isZero` for the struct: every field is zero.
     fn fields_zero(&self) -> bool;
+    /// Decodes the value of a known key by hand (for fields whose Rust type cannot decode itself the Go way, or
+    /// keys that are not plain fields). `None` decodes through `field`. Not consulted for inline structs.
+    fn decode_key(&mut self, _key: &str, _n: &Node, _d: &mut Decoder) -> Option<Result<bool>> {
+        None
+    }
 }
 
 pub struct Decoder {
@@ -82,6 +87,8 @@ pub struct Decoder {
     decode_count: usize,
     alias_count: usize,
     alias_depth: usize,
+    /// Go `[]*T` fields that had nil items in the struct being decoded: the key and the index of the first nil.
+    nulls: Vec<(&'static str, usize)>,
 }
 
 fn allowed_alias_ratio(decode_count: usize) -> f64 {
@@ -123,7 +130,7 @@ pub fn go_quote(s: &str) -> String {
 
 impl Decoder {
     pub fn new(strict: bool) -> Decoder {
-        Decoder { strict, terrors: Vec::new(), aliases: Vec::new(), decode_count: 0, alias_count: 0, alias_depth: 0 }
+        Decoder { strict, terrors: Vec::new(), aliases: Vec::new(), decode_count: 0, alias_count: 0, alias_depth: 0, nulls: Vec::new() }
     }
 
     /// Records a type error, as go-yaml `d.terror`.
@@ -206,6 +213,41 @@ impl Decoder {
         Ok(())
     }
 
+    /// Like `inner_struct`, and also returns the `ptrs` fields (Go `[]*T`) of this struct that had null items:
+    /// the YAML key and the index of the first null among the kept items (Go would find the nil there).
+    pub fn inner_struct_nulls<T: Struct>(&mut self, n: &Node, out: &mut T) -> Result<Vec<(&'static str, usize)>> {
+        let saved = std::mem::take(&mut self.nulls);
+        let r = self.inner_struct(n, out);
+        let mine = std::mem::replace(&mut self.nulls, saved);
+        r.map(|_| mine)
+    }
+
+    /// Decodes a Go `[]*T` field into a `Vec<T>`: null items are left out and noted (see `inner_struct_nulls`).
+    pub fn decode_ptr_vec<T: Unmarshal + Default>(&mut self, n: &Node, out: &mut Vec<T>, key: &'static str, slice_type: &'static str) -> Result<bool> {
+        let mut tmp = PtrVec::<T> { items: Vec::new(), slice_type };
+        let ok = self.unmarshal(n, &mut tmp)?;
+        if !ok {
+            return Ok(false);
+        }
+        let mut first_null = None;
+        let mut v = Vec::with_capacity(tmp.items.len());
+        for it in tmp.items {
+            match it {
+                Some(x) => v.push(x),
+                None => {
+                    if first_null.is_none() {
+                        first_null = Some(v.len());
+                    }
+                }
+            }
+        }
+        if let Some(i) = first_null {
+            self.nulls.push((key, i));
+        }
+        *out = v;
+        Ok(true)
+    }
+
     /// Wraps a custom unmarshaler (go-yaml `callUnmarshaler`): type errors it returns are kept and decoding goes
     /// on (Ok(false)); any other error stops the whole decode.
     pub fn custom(&mut self, f: impl FnOnce(&mut Decoder) -> Result<()>) -> Result<bool> {
@@ -260,7 +302,9 @@ impl Decoder {
                     }
                     done.push(name.clone());
                 }
-                if let Some(f) = out.field(&name) {
+                if let Some(r) = out.decode_key(&name, v, self) {
+                    r?;
+                } else if let Some(f) = out.field(&name) {
                     f.decode_field(v, self)?;
                 }
             } else if self.strict {
@@ -368,6 +412,46 @@ fn base64_decode(s: &str) -> Option<Vec<u8>> {
         }
     }
     Some(out)
+}
+
+/// Go `[]*T` while decoding.
+struct PtrVec<T> {
+    items: Vec<Option<T>>,
+    slice_type: &'static str,
+}
+impl<T> Default for PtrVec<T> {
+    fn default() -> Self {
+        PtrVec { items: Vec::new(), slice_type: "" }
+    }
+}
+impl<T: Unmarshal + Default> Unmarshal for PtrVec<T> {
+    fn unmarshal_yaml(&mut self, n: &Node, d: &mut Decoder) -> Result<bool> {
+        match n.kind {
+            Kind::Sequence => {
+                let mut out = Vec::with_capacity(n.children.len());
+                for c in n.children.iter() {
+                    let mut e: Option<T> = None;
+                    if d.unmarshal(c, &mut e)? {
+                        out.push(e);
+                    }
+                }
+                self.items = out;
+                Ok(true)
+            }
+            Kind::Mapping => {
+                d.terror(n, MAP_TAG, self.slice_type);
+                Ok(false)
+            }
+            _ => {
+                let (tag, _) = d.scalar_tag(n)?;
+                d.terror(n, &tag, self.slice_type);
+                Ok(false)
+            }
+        }
+    }
+    fn go_type() -> String {
+        "[]*".to_string()
+    }
 }
 
 // ---------------- primitive impls ----------------
@@ -645,7 +729,7 @@ impl Decoder {
             }
             let mut key = Value::Null;
             if self.unmarshal(k, &mut key)? {
-                if matches!(key, Value::Map(_) | Value::Seq(_)) {
+                if matches!(key, Value::Map(_) | Value::Seq(_) | Value::FlowSeq(_)) {
                     return Err(Error::Msg(format!("yaml: invalid map key: {key:?}")));
                 }
                 let mut e = Value::Null;
