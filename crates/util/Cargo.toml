@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 storage = { path = "../storage" }
+json = { path = "../json" }
 
 [dev-dependencies]
 model = { path = "../model" }

@@ -538,3 +538,90 @@ pub fn new_query_stats(s: &Statistics) -> BuiltinStats {
     });
     BuiltinStats { timings: qt, samples }
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// JSON (Go encoding/json of BuiltinStats).
+
+fn write_step_stats(v: &[StepStat], out: &mut String) {
+    out.push('[');
+    for (i, s) in v.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push('[');
+        json::write_f64(s.t as f64 / 1000.0, out);
+        out.push(',');
+        json::write_i64(s.v, out);
+        out.push(']');
+    }
+    out.push(']');
+}
+
+impl QueryTimings {
+    /// Go `json.Marshal(queryTimings)`.
+    pub fn write_json(&self, out: &mut String) {
+        let fields = [
+            ("evalTotalTime", self.eval_total_time),
+            ("resultSortTime", self.result_sort_time),
+            ("queryPreparationTime", self.query_preparation_time),
+            ("innerEvalTime", self.inner_eval_time),
+            ("execQueueTime", self.exec_queue_time),
+            ("execTotalTime", self.exec_total_time),
+        ];
+        out.push('{');
+        for (i, (k, v)) in fields.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            json::write_str(k, out);
+            out.push(':');
+            json::write_f64(*v, out);
+        }
+        out.push('}');
+    }
+}
+
+impl QuerySamplesStats {
+    /// Go `json.Marshal(querySamples)` (empty per-step lists are omitted).
+    pub fn write_json(&self, out: &mut String) {
+        out.push('{');
+        if let Some(v) = self.total_queryable_samples_per_step.as_ref().filter(|v| !v.is_empty()) {
+            out.push_str("\"totalQueryableSamplesPerStep\":");
+            write_step_stats(v, out);
+            out.push(',');
+        }
+        out.push_str("\"totalQueryableSamples\":");
+        json::write_i64(self.total_queryable_samples, out);
+        if let Some(v) = self.samples_read_per_step.as_ref().filter(|v| !v.is_empty()) {
+            out.push_str(",\"samplesReadPerStep\":");
+            write_step_stats(v, out);
+        }
+        out.push_str(",\"samplesRead\":");
+        json::write_i64(self.samples_read, out);
+        out.push_str(",\"seriesTouched\":");
+        json::write_i64(self.series_touched, out);
+        out.push_str(",\"peakSamples\":");
+        json::write_i64(self.peak_samples as i64, out);
+        out.push('}');
+    }
+}
+
+impl BuiltinStats {
+    /// Go `json.Marshal(BuiltinStats)`.
+    pub fn write_json(&self, out: &mut String) {
+        out.push_str("{\"timings\":");
+        self.timings.write_json(out);
+        if let Some(s) = &self.samples {
+            out.push_str(",\"samples\":");
+            s.write_json(out);
+        }
+        out.push('}');
+    }
+
+    /// The JSON text.
+    pub fn to_json_string(&self) -> String {
+        let mut s = String::new();
+        self.write_json(&mut s);
+        s
+    }
+}
