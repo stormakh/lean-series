@@ -9,7 +9,11 @@ use crate::common::{self, Req, Resp, TestServer};
 /// The raw string literals (`` `...` ``) of a Go source file, in order.
 pub fn go_raw_strings(rel: &str) -> Vec<String> {
     let src = String::from_utf8(common::read_upstream(rel)).unwrap();
-    src.split('`').skip(1).step_by(2).map(str::to_string).collect()
+    src.split('`')
+        .skip(1)
+        .step_by(2)
+        .map(str::to_string)
+        .collect()
 }
 
 type Route = (String, Arc<dyn Fn(&Req) -> Resp + Send + Sync>);
@@ -29,13 +33,22 @@ impl SdMock {
         let routes: Arc<Mutex<Vec<Route>>> = Arc::default();
         let r2 = routes.clone();
         let server = TestServer::new(move |r: &Req| {
-            let h = r2.lock().unwrap().iter().find(|(p, _)| *p == r.path).map(|(_, h)| h.clone());
+            let h = r2
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(p, _)| *p == r.path)
+                .map(|(_, h)| h.clone());
             match h {
                 Some(h) => h(r),
                 None => Resp::not_found(),
             }
         });
-        SdMock { server: Some(server), routes, bodies: go_raw_strings("discovery/digitalocean/mock_test.go") }
+        SdMock {
+            server: Some(server),
+            routes,
+            bodies: go_raw_strings("discovery/digitalocean/mock_test.go"),
+        }
     }
 
     /// Go `Endpoint`.
@@ -49,7 +62,10 @@ impl SdMock {
     }
 
     fn handle(&self, path: &str, h: impl Fn(&Req) -> Resp + Send + Sync + 'static) {
-        self.routes.lock().unwrap().push((path.to_string(), Arc::new(h)));
+        self.routes
+            .lock()
+            .unwrap()
+            .push((path.to_string(), Arc::new(h)));
     }
 
     /// Go `HandleDropletsList`.
@@ -73,7 +89,11 @@ impl SdMock {
 
     /// Go `HandleDatabasesList`.
     pub fn handle_databases_list(&self) {
-        let bodies = [self.bodies[2].clone(), self.bodies[3].clone(), self.bodies[4].clone()];
+        let bodies = [
+            self.bodies[2].clone(),
+            self.bodies[3].clone(),
+            self.bodies[4].clone(),
+        ];
         self.handle("/v2/databases", move |r: &Req| match r.query_get("page") {
             "1" | "" => Resp::new(200, bodies[0].clone()),
             "2" => Resp::new(200, bodies[1].clone()),

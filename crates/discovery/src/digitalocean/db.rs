@@ -63,7 +63,9 @@ fn decode_connection(d: &mut Dec, v: &Json, path: &str, dst: &mut Option<String>
 
 fn decode_database(d: &mut Dec, v: &Json) -> Database {
     let mut db = Database::default();
-    let Some(o) = d.obj(v, "databasesRoot", "databases", "godo.Database") else { return db };
+    let Some(o) = d.obj(v, "databasesRoot", "databases", "godo.Database") else {
+        return db;
+    };
     let st = "Database";
     for (k, e) in o {
         let p = sub("databases", k);
@@ -120,9 +122,17 @@ impl DatabasesDiscovery {
     /// Go `listClusters`.
     fn list_clusters(&self) -> Result<Vec<Database>, String> {
         let mut clusters = Vec::new();
-        let mut opts = ListOptions { page: 1, per_page: 100 };
+        let mut opts = ListOptions {
+            page: 1,
+            per_page: 100,
+        };
         loop {
-            let page = self.list(opts).map_err(|e| format!("error while listing database clusters page {}: {e}", opts.page))?;
+            let page = self.list(opts).map_err(|e| {
+                format!(
+                    "error while listing database clusters page {}: {e}",
+                    opts.page
+                )
+            })?;
             if page.is_empty() {
                 break;
             }
@@ -135,7 +145,10 @@ impl DatabasesDiscovery {
 
     /// Go `refresh`.
     pub fn refresh(&mut self, _ctx: &CancelToken) -> Result<Vec<Arc<Group>>, String> {
-        let mut tg = Group { source: "DigitalOcean Databases".to_string(), ..Default::default() };
+        let mut tg = Group {
+            source: "DigitalOcean Databases".to_string(),
+            ..Default::default()
+        };
         let port = (self.port as u64).to_string();
         for c in self.list_clusters()? {
             let mut labels = LabelSet::from_pairs(&[

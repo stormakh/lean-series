@@ -10,7 +10,11 @@ use crate::common::{self, Req, Resp, TestServer};
 /// The raw string literals (`` `...` ``) of a Go source file, in order.
 pub fn go_raw_strings(rel: &str) -> Vec<String> {
     let src = String::from_utf8(common::read_upstream(rel)).unwrap();
-    src.split('`').skip(1).step_by(2).map(str::to_string).collect()
+    src.split('`')
+        .skip(1)
+        .step_by(2)
+        .map(str::to_string)
+        .collect()
 }
 
 /// Go `path.Clean` as ServeMux uses it (keeps a trailing slash).
@@ -32,7 +36,7 @@ pub fn clean_path(p: &str) -> String {
     out
 }
 
-type Route =(String, Arc<dyn Fn(&Req) -> Resp + Send + Sync>);
+type Route = (String, Arc<dyn Fn(&Req) -> Resp + Send + Sync>);
 
 /// Go `SDMock`: a server with a mux of exact paths (Go `http.ServeMux`).
 pub struct SdMock {
@@ -41,7 +45,8 @@ pub struct SdMock {
     bodies: Vec<String>,
 }
 
-pub const HCLOUD_TEST_TOKEN: &str = "LRK9DAWQ1ZAEFSrCNEEzLCUwhYX1U3g7wMg4dTlkkDC96fyDuyJ39nVbVjCKSDfj";
+pub const HCLOUD_TEST_TOKEN: &str =
+    "LRK9DAWQ1ZAEFSrCNEEzLCUwhYX1U3g7wMg4dTlkkDC96fyDuyJ39nVbVjCKSDfj";
 pub const ROBOT_TEST_USERNAME: &str = "my-hetzner";
 pub const ROBOT_TEST_PASSWORD: &str = "my-password";
 
@@ -54,16 +59,29 @@ impl SdMock {
             // Go ServeMux: a path that is not clean gets a 301 to the clean path.
             let clean = clean_path(&r.path);
             if clean != r.path {
-                let loc = if r.raw_query.is_empty() { clean } else { format!("{clean}?{}", r.raw_query) };
+                let loc = if r.raw_query.is_empty() {
+                    clean
+                } else {
+                    format!("{clean}?{}", r.raw_query)
+                };
                 return Resp::new(301, "").header("Location", &loc);
             }
-            let h =r2.lock().unwrap().iter().find(|(p, _)| *p == r.path).map(|(_, h)| h.clone());
+            let h = r2
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(p, _)| *p == r.path)
+                .map(|(_, h)| h.clone());
             match h {
                 Some(h) => h(r),
                 None => Resp::not_found(),
             }
         });
-        SdMock { server, routes, bodies: go_raw_strings("discovery/hetzner/mock_test.go") }
+        SdMock {
+            server,
+            routes,
+            bodies: go_raw_strings("discovery/hetzner/mock_test.go"),
+        }
     }
 
     /// Go `Endpoint`.
@@ -72,7 +90,10 @@ impl SdMock {
     }
 
     fn handle(&self, path: &str, h: impl Fn(&Req) -> Resp + Send + Sync + 'static) {
-        self.routes.lock().unwrap().push((path.to_string(), Arc::new(h)));
+        self.routes
+            .lock()
+            .unwrap()
+            .push((path.to_string(), Arc::new(h)));
     }
 
     fn hcloud(&self, path: &str, body: String) {

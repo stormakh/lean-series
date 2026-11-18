@@ -20,7 +20,10 @@ use crate::metrics::Registry;
 use crate::refresh::{self, Refresher};
 use crate::sdutil::{join_host_port, join_tags};
 use crate::targetgroup::Group;
-use crate::{Config, Discoverer, DiscovererMetrics, DiscovererOptions, RefreshMetricsInstantiator, SdConfigType};
+use crate::{
+    Config, Discoverer, DiscovererMetrics, DiscovererOptions, RefreshMetricsInstantiator,
+    SdConfigType,
+};
 
 mod db;
 
@@ -63,7 +66,10 @@ impl Unmarshal for Role {
             self.0 = s;
             match self.0.as_str() {
                 DROPLETS_ROLE | DATABASES_ROLE => Ok(()),
-                _ => Err(YError::Msg(format!("unknown DigitalOcean SD role {}", yaml::go_quote(&self.0)))),
+                _ => Err(YError::Msg(format!(
+                    "unknown DigitalOcean SD role {}",
+                    yaml::go_quote(&self.0)
+                ))),
             }
         })
     }
@@ -104,7 +110,13 @@ pub struct SdConfig {
 
 /// Go `DefaultSDConfig`.
 pub fn default_sd_config() -> SdConfig {
-    SdConfig { port: 80, refresh_interval: yaml::Duration::from_secs(60), http_client_config: HttpClientConfig::default_config(), role: Role(DROPLETS_ROLE.to_string()), http_client: None }
+    SdConfig {
+        port: 80,
+        refresh_interval: yaml::Duration::from_secs(60),
+        http_client_config: HttpClientConfig::default_config(),
+        role: Role(DROPLETS_ROLE.to_string()),
+        http_client: None,
+    }
 }
 
 yaml::yaml_struct!(SdConfig, "digitalocean.plain", [
@@ -121,7 +133,9 @@ impl Unmarshal for SdConfig {
             *self = default_sd_config();
             d.inner_struct(n, self)?;
             if self.role.0.is_empty() {
-                return Err(YError::Msg("role missing (one of: droplets, databases)".into()));
+                return Err(YError::Msg(
+                    "role missing (one of: droplets, databases)".into(),
+                ));
             }
             self.http_client_config.validate().map_err(YError::Msg)
         })
@@ -150,8 +164,14 @@ impl Config for SdConfig {
     fn new_discoverer(&self, opts: DiscovererOptions) -> Result<Box<dyn Discoverer>, String> {
         Ok(Box::new(Discovery::new(self, opts)?))
     }
-    fn new_discoverer_metrics(&self, _reg: &Arc<Registry>, rmi: Arc<dyn RefreshMetricsInstantiator>) -> Arc<dyn DiscovererMetrics> {
-        Arc::new(DigitaloceanMetrics { refresh_metrics: rmi })
+    fn new_discoverer_metrics(
+        &self,
+        _reg: &Arc<Registry>,
+        rmi: Arc<dyn RefreshMetricsInstantiator>,
+    ) -> Arc<dyn DiscovererMetrics> {
+        Arc::new(DigitaloceanMetrics {
+            refresh_metrics: rmi,
+        })
     }
     fn set_directory(&mut self, dir: &str) {
         self.http_client_config.set_directory(dir);
@@ -181,7 +201,8 @@ pub struct Discovery {
 impl Discovery {
     /// Go `NewDiscovery`.
     pub fn new(conf: &SdConfig, opts: DiscovererOptions) -> Result<Discovery, String> {
-        let m = crate::downcast_metrics::<DigitaloceanMetrics>(&opts.metrics).ok_or_else(|| "invalid discovery metrics type".to_string())?;
+        let m = crate::downcast_metrics::<DigitaloceanMetrics>(&opts.metrics)
+            .ok_or_else(|| "invalid discovery metrics type".to_string())?;
         let r = new_refresher(conf)?;
         let inner = refresh::Discovery::new(refresh::Options {
             logger: opts.logger,
@@ -235,21 +256,42 @@ pub fn new_refresher(conf: &SdConfig) -> Result<DoRefresher, String> {
     let http = match &conf.http_client {
         Some(c) => {
             // a plain Go http.Client: default transport, its own timeout
-            let mut h = net::new_client_from_config(&HttpClientConfig::default_config(), &net::HttpClientOptions::default()).map_err(|e| e.to_string())?;
+            let mut h = net::new_client_from_config(
+                &HttpClientConfig::default_config(),
+                &net::HttpClientOptions::default(),
+            )
+            .map_err(|e| e.to_string())?;
             h.timeout = timeout(std::time::Duration::from_nanos(c.timeout.max(0) as u64));
             h
         }
         None => {
-            let mut h = net::new_client_from_config(&conf.http_client_config, &net::HttpClientOptions::default()).map_err(|e| e.to_string())?;
+            let mut h = net::new_client_from_config(
+                &conf.http_client_config,
+                &net::HttpClientOptions::default(),
+            )
+            .map_err(|e| e.to_string())?;
             h.timeout = timeout(conf.refresh_interval.to_std());
             h
         }
     };
-    let client = GodoClient { base_url: yaml::url::parse(DEFAULT_BASE_URL).map_err(|e| format!("error setting up digital ocean agent: {e}"))?, http };
+    let client = GodoClient {
+        base_url: yaml::url::parse(DEFAULT_BASE_URL)
+            .map_err(|e| format!("error setting up digital ocean agent: {e}"))?,
+        http,
+    };
     match conf.role.0.as_str() {
-        DROPLETS_ROLE => Ok(DoRefresher::Droplets(DropletsDiscovery { client, port: conf.port })),
-        DATABASES_ROLE => Ok(DoRefresher::Databases(DatabasesDiscovery { client, port: conf.port })),
-        r => Err(format!("unknown DigitalOcean SD role {}", yaml::go_quote(r))),
+        DROPLETS_ROLE => Ok(DoRefresher::Droplets(DropletsDiscovery {
+            client,
+            port: conf.port,
+        })),
+        DATABASES_ROLE => Ok(DoRefresher::Databases(DatabasesDiscovery {
+            client,
+            port: conf.port,
+        })),
+        r => Err(format!(
+            "unknown DigitalOcean SD role {}",
+            yaml::go_quote(r)
+        )),
     }
 }
 
@@ -315,7 +357,11 @@ impl Links {
 fn page_for_url(s: &str) -> Result<i64, String> {
     let u = yaml::url::parse_request_uri(s)?;
     let (q, _) = yaml::url::parse_query(&u.raw_query);
-    let page = q.iter().find(|(k, _)| k == "page").map(|(_, v)| v.as_str()).unwrap_or("");
+    let page = q
+        .iter()
+        .find(|(k, _)| k == "page")
+        .map(|(_, v)| v.as_str())
+        .unwrap_or("");
     gojson::atoi(page)
 }
 
@@ -387,9 +433,20 @@ fn check_response(r: &net::Response) -> String {
     }
     let url = r.request.url.to_url_string();
     if !request_id.is_empty() {
-        format!("{} {}: {} (request {}) {}{}", r.request.method, url, r.status, yaml::go_quote(&request_id), message, attempted)
+        format!(
+            "{} {}: {} (request {}) {}{}",
+            r.request.method,
+            url,
+            r.status,
+            yaml::go_quote(&request_id),
+            message,
+            attempted
+        )
     } else {
-        format!("{} {}: {} {}{}", r.request.method, url, r.status, message, attempted)
+        format!(
+            "{} {}: {} {}{}",
+            r.request.method, url, r.status, message, attempted
+        )
     }
 }
 
@@ -423,6 +480,9 @@ pub(crate) fn decode_links(d: &mut Dec, v: &Json, root_name: &str) -> Option<Lin
     Some(l)
 }
 
+/// A `NetworkV4`/`NetworkV6`: (ip_address, type).
+type Net = (String, String);
+
 /// The fields of `godo.Droplet` the discovery reads.
 #[derive(Default)]
 struct Droplet {
@@ -435,7 +495,7 @@ struct Droplet {
     features: Vec<String>,
     status: String,
     /// `None`: no `networks` object (Go nil).
-    networks: Option<(Vec<(String, String)>, Vec<(String, String)>)>,
+    networks: Option<(Vec<Net>, Vec<Net>)>,
     tags: Vec<String>,
     vpc_uuid: String,
 }
@@ -462,7 +522,9 @@ fn decode_nets(d: &mut Dec, v: &Json, path: &str, ty: &str) -> Option<Vec<(Strin
 
 fn decode_droplet(d: &mut Dec, v: &Json) -> Droplet {
     let mut dr = Droplet::default();
-    let Some(o) = d.obj(v, "dropletsRoot", "droplets", "godo.Droplet") else { return dr };
+    let Some(o) = d.obj(v, "dropletsRoot", "droplets", "godo.Droplet") else {
+        return dr;
+    };
     let st = "Droplet";
     for (k, e) in o {
         let p = sub("droplets", k);
@@ -560,7 +622,9 @@ impl DropletsDiscovery {
         let mut droplets = Vec::new();
         let mut opts = ListOptions::default();
         loop {
-            let (page, links) = self.list(opts).map_err(|e| format!("error while listing droplets page {}: {e}", opts.page))?;
+            let (page, links) = self
+                .list(opts)
+                .map_err(|e| format!("error while listing droplets page {}: {e}", opts.page))?;
             droplets.extend(page);
             let Some(links) = links else { break };
             if links.is_last_page() {
@@ -573,14 +637,24 @@ impl DropletsDiscovery {
 
     /// Go `refresh`.
     pub fn refresh(&mut self, _ctx: &CancelToken) -> Result<Vec<Arc<Group>>, String> {
-        let mut tg = Group { source: "DigitalOcean".to_string(), ..Default::default() };
+        let mut tg = Group {
+            source: "DigitalOcean".to_string(),
+            ..Default::default()
+        };
         let port = (self.port as u64).to_string();
         for droplet in self.list_droplets()? {
-            let Some((v4, v6)) = &droplet.networks else { continue };
+            let Some((v4, v6)) = &droplet.networks else {
+                continue;
+            };
             if v4.is_empty() {
                 continue;
             }
-            let find = |nets: &[(String, String)], ty: &str| nets.iter().find(|(_, t)| t == ty).map(|(ip, _)| ip.clone()).unwrap_or_default();
+            let find = |nets: &[(String, String)], ty: &str| {
+                nets.iter()
+                    .find(|(_, t)| t == ty)
+                    .map(|(ip, _)| ip.clone())
+                    .unwrap_or_default()
+            };
             let private_ipv4 = find(v4, "private");
             let public_ipv4 = find(v4, "public");
             let public_ipv6 = find(v6, "public");
@@ -597,12 +671,21 @@ impl DropletsDiscovery {
                 (DO_LABEL_STATUS, &droplet.status),
                 (DO_LABEL_VPC, &droplet.vpc_uuid),
             ]);
-            labels.insert(ADDRESS_LABEL.to_string(), join_host_port(&public_ipv4, &port));
+            labels.insert(
+                ADDRESS_LABEL.to_string(),
+                join_host_port(&public_ipv4, &port),
+            );
             if !droplet.features.is_empty() {
-                labels.insert(DO_LABEL_FEATURES.to_string(), join_tags(&droplet.features, SEPARATOR));
+                labels.insert(
+                    DO_LABEL_FEATURES.to_string(),
+                    join_tags(&droplet.features, SEPARATOR),
+                );
             }
             if !droplet.tags.is_empty() {
-                labels.insert(DO_LABEL_TAGS.to_string(), join_tags(&droplet.tags, SEPARATOR));
+                labels.insert(
+                    DO_LABEL_TAGS.to_string(),
+                    join_tags(&droplet.tags, SEPARATOR),
+                );
             }
             tg.targets.push(labels);
         }

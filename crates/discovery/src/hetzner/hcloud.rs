@@ -28,7 +28,11 @@ pub struct HcloudDiscovery {
 pub fn new_hcloud_discovery(conf: &SdConfig) -> Result<HcloudDiscovery, String> {
     let http = http_client(conf)?;
     Ok(HcloudDiscovery {
-        client: Client { endpoint: conf.hcloud_endpoint.trim_end_matches('/').to_string(), http, max_retries: 5 },
+        client: Client {
+            endpoint: conf.hcloud_endpoint.trim_end_matches('/').to_string(),
+            http,
+            max_retries: 5,
+        },
         port: conf.port,
         label_selector: conf.label_selector.clone(),
     })
@@ -44,7 +48,11 @@ struct Client {
 /// An error of the handler chain.
 enum ApiError {
     /// Go `hcloud.Error` (message, code, correlation id).
-    Api { code: String, message: String, correlation_id: String },
+    Api {
+        code: String,
+        message: String,
+        correlation_id: String,
+    },
     /// Go `ErrStatusCode` wrapped with the status.
     Status(u16),
     /// Transport errors.
@@ -54,7 +62,11 @@ enum ApiError {
 impl ApiError {
     fn text(&self) -> String {
         match self {
-            ApiError::Api { code, message, correlation_id } if !correlation_id.is_empty() => format!("{message} ({code}, {correlation_id})"),
+            ApiError::Api {
+                code,
+                message,
+                correlation_id,
+            } if !correlation_id.is_empty() => format!("{message} ({code}, {correlation_id})"),
             ApiError::Api { code, message, .. } => format!("{message} ({code})"),
             ApiError::Status(c) => format!("hcloud: server responded with status code {c}"),
             ApiError::Net(e) => e.to_string(),
@@ -64,7 +76,10 @@ impl ApiError {
     /// Go `retryPolicy`.
     fn retry(&self) -> bool {
         match self {
-            ApiError::Api { code, .. } => matches!(code.as_str(), "conflict" | "rate_limit_exceeded" | "bad_gateway" | "timeout"),
+            ApiError::Api { code, .. } => matches!(
+                code.as_str(),
+                "conflict" | "rate_limit_exceeded" | "bad_gateway" | "timeout"
+            ),
             ApiError::Status(c) => *c == 502 || *c == 504,
             ApiError::Net(e) => e.is_timeout(),
         }
@@ -72,7 +87,10 @@ impl ApiError {
 }
 
 fn has_json_body(r: &net::Response) -> bool {
-    !r.body.is_empty() && r.header.get_str("Content-Type").starts_with("application/json")
+    !r.body.is_empty()
+        && r.header
+            .get_str("Content-Type")
+            .starts_with("application/json")
 }
 
 /// Go `errorFromBody`: an `hcloud.Error` when the body is a JSON error object with a code or message.
@@ -89,7 +107,9 @@ fn error_from_body(r: &net::Response) -> Option<ApiError> {
         if !key_is(k, "error") {
             continue;
         }
-        let Some(eo) = d.obj(e, "ErrorResponse", "error", "schema.Error") else { continue };
+        let Some(eo) = d.obj(e, "ErrorResponse", "error", "schema.Error") else {
+            continue;
+        };
         for (k2, e2) in eo {
             if key_is(k2, "code") {
                 d.str(e2, &mut code, "Error", &sub("error", k2));
@@ -101,42 +121,65 @@ fn error_from_body(r: &net::Response) -> Option<ApiError> {
         }
     }
     // Error.UnmarshalJSON decodes the details of two codes; a bad shape fails the whole unmarshal.
-    if let Some(det) = details {
-        if code == "invalid_input" {
-            if let Some(o) = d.obj(det, "", "", "schema.ErrorDetailsInvalidInput") {
-                for (k, f) in o {
-                    if key_is(k, "fields") {
-                        if let Some(a) = d.arr(f, "ErrorDetailsInvalidInput", "fields", "[]struct { Name string \"json:\\\"name\\\"\"; Messages []string \"json:\\\"messages\\\"\" }") {
-                            for fe in a {
-                                if let Some(fo) = d.obj(fe, "ErrorDetailsInvalidInput", "fields", "struct { Name string \"json:\\\"name\\\"\"; Messages []string \"json:\\\"messages\\\"\" }") {
-                                    for (k3, x) in fo {
-                                        if key_is(k3, "name") {
-                                            d.str(x, &mut String::new(), "", &sub("fields", k3));
-                                        } else if key_is(k3, "messages") {
-                                            d.str_slice(x, &mut Vec::new(), "", &sub("fields", k3));
-                                        }
-                                    }
-                                }
-                            }
+    const FIELD_TYPE: &str =
+        "struct { Name string \"json:\\\"name\\\"\"; Messages []string \"json:\\\"messages\\\"\" }";
+    match (details, code.as_str()) {
+        (Some(det), "invalid_input") => {
+            for (k, f) in d
+                .obj(det, "", "", "schema.ErrorDetailsInvalidInput")
+                .unwrap_or_default()
+            {
+                if !key_is(k, "fields") {
+                    continue;
+                }
+                for fe in d
+                    .arr(
+                        f,
+                        "ErrorDetailsInvalidInput",
+                        "fields",
+                        &format!("[]{FIELD_TYPE}"),
+                    )
+                    .unwrap_or_default()
+                {
+                    for (k3, x) in d
+                        .obj(fe, "ErrorDetailsInvalidInput", "fields", FIELD_TYPE)
+                        .unwrap_or_default()
+                    {
+                        if key_is(k3, "name") {
+                            d.str(x, &mut String::new(), "", &sub("fields", k3));
+                        } else if key_is(k3, "messages") {
+                            d.str_slice(x, &mut Vec::new(), "", &sub("fields", k3));
                         }
                     }
                 }
             }
-        } else if code == "deprecated_api_endpoint" {
-            if let Some(o) = d.obj(det, "", "", "schema.ErrorDetailsDeprecatedAPIEndpoint") {
-                for (k, x) in o {
-                    if key_is(k, "announcement") {
-                        d.str(x, &mut String::new(), "ErrorDetailsDeprecatedAPIEndpoint", k);
-                    }
+        }
+        (Some(det), "deprecated_api_endpoint") => {
+            for (k, x) in d
+                .obj(det, "", "", "schema.ErrorDetailsDeprecatedAPIEndpoint")
+                .unwrap_or_default()
+            {
+                if key_is(k, "announcement") {
+                    d.str(
+                        x,
+                        &mut String::new(),
+                        "ErrorDetailsDeprecatedAPIEndpoint",
+                        k,
+                    );
                 }
             }
         }
+        _ => {}
     }
     d.finish().ok()?;
     if code.is_empty() && message.is_empty() {
         return None;
     }
-    Some(ApiError::Api { code, message, correlation_id: r.header.get_str("X-Correlation-Id").to_string() })
+    Some(ApiError::Api {
+        code,
+        message,
+        correlation_id: r.header.get_str("X-Correlation-Id").to_string(),
+    })
 }
 
 /// Go `ExponentialBackoffWithOpts{Base: 1s, Multiplier: 2, Cap: 1m, Jitter: true}`.
@@ -159,7 +202,9 @@ impl Client {
             req.header.set("User-Agent", HCLOUD_USER_AGENT);
             req.header.set("Accept", "application/json");
             let err = match self.http.do_request(req) {
-                Ok(r) if (400..=599).contains(&r.status) => error_from_body(&r).unwrap_or(ApiError::Status(r.status)),
+                Ok(r) if (400..=599).contains(&r.status) => {
+                    error_from_body(&r).unwrap_or(ApiError::Status(r.status))
+                }
                 Ok(r) => break r,
                 Err(e) => ApiError::Net(e),
             };
@@ -179,31 +224,50 @@ impl Client {
         let parsed = gojson::parse(&resp.body, false);
         let mut next_page = None;
         if has_json_body(&resp) {
-            let v = parsed.as_ref().map_err(|e| format!("hcloud: error reading response meta data: {e}"))?;
-            next_page = meta_next_page(v).map_err(|e| format!("hcloud: error reading response meta data: {e}"))?;
+            let v = parsed
+                .as_ref()
+                .map_err(|e| format!("hcloud: error reading response meta data: {e}"))?;
+            next_page = meta_next_page(v)
+                .map_err(|e| format!("hcloud: error reading response meta data: {e}"))?;
         }
         Ok((parsed?, next_page))
     }
 
     /// Go `iterPages` over `/<resource>?<opts>` (`List` + `AllWithOpts`): decodes every item of the list field
     /// `resource` of `schema.<list_type>` with `item` (a null item is the zero value).
-    fn all<T: Default>(&self, ctx: &CancelToken, resource: &str, label_selector: &str, list_type: &str, item_type: &str, item: fn(&mut Dec, &Json) -> Option<T>) -> Result<Vec<T>, String> {
+    fn all<T: Default>(
+        &self,
+        ctx: &CancelToken,
+        resource: &str,
+        label_selector: &str,
+        list_type: &str,
+        item_type: &str,
+        item: fn(&mut Dec, &Json) -> Option<T>,
+    ) -> Result<Vec<T>, String> {
         let mut page = 1i64;
         let mut out = Vec::new();
         loop {
-            let mut q: Vec<(String, String)> = vec![("page".into(), page.to_string()), ("per_page".into(), "50".into())];
+            let mut q: Vec<(String, String)> = vec![
+                ("page".into(), page.to_string()),
+                ("per_page".into(), "50".into()),
+            ];
             if !label_selector.is_empty() {
                 q.push(("label_selector".into(), label_selector.to_string()));
             }
-            let (v, next) = self.get(ctx, &format!("/{resource}?{}", yaml::url::encode_query(&q)))?;
+            let (v, next) =
+                self.get(ctx, &format!("/{resource}?{}", yaml::url::encode_query(&q)))?;
             let mut d = Dec::new();
             let mut items = Vec::new();
             if let Some(o) = d.obj(&v, "", "", &format!("schema.{list_type}")) {
                 for (k, e) in o {
                     if key_is(k, resource)
-                        && let Some(a) = d.arr(e, list_type, resource, &format!("[]schema.{item_type}"))
+                        && let Some(a) =
+                            d.arr(e, list_type, resource, &format!("[]schema.{item_type}"))
                     {
-                        items = a.iter().map(|x| item(&mut d, x).unwrap_or_default()).collect();
+                        items = a
+                            .iter()
+                            .map(|x| item(&mut d, x).unwrap_or_default())
+                            .collect();
                     }
                 }
             }
@@ -226,7 +290,9 @@ fn meta_next_page(v: &Json) -> Result<Option<i64>, String> {
             if !key_is(k, "meta") {
                 continue;
             }
-            let Some(mo) = d.obj(m, "MetaResponse", "meta", "schema.Meta") else { continue };
+            let Some(mo) = d.obj(m, "MetaResponse", "meta", "schema.Meta") else {
+                continue;
+            };
             for (k2, p) in mo {
                 if !key_is(k2, "pagination") {
                     continue;
@@ -237,8 +303,22 @@ fn meta_next_page(v: &Json) -> Result<Option<i64>, String> {
                         let mut n = 0i64;
                         for (k3, x) in po {
                             let mut dummy = 0i64;
-                            let f = if key_is(k3, "next_page") { &mut n } else { &mut dummy };
-                            if ["page", "per_page", "previous_page", "next_page", "last_page", "total_entries"].iter().any(|n| key_is(k3, n)) {
+                            let f = if key_is(k3, "next_page") {
+                                &mut n
+                            } else {
+                                &mut dummy
+                            };
+                            if [
+                                "page",
+                                "per_page",
+                                "previous_page",
+                                "next_page",
+                                "last_page",
+                                "total_entries",
+                            ]
+                            .iter()
+                            .any(|n| key_is(k3, n))
+                            {
                                 d.int(x, f, "MetaPagination", &sub(&path, k3), "int");
                             }
                         }
@@ -413,8 +493,22 @@ fn ipnet_text(s: &str) -> String {
 impl HcloudDiscovery {
     /// Go `refresh`.
     pub fn refresh(&mut self, ctx: &CancelToken) -> Result<Vec<Arc<Group>>, String> {
-        let servers: Vec<Server> = self.client.all(ctx, "servers", &self.label_selector, "ServerListResponse", "Server", decode_server)?;
-        let networks: Vec<(i64, String)> = self.client.all(ctx, "networks", "", "NetworkListResponse", "Network", decode_network)?;
+        let servers: Vec<Server> = self.client.all(
+            ctx,
+            "servers",
+            &self.label_selector,
+            "ServerListResponse",
+            "Server",
+            decode_server,
+        )?;
+        let networks: Vec<(i64, String)> = self.client.all(
+            ctx,
+            "networks",
+            "",
+            "NetworkListResponse",
+            "Network",
+            decode_network,
+        )?;
 
         let port = (self.port as u64).to_string();
         let mut targets = Vec::with_capacity(servers.len());
@@ -430,37 +524,83 @@ impl HcloudDiscovery {
             set(HETZNER_LABEL_PUBLIC_IPV4, ipv4.clone());
             set(HETZNER_LABEL_PUBLIC_IPV6_NETWORK, ipnet_text(&server.ipv6));
             set(HETZNER_LABEL_SERVER_STATUS, server.status.clone());
-            set(&format!("{HCLOUD_PREFIX}location"), server.location_name.clone());
-            set(&format!("{HCLOUD_PREFIX}location_network_zone"), server.network_zone.clone());
+            set(
+                &format!("{HCLOUD_PREFIX}location"),
+                server.location_name.clone(),
+            );
+            set(
+                &format!("{HCLOUD_PREFIX}location_network_zone"),
+                server.network_zone.clone(),
+            );
             // label names kept for backward compatibility
-            set(&format!("{HCLOUD_PREFIX}datacenter_location"), server.location_name.clone());
-            set(&format!("{HCLOUD_PREFIX}datacenter_location_network_zone"), server.network_zone.clone());
-            set(&format!("{HCLOUD_PREFIX}server_type"), server.server_type_name.clone());
-            set(&format!("{HCLOUD_PREFIX}cpu_cores"), server.cores.to_string());
+            set(
+                &format!("{HCLOUD_PREFIX}datacenter_location"),
+                server.location_name.clone(),
+            );
+            set(
+                &format!("{HCLOUD_PREFIX}datacenter_location_network_zone"),
+                server.network_zone.clone(),
+            );
+            set(
+                &format!("{HCLOUD_PREFIX}server_type"),
+                server.server_type_name.clone(),
+            );
+            set(
+                &format!("{HCLOUD_PREFIX}cpu_cores"),
+                server.cores.to_string(),
+            );
             set(&format!("{HCLOUD_PREFIX}cpu_type"), server.cpu_type.clone());
-            set(&format!("{HCLOUD_PREFIX}memory_size_gb"), (server.memory as i64).to_string());
-            set(&format!("{HCLOUD_PREFIX}disk_size_gb"), server.disk.to_string());
+            set(
+                &format!("{HCLOUD_PREFIX}memory_size_gb"),
+                (server.memory as i64).to_string(),
+            );
+            set(
+                &format!("{HCLOUD_PREFIX}disk_size_gb"),
+                server.disk.to_string(),
+            );
             set(ADDRESS_LABEL, join_host_port(&ipv4, &port));
             if let Some(img) = &server.image {
-                set(&format!("{HCLOUD_PREFIX}image_name"), img.name.clone().unwrap_or_default());
-                set(&format!("{HCLOUD_PREFIX}image_description"), img.description.clone());
-                set(&format!("{HCLOUD_PREFIX}image_os_version"), img.os_version.clone().unwrap_or_default());
-                set(&format!("{HCLOUD_PREFIX}image_os_flavor"), img.os_flavor.clone());
+                set(
+                    &format!("{HCLOUD_PREFIX}image_name"),
+                    img.name.clone().unwrap_or_default(),
+                );
+                set(
+                    &format!("{HCLOUD_PREFIX}image_description"),
+                    img.description.clone(),
+                );
+                set(
+                    &format!("{HCLOUD_PREFIX}image_os_version"),
+                    img.os_version.clone().unwrap_or_default(),
+                );
+                set(
+                    &format!("{HCLOUD_PREFIX}image_os_flavor"),
+                    img.os_flavor.clone(),
+                );
             }
             for (net_id, ip) in &server.private_net {
                 for (id, name) in &networks {
                     if net_id == id {
-                        set(&format!("{HCLOUD_PREFIX}private_ipv4_{}", sanitize_label_name(name)), ip_text(ip));
+                        set(
+                            &format!("{HCLOUD_PREFIX}private_ipv4_{}", sanitize_label_name(name)),
+                            ip_text(ip),
+                        );
                     }
                 }
             }
             for (k, v) in &server.labels {
                 let k = sanitize_label_name(k);
-                set(&format!("{HCLOUD_PREFIX}labelpresent_{k}"), "true".to_string());
+                set(
+                    &format!("{HCLOUD_PREFIX}labelpresent_{k}"),
+                    "true".to_string(),
+                );
                 set(&format!("{HCLOUD_PREFIX}label_{k}"), v.clone());
             }
             targets.push(labels);
         }
-        Ok(vec![Arc::new(Group { source: "hetzner".to_string(), targets, labels: LabelSet::new() })])
+        Ok(vec![Arc::new(Group {
+            source: "hetzner".to_string(),
+            targets,
+            labels: LabelSet::new(),
+        })])
     }
 }

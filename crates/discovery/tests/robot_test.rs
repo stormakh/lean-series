@@ -18,7 +18,11 @@ fn setup_test() -> SdMock {
 fn test_robot_sd_refresh() {
     let mock = setup_test();
     let mut cfg = default_sd_config();
-    cfg.http_client_config.basic_auth = Some(net::BasicAuth { username: ROBOT_TEST_USERNAME.to_string(), password: yaml::Secret::new(ROBOT_TEST_PASSWORD), ..Default::default() });
+    cfg.http_client_config.basic_auth = Some(net::BasicAuth {
+        username: ROBOT_TEST_USERNAME.to_string(),
+        password: yaml::Secret::new(ROBOT_TEST_PASSWORD),
+        ..Default::default()
+    });
     cfg.robot_endpoint = mock.endpoint();
 
     let mut d = new_robot_discovery(&cfg).unwrap();
@@ -36,7 +40,10 @@ fn test_robot_sd_refresh() {
             ("__meta_hetzner_server_name", "server1"),
             ("__meta_hetzner_server_status", "ready"),
             ("__meta_hetzner_public_ipv4", "123.123.123.123"),
-            ("__meta_hetzner_public_ipv6_network", "2a01:4f8:111:4221::/64"),
+            (
+                "__meta_hetzner_public_ipv6_network",
+                "2a01:4f8:111:4221::/64",
+            ),
             ("__meta_hetzner_datacenter", "nbg1-dc1"),
             ("__meta_hetzner_robot_datacenter", "nbg1-dc1"),
             ("__meta_hetzner_robot_product", "DS 3000"),
@@ -71,6 +78,12 @@ fn test_robot_sd_refresh_handle_error() {
         Ok(t) => (t, None),
         Err(e) => (Vec::new(), Some(e)),
     };
-    assert_eq!(Some("non 2xx status '401' response during hetzner service discovery with role robot".to_string()), err);
+    assert_eq!(
+        Some(
+            "non 2xx status '401' response during hetzner service discovery with role robot"
+                .to_string()
+        ),
+        err
+    );
     assert!(target_groups.is_empty());
 }

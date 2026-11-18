@@ -13,7 +13,10 @@ use crate::chan::Sender;
 use crate::metrics::Registry;
 use crate::refresh::{self, Refresher};
 use crate::targetgroup::Group;
-use crate::{Config, Discoverer, DiscovererMetrics, DiscovererOptions, RefreshMetricsInstantiator, SdConfigType};
+use crate::{
+    Config, Discoverer, DiscovererMetrics, DiscovererOptions, RefreshMetricsInstantiator,
+    SdConfigType,
+};
 
 mod hcloud;
 mod robot;
@@ -52,7 +55,10 @@ impl Unmarshal for Role {
             self.0 = s;
             match self.0.as_str() {
                 HETZNER_ROLE_ROBOT | HETZNER_ROLE_HCLOUD => Ok(()),
-                _ => Err(YError::Msg(format!("unknown role {}", yaml::go_quote(&self.0)))),
+                _ => Err(YError::Msg(format!(
+                    "unknown role {}",
+                    yaml::go_quote(&self.0)
+                ))),
             }
         })
     }
@@ -85,7 +91,12 @@ pub struct SdConfig {
 
 /// Go `DefaultSDConfig`.
 pub fn default_sd_config() -> SdConfig {
-    SdConfig { port: 80, refresh_interval: yaml::Duration::from_secs(60), http_client_config: HttpClientConfig::default_config(), ..Default::default() }
+    SdConfig {
+        port: 80,
+        refresh_interval: yaml::Duration::from_secs(60),
+        http_client_config: HttpClientConfig::default_config(),
+        ..Default::default()
+    }
 }
 
 yaml::yaml_struct!(SdConfig, "hetzner.plain", [
@@ -131,8 +142,14 @@ impl Config for SdConfig {
     fn new_discoverer(&self, opts: DiscovererOptions) -> Result<Box<dyn Discoverer>, String> {
         Ok(Box::new(Discovery::new(self, opts)?))
     }
-    fn new_discoverer_metrics(&self, _reg: &Arc<Registry>, rmi: Arc<dyn RefreshMetricsInstantiator>) -> Arc<dyn DiscovererMetrics> {
-        Arc::new(HetznerMetrics { refresh_metrics: rmi })
+    fn new_discoverer_metrics(
+        &self,
+        _reg: &Arc<Registry>,
+        rmi: Arc<dyn RefreshMetricsInstantiator>,
+    ) -> Arc<dyn DiscovererMetrics> {
+        Arc::new(HetznerMetrics {
+            refresh_metrics: rmi,
+        })
     }
     fn set_directory(&mut self, dir: &str) {
         self.http_client_config.set_directory(dir);
@@ -196,7 +213,8 @@ pub struct Discovery {
 impl Discovery {
     /// Go `NewDiscovery`.
     pub fn new(conf: &SdConfig, opts: DiscovererOptions) -> Result<Discovery, String> {
-        let m = crate::downcast_metrics::<HetznerMetrics>(&opts.metrics).ok_or_else(|| "invalid discovery metrics type".to_string())?;
+        let m = crate::downcast_metrics::<HetznerMetrics>(&opts.metrics)
+            .ok_or_else(|| "invalid discovery metrics type".to_string())?;
         let mut conf = conf.clone();
         let r = new_refresher(&mut conf)?;
         let inner = refresh::Discovery::new(refresh::Options {
@@ -219,7 +237,9 @@ impl Discoverer for Discovery {
 
 /// The HTTP client of both roles: the HTTP client config, with the refresh interval as timeout.
 pub(crate) fn http_client(conf: &SdConfig) -> Result<net::Client, String> {
-    let mut c = net::new_client_from_config(&conf.http_client_config, &net::HttpClientOptions::default()).map_err(|e| e.to_string())?;
+    let mut c =
+        net::new_client_from_config(&conf.http_client_config, &net::HttpClientOptions::default())
+            .map_err(|e| e.to_string())?;
     // Go's Client.Timeout: zero means none.
     let t = conf.refresh_interval.to_std();
     c.timeout = (!t.is_zero()).then_some(t);

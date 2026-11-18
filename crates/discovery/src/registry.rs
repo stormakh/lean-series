@@ -44,6 +44,7 @@ fn builtin() -> Vec<Registration> {
         registration::<crate::file::SdConfig>(),
         registration::<crate::hetzner::SdConfig>(),
         registration::<crate::http::SdConfig>(),
+        registration::<crate::scaleway::SdConfig>(),
     ]
 }
 

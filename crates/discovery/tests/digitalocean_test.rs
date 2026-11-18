@@ -45,11 +45,17 @@ fn test_digital_ocean_sd_refresh() {
             ("__meta_digitalocean_image_name", "14.04 x64"),
             ("__meta_digitalocean_private_ipv4", ""),
             ("__meta_digitalocean_public_ipv4", "104.236.32.182"),
-            ("__meta_digitalocean_public_ipv6", "2604:A880:0800:0010:0000:0000:02DD:4001"),
+            (
+                "__meta_digitalocean_public_ipv6",
+                "2604:A880:0800:0010:0000:0000:02DD:4001",
+            ),
             ("__meta_digitalocean_region", "nyc3"),
             ("__meta_digitalocean_size", "s-1vcpu-1gb"),
             ("__meta_digitalocean_status", "active"),
-            ("__meta_digitalocean_vpc", "f9b0769c-e118-42fb-a0c4-fed15ef69662"),
+            (
+                "__meta_digitalocean_vpc",
+                "f9b0769c-e118-42fb-a0c4-fed15ef69662",
+            ),
             ("__meta_digitalocean_features", ",backups,ipv6,virtio,"),
         ]),
         ls(&[
@@ -64,7 +70,10 @@ fn test_digital_ocean_sd_refresh() {
             ("__meta_digitalocean_region", "nyc3"),
             ("__meta_digitalocean_size", "s-1vcpu-1gb"),
             ("__meta_digitalocean_status", "active"),
-            ("__meta_digitalocean_vpc", "f9b0769c-e118-42fb-a0c4-fed15ef69662"),
+            (
+                "__meta_digitalocean_vpc",
+                "f9b0769c-e118-42fb-a0c4-fed15ef69662",
+            ),
             ("__meta_digitalocean_tags", ",monitor,"),
             ("__meta_digitalocean_features", ",virtio,"),
         ]),
@@ -80,7 +89,10 @@ fn test_digital_ocean_sd_refresh() {
             ("__meta_digitalocean_region", "fra1"),
             ("__meta_digitalocean_size", "s-1vcpu-1gb"),
             ("__meta_digitalocean_status", "off"),
-            ("__meta_digitalocean_vpc", "953d698c-dc84-11e8-80bc-3cfdfea9fba1"),
+            (
+                "__meta_digitalocean_vpc",
+                "953d698c-dc84-11e8-80bc-3cfdfea9fba1",
+            ),
             ("__meta_digitalocean_features", ",ipv6,private_networking,"),
         ]),
         ls(&[
@@ -95,7 +107,10 @@ fn test_digital_ocean_sd_refresh() {
             ("__meta_digitalocean_region", "fra1"),
             ("__meta_digitalocean_size", "s-1vcpu-1gb"),
             ("__meta_digitalocean_status", "active"),
-            ("__meta_digitalocean_vpc", "953d698c-dc84-11e8-80bc-3cfdfea9fba1"),
+            (
+                "__meta_digitalocean_vpc",
+                "953d698c-dc84-11e8-80bc-3cfdfea9fba1",
+            ),
             ("__meta_digitalocean_features", ",ipv6,private_networking,"),
         ]),
     ];

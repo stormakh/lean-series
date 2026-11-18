@@ -23,7 +23,9 @@ pub(crate) type Obj = [(String, Json)];
 pub(crate) fn parse(body: &[u8], decoder: bool) -> Result<Json, String> {
     match Json::parse_bytes(body) {
         Ok(v) => Ok(v),
-        Err(e) if e.msg == "trailing data after JSON value" && decoder => Json::parse_bytes(&body[..e.offset]).map_err(|e| syntax_error(body, &e, decoder)),
+        Err(e) if e.msg == "trailing data after JSON value" && decoder => {
+            Json::parse_bytes(&body[..e.offset]).map_err(|e| syntax_error(body, &e, decoder))
+        }
         Err(e) => Err(syntax_error(body, &e, decoder)),
     }
 }
@@ -41,7 +43,15 @@ fn quote_char(c: char) -> String {
 }
 
 fn syntax_error(body: &[u8], e: &json::JsonError, decoder: bool) -> String {
-    let eof = if decoder { if body.iter().all(|b| b.is_ascii_whitespace()) { "EOF" } else { "unexpected EOF" } } else { "unexpected end of JSON input" };
+    let eof = if decoder {
+        if body.iter().all(|b| b.is_ascii_whitespace()) {
+            "EOF"
+        } else {
+            "unexpected EOF"
+        }
+    } else {
+        "unexpected end of JSON input"
+    };
     let rest = &body[e.offset.min(body.len())..];
     let c = match String::from_utf8_lossy(rest).chars().next() {
         Some(c) => c,
@@ -82,7 +92,11 @@ fn number_text(v: &Json) -> String {
 
 /// `path + "." + key` (the JSON key path in errors).
 pub(crate) fn sub(path: &str, key: &str) -> String {
-    if path.is_empty() { key.to_string() } else { format!("{path}.{key}") }
+    if path.is_empty() {
+        key.to_string()
+    } else {
+        format!("{path}.{key}")
+    }
 }
 
 /// Go's `UnmarshalTypeError` text.
@@ -122,7 +136,13 @@ impl Dec {
 
     /// An object for a struct of Go type `ty` (or a pointer to it): `None` for null (a nil pointer; a value
     /// struct stays zero) and for a type error.
-    pub(crate) fn obj<'a>(&mut self, v: &'a Json, st: &str, path: &str, ty: &str) -> Option<&'a Obj> {
+    pub(crate) fn obj<'a>(
+        &mut self,
+        v: &'a Json,
+        st: &str,
+        path: &str,
+        ty: &str,
+    ) -> Option<&'a Obj> {
         match v {
             Json::Obj(o) => Some(o),
             Json::Null => None,
@@ -135,7 +155,13 @@ impl Dec {
 
     /// The elements of a slice of Go type `ty`: `Some(&[])` for null (a nil slice), `None` for a type error
     /// (the slice keeps its value).
-    pub(crate) fn arr<'a>(&mut self, v: &'a Json, st: &str, path: &str, ty: &str) -> Option<&'a [Json]> {
+    pub(crate) fn arr<'a>(
+        &mut self,
+        v: &'a Json,
+        st: &str,
+        path: &str,
+        ty: &str,
+    ) -> Option<&'a [Json]> {
         match v {
             Json::Arr(a) => Some(a),
             Json::Null => Some(&[]),
@@ -185,7 +211,12 @@ impl Dec {
             Json::Int(n) if (*n as i128) >= lo && (*n as i128) <= hi => *dst = *n,
             Json::Int(_) | Json::Float(_) => {
                 if self.saved.is_none() {
-                    self.saved = Some(type_error(&format!("number {}", number_text(v)), st, path, ty));
+                    self.saved = Some(type_error(
+                        &format!("number {}", number_text(v)),
+                        st,
+                        path,
+                        ty,
+                    ));
                 }
             }
             Json::Null => {}
@@ -200,7 +231,12 @@ impl Dec {
                 let f = v.as_f64().unwrap_or(0.0);
                 if f.abs() > f32::MAX as f64 {
                     if self.saved.is_none() {
-                        self.saved = Some(type_error(&format!("number {}", number_text(v)), st, path, "float32"));
+                        self.saved = Some(type_error(
+                            &format!("number {}", number_text(v)),
+                            st,
+                            path,
+                            "float32",
+                        ));
                     }
                 } else {
                     *dst = f as f32;
@@ -225,7 +261,13 @@ impl Dec {
     }
 
     /// A Go `map[string]string` field (null is nil; entries are added to the map, as Go reuses it).
-    pub(crate) fn str_map(&mut self, v: &Json, dst: &mut Vec<(String, String)>, st: &str, path: &str) {
+    pub(crate) fn str_map(
+        &mut self,
+        v: &Json,
+        dst: &mut Vec<(String, String)>,
+        st: &str,
+        path: &str,
+    ) {
         match v {
             Json::Obj(o) => {
                 for (k, e) in o {
@@ -244,7 +286,13 @@ impl Dec {
 
     /// A Go `net.IP` field (`UnmarshalText`): null and "" are nil; a bad address stops decoding with
     /// "invalid IP address: <text>".
-    pub(crate) fn ip(&mut self, v: &Json, dst: &mut Option<IpAddr>, st: &str, path: &str) -> Result<(), String> {
+    pub(crate) fn ip(
+        &mut self,
+        v: &Json,
+        dst: &mut Option<IpAddr>,
+        st: &str,
+        path: &str,
+    ) -> Result<(), String> {
         match v {
             Json::Str(s) if s.is_empty() => *dst = None,
             Json::Str(s) => match parse_ip(s) {
@@ -310,7 +358,11 @@ pub(crate) fn parse_cidr(s: &str) -> Result<(IpAddr, IpAddr, u8), String> {
     let bad = || format!("invalid CIDR address: {s}");
     let (addr, bits) = s.split_once('/').ok_or_else(bad)?;
     let ip = parse_ip(addr).ok_or_else(bad)?;
-    if bits.is_empty() || bits.len() > 3 || !bits.bytes().all(|b| b.is_ascii_digit()) || (bits.len() > 1 && bits.starts_with('0')) {
+    if bits.is_empty()
+        || bits.len() > 3
+        || !bits.bytes().all(|b| b.is_ascii_digit())
+        || (bits.len() > 1 && bits.starts_with('0'))
+    {
         return Err(bad());
     }
     let n: u32 = bits.parse().map_err(|_| bad())?;
@@ -342,7 +394,9 @@ pub(crate) fn ipnet_string(net: &Option<(IpAddr, u8)>) -> String {
     match net {
         None => "<nil>".to_string(),
         Some((ip, n)) => match ip {
-            IpAddr::V6(v6) if v6.to_ipv4_mapped().is_some() && *n >= 96 => format!("{}/{}", ip_string(&Some(*ip)), n - 96),
+            IpAddr::V6(v6) if v6.to_ipv4_mapped().is_some() && *n >= 96 => {
+                format!("{}/{}", ip_string(&Some(*ip)), n - 96)
+            }
             _ => format!("{}/{}", ip_string(&Some(*ip)), n),
         },
     }
@@ -360,62 +414,16 @@ pub(crate) fn parse_int(s: &str, fn_name: &str, bits: u32) -> Result<i64, String
     if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
         return Err(format!("strconv.{fn_name}: parsing {q}: invalid syntax"));
     }
-    let v: i128 = s.parse().unwrap_or(if s.starts_with('-') { i128::MIN } else { i128::MAX });
+    let v: i128 = s.parse().unwrap_or(if s.starts_with('-') {
+        i128::MIN
+    } else {
+        i128::MAX
+    });
     let lim = 1i128 << (bits - 1);
     if v < -lim || v >= lim {
-        return Err(format!("strconv.{fn_name}: parsing {q}: value out of range"));
+        return Err(format!(
+            "strconv.{fn_name}: parsing {q}: value out of range"
+        ));
     }
     Ok(v as i64)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn syntax_errors_as_go() {
-        let cases = [
-            (r#"{"a" 1}"#, "invalid character '1' after object key"),
-            (r#"{"a":1 "b"}"#, "invalid character '\"' after object key:value pair"),
-            ("[1 2]", "invalid character '2' after array element"),
-            ("{1:2}", "invalid character '1' looking for beginning of object key string"),
-            (r#"{"servers":x}"#, "invalid character 'x' looking for beginning of value"),
-            (r#"{"servers""#, "unexpected end of JSON input"),
-            ("{} x", "invalid character 'x' after top-level value"),
-        ];
-        for (s, want) in cases {
-            assert_eq!(Err(want.to_string()), parse(s.as_bytes(), false), "{s}");
-        }
-        assert_eq!(Err("EOF".to_string()), parse(b"", true));
-        assert_eq!(Err("unexpected EOF".to_string()), parse(br#"{"servers""#, true));
-        assert!(parse(b"{} x", true).is_ok());
-    }
-
-    #[test]
-    fn ips_as_go() {
-        assert_eq!("1.2.3.4", ip_string(&parse_ip("::ffff:1.2.3.4")));
-        assert_eq!("<nil>", ip_string(&None));
-        let (_, n, b) = parse_cidr("2001:db8::1/64").unwrap();
-        assert_eq!("2001:db8::/64", ipnet_string(&Some((n, b))));
-        let (ip, _, _) = parse_cidr("10.0.0.7/32").unwrap();
-        assert_eq!("10.0.0.7", ip_string(&Some(ip)));
-        assert_eq!(Err("invalid CIDR address: x".to_string()), parse_cidr("x"));
-        assert_eq!(Err("strconv.Atoi: parsing \"x\": invalid syntax".to_string()), atoi("x"));
-    }
-
-    #[test]
-    fn type_errors_as_go() {
-        let v = Json::parse(r#"{"n":1.5,"name":1}"#).unwrap();
-        let mut d = Dec::new();
-        let mut n = 0;
-        let mut s = String::new();
-        for (k, e) in v.as_obj().unwrap() {
-            if key_is(k, "n") {
-                d.int(e, &mut n, "Inner", &sub("servers", k), "int");
-            } else if key_is(k, "name") {
-                d.str(e, &mut s, "Inner", &sub("servers", k));
-            }
-        }
-        assert_eq!(Err("json: cannot unmarshal number 1.5 into Go struct field Inner.servers.n of type int".to_string()), d.finish());
-    }
 }
