@@ -23,6 +23,7 @@ pub mod client_pb;
 pub mod convertnhcb;
 pub mod mime;
 mod nhcbparse;
+mod openmetrics2lex;
 mod openmetrics2parse;
 mod openmetricsparse;
 mod promparse;
