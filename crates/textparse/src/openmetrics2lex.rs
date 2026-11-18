@@ -91,7 +91,8 @@ impl Om2Lexer {
     #[inline]
     fn quoted(&mut self, b: &[u8], newline: bool) -> bool {
         let skip_nulls = matches!(self.state, S_LVALUE | S_EVALUE | S_META2 | S_COMMENT);
-        match lexutil::scan_quoted(b, self.i, skip_nulls, newline) {
+        let mut hi = 0u8;
+        match lexutil::scan_quoted(b, self.i, skip_nulls, newline, &mut hi) {
             Ok(close) => {
                 // The byte after the closing quote is read in the same state (null bytes skipped as `next` does).
                 self.i = close;
