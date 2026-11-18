@@ -47,3 +47,25 @@ One module and one registry line.
 - `http_sd_configs`: a request in flight is not aborted on cancel; it ends at its timeout (the refresh
   interval, as Go's client timeout).
 - Summaries have count and sum only (no quantiles).
+
+## Providers ported from upstream (beyond static, file, http)
+
+consul, digitalocean, dns, docker and dockerswarm (`moby`), eureka, hetzner, ionos, linode, marathon, nerve and
+serverset (`zookeeper`), nomad, outscale, ovhcloud, puppetdb, scaleway, stackit, triton, uyuni, vultr. No SDK
+crates: each module ports the part of the Go API client that upstream uses (paths, query, headers, paging, auth,
+error texts). Clients written in house: DNS (`dns.rs`, miekg/dns subset with resolv.conf, search list, UDP with
+TCP fallback), ZooKeeper (`zookeeper/zk.rs`, go-zookeeper/zk subset with watches), XML-RPC (`uyuni/xmlrpc.rs`),
+XML (`eureka/xml.rs`), Docker over a Unix socket (`moby/client.rs`).
+
+Shared test helpers: `tests/common/` (a Go httptest-like server). Go test files with the same name in several
+packages (`instance_test`, `server_test`, `client_test`) are one test file with one module per package.
+
+Differences that apply to these providers:
+- A request in flight is not aborted on cancel (except consul, which abandons it); it ends at its timeout.
+- Go-style typed JSON decoding checks only the fields a provider reads; numbers in type errors print from the
+  parsed value; some syntax error texts differ. There are several copies of this decoder (`consul/goutil.rs`,
+  `gojson.rs`, `linode/gojson.rs`, `marathon/gojson.rs`, `sd_json.rs`); they should become one.
+- Where Go iterates a map in random order, the port uses sorted or response order.
+- Where Go panics on a null pointer in an API response, the port uses the zero value.
+- The ZooKeeper tree cache metrics are process-wide (`zookeeper::treecache::treecache_metrics()`); the server must
+  register them (Go: default registry).
