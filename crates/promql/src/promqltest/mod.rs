@@ -1799,21 +1799,22 @@ fn parse_eval(lines: &[String], mut i: usize) -> Result<(usize, EvalCmd), String
         return Err(err.to_string());
     }
     let line_no = i + 1;
-    let format_err = |msg: String| format!("error in eval {} (line {}): {}", expr, line_no, msg);
+    // Go formatErr reads the loop variable i when it is called: the line being parsed.
+    let format_err =
+        |line: usize, msg: String| format!("error in eval {} (line {}): {}", expr, line + 1, msg);
 
     let mut cmd = if let Some(ip) = &instant_parts {
         let at = ip[2];
         let offset = parse_duration(at).map_err(|e| {
-            format_err(format!(
-                "invalid timestamp definition {}: {}",
-                go_quote(at),
-                e
-            ))
+            format_err(
+                i,
+                format!("invalid timestamp definition {}: {}", go_quote(at), e),
+            )
         })?;
         EvalCmd::new_instant(expr.to_string(), TEST_START_TIME + offset / MS, line_no)
     } else {
         let rp = range_parts.as_ref().unwrap();
-        let (f, t, s) = parse_durations(rp[2], rp[3], rp[4]).map_err(format_err)?;
+        let (f, t, s) = parse_durations(rp[2], rp[3], rp[4]).map_err(|e| format_err(i, e))?;
         EvalCmd::new_range(
             expr.to_string(),
             TEST_START_TIME + f / MS,
@@ -1847,15 +1848,19 @@ fn parse_eval(lines: &[String], mut i: usize) -> Result<(usize, EvalCmd), String
         if cmd.fail && def_line.starts_with("expected_fail_regexp") {
             let pattern = def_line["expected_fail_regexp".len()..].trim();
             cmd.expected_fail_regexp = Some(Regexp::compile(pattern).map_err(|e| {
-                format_err(format!(
-                    "invalid regexp '{}' for expected_fail_regexp: {}",
-                    pattern, e
-                ))
+                format_err(
+                    i,
+                    format!(
+                        "invalid regexp '{}' for expected_fail_regexp: {}",
+                        pattern, e
+                    ),
+                )
             })?);
             break;
         }
         if def_line.starts_with(RANGE_VECTOR_PREFIX) {
-            let (start, end, step) = parse_expect_range_vector(def_line).map_err(format_err)?;
+            let (start, end, step) =
+                parse_expect_range_vector(def_line).map_err(|e| format_err(i, e))?;
             expect_range_vector = true;
             cmd.start = start;
             cmd.end = end;
@@ -1866,15 +1871,16 @@ fn parse_eval(lines: &[String], mut i: usize) -> Result<(usize, EvalCmd), String
             continue;
         }
         if def_line.starts_with(EXPECT_STRING_PREFIX) {
-            cmd.expected_string = parse_as_string_literal(def_line).map_err(format_err)?;
+            cmd.expected_string =
+                parse_as_string_literal(def_line).map_err(|e| format_err(i, e))?;
             cmd.exclude_from_range_query = true;
             j += 1;
             continue;
         }
         if def_line.split(' ').next() == Some("expect") {
-            let (typ, e) = parse_expect(def_line).map_err(format_err)?;
+            let (typ, e) = parse_expect(def_line).map_err(|e| format_err(i, e))?;
             cmd.expected_cmds.entry(typ).or_default().push(e);
-            validate_expected_cmds(&cmd).map_err(format_err)?;
+            validate_expected_cmds(&cmd).map_err(|e| format_err(i, e))?;
             continue;
         }
         if let Ok(f) = parse_number(def_line) {
@@ -1883,7 +1889,7 @@ fn parse_eval(lines: &[String], mut i: usize) -> Result<(usize, EvalCmd), String
         }
         let (metric, vals) = parse_series(def_line, i)?;
         if vals.len() > 1 && is_instant && !expect_range_vector {
-            return Err(format_err(
+            return Err(format_err(i,
                 "expecting multiple values in instant evaluation not allowed. consider using 'expect range vector' directive to enable a range vector result for an instant query".into(),
             ));
         }
