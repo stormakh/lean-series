@@ -1,0 +1,9 @@
+# 250 ms scrapes give more than 120 samples per series in 40 s, so full head chunks are written to chunks_head.
+global: {scrape_interval: 250ms, scrape_timeout: 200ms}
+scrape_configs:
+  - job_name: prometheus
+    scrape_native_histograms: true
+    scrape_protocols: [PrometheusProto, OpenMetricsText1.0.0, PrometheusText0.0.4]
+    static_configs: [{targets: ['127.0.0.1:9700']}]
+  - job_name: node
+    static_configs: [{targets: ['127.0.0.1:9701']}]
