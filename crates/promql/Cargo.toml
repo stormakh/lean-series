@@ -6,6 +6,9 @@ license.workspace = true
 
 [dependencies]
 model = { path = "../model" }
+chunkenc = { path = "../chunkenc" }
+storage = { path = "../storage" }
+util = { path = "../util" }
 
 [dev-dependencies]
 json = { path = "../json" }
