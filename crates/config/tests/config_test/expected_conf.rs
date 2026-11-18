@@ -759,21 +759,15 @@ pub fn expected_conf() -> Config {
                 ..job("service-oci")
             },
             ScrapeConfig {
-                service_discovery_configs: sd(vec![
-                    // waits for openstack:
-                    // &openstack.SDConfig{
-                    //     Role:            "instance",
-                    //     Region:          "RegionOne",
-                    //     Port:            80,
-                    //     Availability:    "public",
-                    //     RefreshInterval: model.Duration(60 * time.Second),
-                    //     TLSConfig: config.TLSConfig{
-                    //         CAFile:   filepath.FromSlash("testdata/valid_ca_file"),
-                    //         CertFile: filepath.FromSlash("testdata/valid_cert_file"),
-                    //         KeyFile:  filepath.FromSlash("testdata/valid_key_file"),
-                    //     },
-                    // },
-                ]),
+                service_discovery_configs: sd(vec![Box::new(discovery::openstack::SdConfig {
+                    role: discovery::openstack::Role(s("instance")),
+                    region: s("RegionOne"),
+                    port: 80,
+                    availability: s("public"),
+                    refresh_interval: Duration::from_secs(60),
+                    tls_config: TlsConfig { ca_file: s("testdata/valid_ca_file"), ..cert_key_tls() },
+                    ..Default::default()
+                })]),
                 ..job("service-openstack")
             },
             ScrapeConfig {
