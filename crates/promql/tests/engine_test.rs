@@ -1310,3 +1310,156 @@ fn eval_stmt_timestamps_cases() -> Vec<(&'static str, Value, i64, i64, i64, bool
         (r#"count_values("wrong label!\xff", metric)"#, Value::Scalar(Scalar::default()), 0, 0, 0, true),
     ]
 }
+
+#[test]
+fn test_parser_config_isolation() {
+    let store = promqltest::loaded_storage("\n\t\tload 10s\n\t\t\tmetric 1+1x10\n\t").unwrap();
+    let query = "mad_over_time(metric[10s])";
+    let ctx = Context::background();
+    let mk = |experimental: bool| {
+        Engine::new(EngineOpts {
+            max_samples: 1000,
+            timeout: Duration::from_secs(10),
+            parser: Some(promql::parser::Parser::new(promql::parser::Options {
+                enable_experimental_functions: experimental,
+                ..Default::default()
+            })),
+            ..Default::default()
+        })
+    };
+    // Engine with the feature disabled rejects.
+    let engine = mk(false);
+    let err = engine.new_instant_query(&ctx, Arc::new(store.clone()), None, query, 10_000).err().unwrap();
+    assert!(err.to_string().contains("parse"), "{}", err);
+    // Engine with the feature enabled accepts.
+    let engine = mk(true);
+    let mut q = engine.new_instant_query(&ctx, Arc::new(store.clone()), None, query, 10_000).unwrap();
+    assert!(q.exec(&ctx).err.is_none());
+}
+
+#[test]
+fn test_unquoted_utf8_names_evaluation() {
+    let store = promqltest::loaded_storage(UTF8_LOAD).unwrap();
+    let engine = Engine::new(EngineOpts {
+        max_samples: 10000,
+        timeout: Duration::from_secs(60),
+        parser: Some(promql::parser::Parser::new(promql::parser::Options {
+            enable_unquoted_utf8_names: true,
+            ..Default::default()
+        })),
+        ..Default::default()
+    });
+    let ctx = Context::background();
+    for (unquoted, quoted) in UTF8_CASES {
+        let mut u = engine.new_instant_query(&ctx, Arc::new(store.clone()), None, unquoted, 120_000).unwrap();
+        let mut q = engine.new_instant_query(&ctx, Arc::new(store.clone()), None, quoted, 120_000).unwrap();
+        let actual = u.exec(&ctx);
+        let expected = q.exec(&ctx);
+        assert!(actual.err.is_none(), "{}: {:?}", unquoted, actual.err);
+        assert!(expected.err.is_none(), "{}: {:?}", quoted, expected.err);
+        let av = actual.value.clone().unwrap();
+        match &av {
+            Value::Vector(v) => assert!(!v.is_empty(), "{}", unquoted),
+            Value::Matrix(m) => assert!(!m.is_empty(), "{}", unquoted),
+            _ => {}
+        }
+        assert_eq!(expected.value, actual.value, "{}", unquoted);
+        if unquoted == "a or on (__name__) а" || unquoted == r#"ö or on (__name__) {"ö"}"# {
+            let Value::Vector(v) = av else { panic!() };
+            assert_eq!(2, v.len());
+            assert_ne!(v[0].f, v[1].f);
+        }
+    }
+}
+
+struct HintsClampingQueryable(TestStorage);
+
+struct HintsClampingQuerier {
+    inner: BoxQuerier,
+    mint: i64,
+    maxt: i64,
+}
+
+impl LabelQuerier for HintsClampingQuerier {
+    fn label_values(&self, ctx: &Context, n: &str, h: Option<&LabelHints>, m: &[Matcher]) -> LabelResult {
+        self.inner.label_values(ctx, n, h, m)
+    }
+    fn label_names(&self, ctx: &Context, h: Option<&LabelHints>, m: &[Matcher]) -> LabelResult {
+        self.inner.label_names(ctx, h, m)
+    }
+    fn close(&mut self) -> Option<Error> {
+        self.inner.close()
+    }
+}
+
+impl Querier for HintsClampingQuerier {
+    fn select(&self, ctx: &Context, sort: bool, hints: Option<&SelectHints>, m: &[Matcher]) -> BoxSeriesSet {
+        let Some(h) = hints else { return self.inner.select(ctx, sort, None, m) };
+        let mut c = h.clone();
+        c.start = c.start.max(self.mint);
+        c.end = c.end.min(self.maxt);
+        if c.start > c.end {
+            return storage::empty_series_set();
+        }
+        self.inner.select(ctx, sort, Some(&c), m)
+    }
+}
+
+impl storage::Queryable for HintsClampingQueryable {
+    fn querier(&self, mint: i64, maxt: i64) -> Result<BoxQuerier, Error> {
+        let inner = self.0.querier(mint, maxt)?;
+        Ok(Box::new(HintsClampingQuerier { inner, mint, maxt }))
+    }
+}
+
+#[test]
+fn test_info_includes_metadata_lookback_in_querier_bounds() {
+    let st = promqltest::loaded_storage(
+        r#"
+		load 1m
+			metric{instance="a", job="1"} _ _ _ _ _ _ _ _ _ _ 1
+			target_info{instance="a", job="1", version="v1"} _ _ _ _ _ _ 1
+	"#,
+    )
+    .unwrap();
+    let engine = promqltest::new_test_engine(false, Duration::from_secs(300), promqltest::DEFAULT_MAX_SAMPLES_PER_QUERY);
+    let ctx = Context::background();
+    let mut q = engine
+        .new_instant_query(&ctx, Arc::new(HintsClampingQueryable(st)), None, "info(last_over_time(metric[1m]))", 600_000)
+        .unwrap();
+    let res = q.exec(&ctx);
+    assert!(res.err.is_none(), "{:?}", res.err);
+    let v = res.vector().unwrap();
+    assert_eq!(1, v.len());
+    assert_eq!(from_strings(&["__name__", "metric", "instance", "a", "job", "1", "version", "v1"]), v[0].metric);
+}
+
+const UTF8_LOAD: &str = r#"
+load 1m
+    {"http.server.requests", "service.name"="api", "resource.k8s.namespace"="system"} 0 60 120
+    {"http.server.requests", "service.name"="web", "resource.k8s.namespace"="system"} 0 120 240
+    service_info{"service.name"="api", "équipe"="infra"} 2 2 2
+    service_info{"service.name"="web", "équipe"="frontend"} 3 3 3
+    {"温度", "場所"="東京"} 10 20 30
+    {"histogram.count"} 1 2 3
+    {"target.info"} 4 5 6
+    {"foo..bar."} 7 8 9
+    a 1 1 1
+    {"а"} 2 2 2
+    {"ö"} 3 3 3
+    {"ö"} 4 4 4
+"#;
+const UTF8_CASES: [(&str, &str); 12] = [
+    (r#"http.server.requests{resource.k8s.namespace="system",service.name="api"}"#, r#"{"http.server.requests","resource.k8s.namespace"="system","service.name"="api"}"#),
+    (r#"温度{場所="東京"}"#, r#"{"温度","場所"="東京"}"#),
+    (r#"sum by (service.name) (http.server.requests)"#, r#"sum by ("service.name") ({"http.server.requests"})"#),
+    (r#"sum without (service.name) (http.server.requests)"#, r#"sum without ("service.name") ({"http.server.requests"})"#),
+    (r#"http.server.requests + on (service.name) group_left (équipe) service_info"#, r#"{"http.server.requests"} + on ("service.name") group_left ("équipe") service_info"#),
+    (r#"service_info + on (service.name) group_right (équipe) http.server.requests"#, r#"service_info + on ("service.name") group_right ("équipe") {"http.server.requests"}"#),
+    (r#"rate(http.server.requests[2m])"#, r#"rate({"http.server.requests"}[2m])"#),
+    (r#"histogram.count"#, r#"{"histogram.count"}"#),
+    (r#"target.info"#, r#"{"target.info"}"#),
+    (r#"foo..bar."#, r#"{"foo..bar."}"#),
+    (r#"a or on (__name__) а"#, r#"{"a"} or on (__name__) {"а"}"#),
+    (r#"ö or on (__name__) {"ö"}"#, r#"{"ö"} or on (__name__) {"ö"}"#),
+];
