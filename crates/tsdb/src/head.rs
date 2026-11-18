@@ -168,7 +168,7 @@ pub struct HeadOptions {
     pub stripe_size: usize,
     pub series_callback: Option<Arc<dyn SeriesLifecycleCallback>>,
     pub enable_exemplar_storage: bool,
-    pub enable_memory_snapshot_on_shutdown: bool,
+    pub enable_memory_snapshot_on_shutdown: AtomicBool,
     pub isolation_disabled: bool,
     /// Maximum number of threads for WAL replay; `<= 0` uses the number of CPUs.
     pub wal_replay_concurrency: i32,
@@ -207,7 +207,7 @@ impl Default for HeadOptions {
             stripe_size: DEFAULT_STRIPE_SIZE,
             series_callback: None,
             enable_exemplar_storage: false,
-            enable_memory_snapshot_on_shutdown: false,
+            enable_memory_snapshot_on_shutdown: AtomicBool::new(false),
             isolation_disabled: false,
             wal_replay_concurrency: default_wal_replay_concurrency(),
             enable_sharding: false,
@@ -2521,7 +2521,7 @@ impl Head {
             errs.push(wbl.close().err().map(wlog_err));
         }
         let mut err = Error::join(errs);
-        if err.is_none() && self.opts.enable_memory_snapshot_on_shutdown {
+        if err.is_none() && self.opts.enable_memory_snapshot_on_shutdown.load(Ordering::Relaxed) {
             err = Error::join([self.perform_chunk_snapshot().err()]);
         }
         match err {
@@ -2659,7 +2659,7 @@ impl Head {
         let mut ref_series: HashMap<HeadSeriesRef, Arc<MemSeries>> = HashMap::new();
         let mut snapshot_loaded = false;
         let mut chunk_snapshot_load_duration = Duration::ZERO;
-        if self.opts.enable_memory_snapshot_on_shutdown {
+        if self.opts.enable_memory_snapshot_on_shutdown.load(Ordering::Relaxed) {
             self.logger.info("Chunk snapshot is enabled, replaying from the snapshot", &[]);
             // If there are any WAL files, there should be at least one WAL file with an index that is current or
             // newer than the snapshot index. If the WAL index is behind the snapshot index somehow, the snapshot
