@@ -1210,3 +1210,103 @@ fn at_modifier_cases(lbls1: &Labels, lbls2: &Labels, lblstopk2: &Labels, lblstop
         (r#"timestamp(metric_timestamp @ 3600)"#, 0, 7 * 60, 60, Value::Matrix(vec![Series { floats: vec![FPoint { f: 3600.0, t: 0 }, FPoint { f: 3600.0, t: 60 * 1000 }, FPoint { f: 3600.0, t: 2 * 60 * 1000 }, FPoint { f: 3600.0, t: 3 * 60 * 1000 }, FPoint { f: 3600.0, t: 4 * 60 * 1000 }, FPoint { f: 3600.0, t: 5 * 60 * 1000 }, FPoint { f: 3600.0, t: 6 * 60 * 1000 }, FPoint { f: 3600.0, t: 7 * 60 * 1000 }], metric: Labels::empty(), drop_name: true, ..Default::default() }])),
     ]
 }
+
+#[test]
+fn test_subquery_selector() {
+    let mut failures = Vec::new();
+    for (load, cases) in subquery_selector_cases() {
+        let engine = new_test_engine();
+        let store = promqltest::loaded_storage(load).unwrap();
+        for (query, start, want) in cases {
+            let ctx = Context::background();
+            let mut qry = engine.new_instant_query(&ctx, Arc::new(store.clone()), None, query, start).unwrap();
+            let res = qry.exec(&ctx);
+            if let Some(e) = res.err {
+                failures.push(format!("{}: {}", query, e));
+                continue;
+            }
+            let mut got = res.value.unwrap();
+            sort_value(&mut got);
+            if got != want {
+                failures.push(format!("{}:\n  want {:?}\n  got  {:?}", query, want, got));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.join("\n"));
+}
+
+fn subquery_selector_cases() -> Vec<(&'static str, Vec<(&'static str, i64, Value)>)> {
+    vec![
+        (r#"load 10s
+							metric 1 2"#, vec![
+            ("metric[20s:10s]", 10000, Value::Matrix(vec![Series { floats: vec![FPoint { f: 1.0, t: 0 }, FPoint { f: 2.0, t: 10000 }], metric: from_strings(&["__name__", "metric"]), ..Default::default() }])),
+            ("metric[20s:5s]", 10000, Value::Matrix(vec![Series { floats: vec![FPoint { f: 1.0, t: 0 }, FPoint { f: 1.0, t: 5000 }, FPoint { f: 2.0, t: 10000 }], metric: from_strings(&["__name__", "metric"]), ..Default::default() }])),
+            ("metric[20s:5s] offset 2s", 12000, Value::Matrix(vec![Series { floats: vec![FPoint { f: 1.0, t: 0 }, FPoint { f: 1.0, t: 5000 }, FPoint { f: 2.0, t: 10000 }], metric: from_strings(&["__name__", "metric"]), ..Default::default() }])),
+            ("metric[20s:5s] offset 6s", 20000, Value::Matrix(vec![Series { floats: vec![FPoint { f: 1.0, t: 0 }, FPoint { f: 1.0, t: 5000 }, FPoint { f: 2.0, t: 10000 }], metric: from_strings(&["__name__", "metric"]), ..Default::default() }])),
+            ("metric[20s:5s] offset 4s", 35000, Value::Matrix(vec![Series { floats: vec![FPoint { f: 2.0, t: 15000 }, FPoint { f: 2.0, t: 20000 }, FPoint { f: 2.0, t: 25000 }, FPoint { f: 2.0, t: 30000 }], metric: from_strings(&["__name__", "metric"]), ..Default::default() }])),
+            ("metric[20s:5s] offset 5s", 35000, Value::Matrix(vec![Series { floats: vec![FPoint { f: 2.0, t: 15000 }, FPoint { f: 2.0, t: 20000 }, FPoint { f: 2.0, t: 25000 }, FPoint { f: 2.0, t: 30000 }], metric: from_strings(&["__name__", "metric"]), ..Default::default() }])),
+            ("metric[20s:5s] offset 6s", 35000, Value::Matrix(vec![Series { floats: vec![FPoint { f: 2.0, t: 10000 }, FPoint { f: 2.0, t: 15000 }, FPoint { f: 2.0, t: 20000 }, FPoint { f: 2.0, t: 25000 }], metric: from_strings(&["__name__", "metric"]), ..Default::default() }])),
+            ("metric[20s:5s] offset 7s", 35000, Value::Matrix(vec![Series { floats: vec![FPoint { f: 2.0, t: 10000 }, FPoint { f: 2.0, t: 15000 }, FPoint { f: 2.0, t: 20000 }, FPoint { f: 2.0, t: 25000 }], metric: from_strings(&["__name__", "metric"]), ..Default::default() }])),
+        ]),
+        (r#"load 10s
+							http_requests{job="api-server", instance="0", group="production"}	0+10x1000 100+30x1000
+							http_requests{job="api-server", instance="1", group="production"}	0+20x1000 200+30x1000
+							http_requests{job="api-server", instance="0", group="canary"}		0+30x1000 300+80x1000
+							http_requests{job="api-server", instance="1", group="canary"}		0+40x2000"#, vec![
+            (r#"http_requests{group=~"pro.*",instance="0"}[30s:10s]"#, 10020000, Value::Matrix(vec![Series { floats: vec![FPoint { f: 10000.0, t: 10000000 }, FPoint { f: 100.0, t: 10010000 }, FPoint { f: 130.0, t: 10020000 }], metric: from_strings(&["__name__", "http_requests", "job", "api-server", "instance", "0", "group", "production"]), ..Default::default() }])),
+            (r#"http_requests{group=~"pro.*",instance="0"}[30s1ms:10s]"#, 10020000, Value::Matrix(vec![Series { floats: vec![FPoint { f: 9990.0, t: 9990000 }, FPoint { f: 10000.0, t: 10000000 }, FPoint { f: 100.0, t: 10010000 }, FPoint { f: 130.0, t: 10020000 }], metric: from_strings(&["__name__", "http_requests", "job", "api-server", "instance", "0", "group", "production"]), ..Default::default() }])),
+            (r#"http_requests{group=~"pro.*",instance="0"}[5m:]"#, 10100000, Value::Matrix(vec![Series { floats: vec![FPoint { f: 9840.0, t: 9840000 }, FPoint { f: 9900.0, t: 9900000 }, FPoint { f: 9960.0, t: 9960000 }, FPoint { f: 130.0, t: 10020000 }, FPoint { f: 310.0, t: 10080000 }], metric: from_strings(&["__name__", "http_requests", "job", "api-server", "instance", "0", "group", "production"]), ..Default::default() }])),
+            (r#"http_requests{group=~"pro.*",instance="0"}[5m:] offset 20m"#, 10100000, Value::Matrix(vec![Series { floats: vec![FPoint { f: 8640.0, t: 8640000 }, FPoint { f: 8700.0, t: 8700000 }, FPoint { f: 8760.0, t: 8760000 }, FPoint { f: 8820.0, t: 8820000 }, FPoint { f: 8880.0, t: 8880000 }], metric: from_strings(&["__name__", "http_requests", "job", "api-server", "instance", "0", "group", "production"]), ..Default::default() }])),
+            (r#"rate(http_requests[1m])[15s:5s]"#, 8000000, Value::Matrix(vec![Series { floats: vec![FPoint { f: 3.0, t: 7990000 }, FPoint { f: 3.0, t: 7995000 }, FPoint { f: 3.0, t: 8000000 }], metric: from_strings(&["job", "api-server", "instance", "0", "group", "canary"]), drop_name: true, ..Default::default() }, Series { floats: vec![FPoint { f: 4.0, t: 7990000 }, FPoint { f: 4.0, t: 7995000 }, FPoint { f: 4.0, t: 8000000 }], metric: from_strings(&["job", "api-server", "instance", "1", "group", "canary"]), drop_name: true, ..Default::default() }, Series { floats: vec![FPoint { f: 1.0, t: 7990000 }, FPoint { f: 1.0, t: 7995000 }, FPoint { f: 1.0, t: 8000000 }], metric: from_strings(&["job", "api-server", "instance", "0", "group", "production"]), drop_name: true, ..Default::default() }, Series { floats: vec![FPoint { f: 2.0, t: 7990000 }, FPoint { f: 2.0, t: 7995000 }, FPoint { f: 2.0, t: 8000000 }], metric: from_strings(&["job", "api-server", "instance", "1", "group", "production"]), drop_name: true, ..Default::default() }])),
+            (r#"rate(http_requests[1m])[15s1ms:5s]"#, 8000000, Value::Matrix(vec![Series { floats: vec![FPoint { f: 3.0, t: 7985000 }, FPoint { f: 3.0, t: 7990000 }, FPoint { f: 3.0, t: 7995000 }, FPoint { f: 3.0, t: 8000000 }], metric: from_strings(&["job", "api-server", "instance", "0", "group", "canary"]), drop_name: true, ..Default::default() }, Series { floats: vec![FPoint { f: 4.0, t: 7985000 }, FPoint { f: 4.0, t: 7990000 }, FPoint { f: 4.0, t: 7995000 }, FPoint { f: 4.0, t: 8000000 }], metric: from_strings(&["job", "api-server", "instance", "1", "group", "canary"]), drop_name: true, ..Default::default() }, Series { floats: vec![FPoint { f: 1.0, t: 7985000 }, FPoint { f: 1.0, t: 7990000 }, FPoint { f: 1.0, t: 7995000 }, FPoint { f: 1.0, t: 8000000 }], metric: from_strings(&["job", "api-server", "instance", "0", "group", "production"]), drop_name: true, ..Default::default() }, Series { floats: vec![FPoint { f: 2.0, t: 7985000 }, FPoint { f: 2.0, t: 7990000 }, FPoint { f: 2.0, t: 7995000 }, FPoint { f: 2.0, t: 8000000 }], metric: from_strings(&["job", "api-server", "instance", "1", "group", "production"]), drop_name: true, ..Default::default() }])),
+            (r#"sum(http_requests{group=~"pro.*"})[30s:10s]"#, 120000, Value::Matrix(vec![Series { floats: vec![FPoint { f: 300.0, t: 100000 }, FPoint { f: 330.0, t: 110000 }, FPoint { f: 360.0, t: 120000 }], metric: Labels::empty(), ..Default::default() }])),
+            (r#"sum(http_requests{group=~"pro.*"})[30s:10s]"#, 121000, Value::Matrix(vec![Series { floats: vec![FPoint { f: 300.0, t: 100000 }, FPoint { f: 330.0, t: 110000 }, FPoint { f: 360.0, t: 120000 }], metric: Labels::empty(), ..Default::default() }])),
+            (r#"sum(http_requests{group=~"pro.*"})[30s1ms:10s]"#, 120000, Value::Matrix(vec![Series { floats: vec![FPoint { f: 270.0, t: 90000 }, FPoint { f: 300.0, t: 100000 }, FPoint { f: 330.0, t: 110000 }, FPoint { f: 360.0, t: 120000 }], metric: Labels::empty(), ..Default::default() }])),
+            (r#"sum(http_requests)[40s:10s]"#, 120000, Value::Matrix(vec![Series { floats: vec![FPoint { f: 900.0, t: 90000 }, FPoint { f: 1000.0, t: 100000 }, FPoint { f: 1100.0, t: 110000 }, FPoint { f: 1200.0, t: 120000 }], metric: Labels::empty(), ..Default::default() }])),
+            (r#"sum(http_requests)[40s1ms:10s]"#, 120000, Value::Matrix(vec![Series { floats: vec![FPoint { f: 800.0, t: 80000 }, FPoint { f: 900.0, t: 90000 }, FPoint { f: 1000.0, t: 100000 }, FPoint { f: 1100.0, t: 110000 }, FPoint { f: 1200.0, t: 120000 }], metric: Labels::empty(), ..Default::default() }])),
+            (r#"(sum(http_requests{group=~"p.*"})+sum(http_requests{group=~"c.*"}))[20s:5s]"#, 120000, Value::Matrix(vec![Series { floats: vec![FPoint { f: 1000.0, t: 105000 }, FPoint { f: 1100.0, t: 110000 }, FPoint { f: 1100.0, t: 115000 }, FPoint { f: 1200.0, t: 120000 }], metric: Labels::empty(), ..Default::default() }])),
+            (r#"(sum(http_requests{group=~"p.*"})+sum(http_requests{group=~"c.*"}))[20s1ms:5s]"#, 120000, Value::Matrix(vec![Series { floats: vec![FPoint { f: 1000.0, t: 100000 }, FPoint { f: 1000.0, t: 105000 }, FPoint { f: 1100.0, t: 110000 }, FPoint { f: 1100.0, t: 115000 }, FPoint { f: 1200.0, t: 120000 }], metric: Labels::empty(), ..Default::default() }])),
+        ]),
+    ]
+}
+
+#[test]
+fn test_engine_eval_stmt_timestamps() {
+    let store = promqltest::loaded_storage("\nload 10s\n  metric 1 2\n").unwrap();
+    let mut failures = Vec::new();
+    for (i, (query, want, start, end, interval, should_error)) in eval_stmt_timestamps_cases().into_iter().enumerate() {
+        let engine = new_test_engine();
+        let ctx = Context::background();
+        let q: Arc<dyn storage::Queryable> = Arc::new(store.clone());
+        let mut qry = if interval == 0 {
+            engine.new_instant_query(&ctx, q, None, query, start).unwrap()
+        } else {
+            engine.new_range_query(&ctx, q, None, query, start, end, interval).unwrap()
+        };
+        let res = qry.exec(&ctx);
+        if should_error {
+            if res.err.is_none() {
+                failures.push(format!("{} query={}: expected error for the query", i, query));
+            }
+            continue;
+        }
+        match (res.err, res.value) {
+            (Some(e), _) => failures.push(format!("{} query={}: {}", i, query, e)),
+            (None, Some(v)) if v == want => {}
+            (None, v) => failures.push(format!("{} query={} failed:\n  want {:?}\n  got  {:?}", i, query, want, v)),
+        }
+    }
+    assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.join("\n"));
+}
+
+fn eval_stmt_timestamps_cases() -> Vec<(&'static str, Value, i64, i64, i64, bool)> {
+    vec![
+        ("1", Value::Scalar(Scalar { v: 1.0, t: 1000 }), 1000, 0, 0, false),
+        ("metric", Value::Vector(vec![Sample { t: 1000, f: 1.0, metric: from_strings(&["__name__", "metric"]), ..Default::default() }]), 1000, 0, 0, false),
+        ("metric[20s]", Value::Matrix(vec![Series { floats: vec![FPoint { f: 1.0, t: 0 }, FPoint { f: 2.0, t: 10000 }], metric: from_strings(&["__name__", "metric"]), ..Default::default() }]), 10000, 0, 0, false),
+        ("1", Value::Matrix(vec![Series { floats: vec![FPoint { f: 1.0, t: 0 }, FPoint { f: 1.0, t: 1000 }, FPoint { f: 1.0, t: 2000 }], metric: Labels::empty(), ..Default::default() }]), 0, 2000, 1000, false),
+        ("metric", Value::Matrix(vec![Series { floats: vec![FPoint { f: 1.0, t: 0 }, FPoint { f: 1.0, t: 1000 }, FPoint { f: 1.0, t: 2000 }], metric: from_strings(&["__name__", "metric"]), ..Default::default() }]), 0, 2000, 1000, false),
+        ("metric", Value::Matrix(vec![Series { floats: vec![FPoint { f: 1.0, t: 0 }, FPoint { f: 1.0, t: 5000 }, FPoint { f: 2.0, t: 10000 }], metric: from_strings(&["__name__", "metric"]), ..Default::default() }]), 0, 10000, 5000, false),
+        (r#"count_values("wrong label!\xff", metric)"#, Value::Scalar(Scalar::default()), 0, 0, 0, true),
+    ]
+}
