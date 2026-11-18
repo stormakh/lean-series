@@ -1811,6 +1811,50 @@ impl<'a> Evaluator<'a> {
             if let Some(st) = enh.start_timestamps.as_mut() {
                 st.reset();
             }
+            // Fast path: read float samples straight from the series iterator into the window, without the
+            // look-back ring buffer (the window itself keeps the overlap with the previous step).
+            let direct_ok = self.budget.is_none()
+                && enh.start_timestamps.is_none()
+                && arg.timestamp.is_none()
+                && !arg.anchored
+                && !arg.smoothed;
+            if direct_ok {
+                if let Some((ss, annos)) = self.matrix_call_series_direct(
+                    s,
+                    arg,
+                    i,
+                    drop_name,
+                    &eval_vals,
+                    matrix_arg_index,
+                    &mut vector_vals,
+                    &mut in_matrix,
+                    &mut enh,
+                    call,
+                    &e.args,
+                    from_subquery,
+                    num_steps,
+                )? {
+                    if !annos.is_empty() {
+                        warnings.merge(annos);
+                    }
+                    let n = ss.floats.len() + total_hpoint_size(&ss.histograms);
+                    if n > 0 {
+                        if self.current_samples + n as i64 > self.max_samples {
+                            return Err(err_too_many_samples());
+                        }
+                        self.current_samples += n as i64;
+                        let has_floats = !ss.floats.is_empty();
+                        mat.push(ss);
+                        self.update_peak();
+                        if is_rate_or_increase {
+                            self.possible_non_counter_info(&in_matrix[0].metric, has_floats, &e.args[0], warnings);
+                        }
+                    } else {
+                        self.update_peak();
+                    }
+                    continue;
+                }
+            }
             it.reset(s.iterator(None));
             let input_drop_name = arg.drop_names.get(i).copied().unwrap_or(false);
             let series_drop_name = drop_name || input_drop_name;
@@ -1956,6 +2000,156 @@ impl<'a> Evaluator<'a> {
             mat = self.merge_series_with_same_labelset(mat)?;
         }
         Ok((Value::Matrix(mat), std::mem::take(warnings)))
+    }
+
+    /// The range-vector function over one series of float samples, reading the samples straight from the
+    /// series iterator. Returns `None` when the series has histograms, having undone its changes, so that the
+    /// caller uses the general path.
+    #[allow(clippy::too_many_arguments)]
+    fn matrix_call_series_direct(
+        &mut self,
+        s: &SeriesArc,
+        arg: &MatrixArg,
+        i: usize,
+        drop_name: bool,
+        eval_vals: &[Matrix],
+        matrix_arg_index: usize,
+        vector_vals: &mut [Vector],
+        in_matrix: &mut [Series],
+        enh: &mut EvalNodeHelper,
+        call: FunctionCall,
+        args: &[Expr],
+        from_subquery: bool,
+        num_steps: usize,
+    ) -> EvalResult<Option<(Series, Annotations)>> {
+        let input_drop_name = arg.drop_names.get(i).copied().unwrap_or(false);
+        let series_drop_name = drop_name || input_drop_name;
+        let mut metric = s.labels().clone();
+        if !self.enable_delayed_name_removal && series_drop_name {
+            metric = drop_metadata(&metric);
+        }
+        let mut ss = Series { metric, drop_name: series_drop_name, ..Default::default() };
+        in_matrix[0].metric = s.labels().clone();
+        let offset = dur_ms(arg.offset);
+        let sel_range = dur_ms(arg.range);
+        let tracking = self.samples_stats.step_tracking;
+        let mut step_stats: Vec<(usize, i64, i64)> = Vec::new();
+        let (mut total, mut read) = (0i64, 0i64);
+        let mut annos = Annotations::new();
+        let mut raw = s.iterator(None);
+        let mut vt = raw.next();
+        let mut ts = self.start_timestamp;
+        let mut step = 0usize;
+        while ts <= self.end_timestamp {
+            let mut counter = 0;
+            for (j, ev) in eval_vals.iter().enumerate() {
+                if j != matrix_arg_index {
+                    vector_vals[counter][0].f = ev[0].floats[step].f;
+                    counter += 1;
+                }
+            }
+            let maxt = ts - offset;
+            let mint = maxt - sel_range;
+            {
+                let floats = &mut in_matrix[0].floats;
+                let drop = floats.iter().position(|p| p.t > mint).unwrap_or(floats.len());
+                if drop > 0 {
+                    self.current_samples -= drop as i64;
+                    floats.drain(..drop);
+                }
+                if mint != maxt {
+                    if vt == VT::Float && raw.at_t() <= mint {
+                        vt = raw.seek(mint + 1);
+                    }
+                    while vt == VT::Float {
+                        let (t, f) = raw.at();
+                        if t > maxt {
+                            break;
+                        }
+                        if !is_stale_nan(f) {
+                            self.current_samples += 1;
+                            if self.current_samples > self.max_samples {
+                                return Err(err_too_many_samples());
+                            }
+                            floats.push(FPoint { t, f });
+                        }
+                        vt = raw.next();
+                    }
+                }
+            }
+            if vt == VT::Histogram || vt == VT::FloatHistogram {
+                let floats = &mut in_matrix[0].floats;
+                self.current_samples -= floats.len() as i64;
+                floats.clear();
+                return Ok(None);
+            }
+            if vt == VT::None {
+                if let Some(e) = raw.err() {
+                    return Err(Error::Chunk(e.clone()));
+                }
+            }
+            self.update_peak();
+            let floats = &in_matrix[0].floats;
+            if floats.is_empty() {
+                ts += self.interval;
+                step += 1;
+                continue;
+            }
+            let full_window_count = floats.len() as i64;
+            let mut samples_read_count = 0;
+            if !from_subquery {
+                samples_read_count = if step == 0 {
+                    full_window_count
+                } else {
+                    count_samples_after(floats, &[], maxt - self.interval)
+                };
+            }
+            enh.ts = ts;
+            enh.out.clear();
+            let a = call(vector_vals, in_matrix, args, enh)?;
+            if !a.is_empty() {
+                annos.merge(a);
+            }
+            let total_inc = if from_subquery { 0 } else { full_window_count };
+            if tracking {
+                step_stats.push((step, total_inc, samples_read_count));
+            } else {
+                total += total_inc;
+                read += samples_read_count;
+            }
+            if let Some(out) = enh.out.first_mut() {
+                match out.h.take() {
+                    None => {
+                        if ss.floats.capacity() == 0 {
+                            ss.floats.reserve_exact(num_steps.min(MAX_POINTS_SLICE_SIZE));
+                        }
+                        ss.floats.push(FPoint { f: out.f, t: ts });
+                    }
+                    Some(h) => {
+                        if ss.histograms.capacity() == 0 {
+                            ss.histograms.reserve_exact(num_steps.min(MAX_POINTS_SLICE_SIZE));
+                        }
+                        ss.histograms.push(HPoint { h, t: ts });
+                    }
+                }
+            }
+            ts += self.interval;
+            step += 1;
+        }
+        if tracking {
+            for (st, t, r) in step_stats {
+                if !from_subquery {
+                    self.samples_stats.increment_samples_at_step(st, t);
+                }
+                if r > 0 {
+                    self.samples_stats.increment_samples_read_at_step(st, r);
+                }
+            }
+        } else {
+            self.samples_stats.total_samples += total;
+            self.samples_stats.samples_read += read;
+        }
+        Ok(Some((ss, annos)))
     }
 
     fn possible_non_counter_info(&self, metric: &Labels, has_floats: bool, arg: &Expr, warnings: &mut Annotations) {
