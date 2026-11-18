@@ -22,6 +22,7 @@
 pub mod client_pb;
 pub mod convertnhcb;
 pub mod mime;
+mod lexutil;
 mod nhcbparse;
 mod openmetrics2parse;
 mod openmetricsparse;
@@ -326,16 +327,6 @@ pub(crate) fn normalize_floats_in_label_values<'s>(
         }
     }
     v
-}
-
-/// Go `lvalReplacer` (`\"`, `\\`, `\n`) applied when `s` has a backslash; otherwise `s` itself.
-#[inline]
-pub(crate) fn unreplace<'s>(s: &'s [u8], scratch: &'s mut Vec<u8>) -> &'s [u8] {
-    if memchr(b'\\', s).is_none() {
-        return s;
-    }
-    replace_escapes(s, scratch, true);
-    scratch.as_slice()
 }
 
 /// Go `strings.NewReplacer` semantics for the escape replacers: scans left to right, replacing `\\`, `\n` and

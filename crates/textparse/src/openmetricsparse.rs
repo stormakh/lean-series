@@ -6,8 +6,9 @@ use model::histogram::{FloatHistogram, Histogram};
 use model::labels::{xxhash, Labels, ScratchBuilder};
 use model::metadata::MetricType;
 
-use crate::promparse::{build_text_labels, lossy, text_parse_float, LabelScratch};
+use crate::promparse::{build_text_labels, check_label_values, lossy, text_parse_float, LabelScratch};
 use crate::strconv::{append_quote_bytes, format_f, go_f64_to_i64};
+use crate::lexutil;
 use crate::token::*;
 use crate::{Entry, Error, Parser, ParserKind};
 
@@ -15,22 +16,12 @@ const NONE: usize = usize::MAX;
 
 #[inline(always)]
 fn is_m(c: u8) -> bool {
-    c == b':' || c == b'_' || c.is_ascii_alphabetic()
-}
-
-#[inline(always)]
-fn is_md(c: u8) -> bool {
-    c == b':' || c == b'_' || c.is_ascii_alphanumeric()
+    lexutil::is(c, lexutil::M)
 }
 
 #[inline(always)]
 fn is_l(c: u8) -> bool {
-    c == b'_' || c.is_ascii_alphabetic()
-}
-
-#[inline(always)]
-fn is_ld(c: u8) -> bool {
-    c == b'_' || c.is_ascii_alphanumeric()
+    lexutil::is(c, lexutil::L)
 }
 
 /// `[^ \n]` as golex compiles it (also excluding \0).
@@ -69,21 +60,15 @@ impl OmLexer {
     /// Quoted string after the opening quote. `newline` allows unescaped newlines. Returns false on abort.
     #[inline]
     fn quoted(&mut self, b: &[u8], newline: bool) -> bool {
-        loop {
-            match self.next(b) {
-                b'"' => {
-                    self.next(b);
-                    return true;
-                }
-                b'\\' => {
-                    let c = self.next(b);
-                    if c == 0 || c == b'\n' {
-                        return false;
-                    }
-                }
-                0 => return false,
-                b'\n' if !newline => return false,
-                _ => {}
+        match lexutil::scan_quoted(b, self.i, self.state == S_LVALUE, newline) {
+            Ok(close) => {
+                self.i = close;
+                self.next(b);
+                true
+            }
+            Err(abort) => {
+                self.i = abort;
+                false
             }
         }
     }
@@ -123,7 +108,7 @@ impl OmLexer {
                         continue;
                     }
                     c if is_m(c) => {
-                        while is_md(self.next(b)) {}
+                        self.i = lexutil::scan_while(b, self.i + 1, lexutil::MD);
                         self.state = S_VALUE;
                         return Token::MName;
                     }
@@ -172,7 +157,7 @@ impl OmLexer {
                             Token::MName
                         }
                         c if is_m(c) => {
-                            while is_md(self.next(b)) {}
+                            self.i = lexutil::scan_while(b, self.i + 1, lexutil::MD);
                             self.state = S_META2;
                             Token::MName
                         }
@@ -183,17 +168,14 @@ impl OmLexer {
                     if c != b' ' {
                         return Token::Invalid;
                     }
-                    loop {
-                        match self.next(b) {
-                            b'\n' => {
-                                self.next(b);
-                                self.state = S_INIT;
-                                return Token::Text;
-                            }
-                            0 => return Token::Invalid,
-                            _ => {}
-                        }
+                    // next() skips null bytes in sMeta2, so only \n or the end stops the text.
+                    self.i = lexutil::find(b, self.i + 1, b'\n');
+                    if self.i >= b.len() {
+                        return Token::Invalid;
                     }
+                    self.next(b);
+                    self.state = S_INIT;
+                    return Token::Text;
                 }
                 S_LABELS | S_EXEMPLAR => {
                     let ex = self.state == S_EXEMPLAR;
@@ -219,7 +201,7 @@ impl OmLexer {
                             Token::BraceClose
                         }
                         c if is_l(c) => {
-                            while is_ld(self.next(b)) {}
+                            self.i = lexutil::scan_while(b, self.i + 1, lexutil::LD);
                             Token::LName
                         }
                         _ => Token::Invalid,
@@ -454,7 +436,16 @@ impl<'a> OpenMetricsParser<'a> {
 
     fn parse_lvals(&mut self, is_exemplar: bool) -> Result<(), Error> {
         let mut offsets = std::mem::take(if is_exemplar { &mut self.e_offsets } else { &mut self.offsets });
-        let r = self.parse_lvals_into(&mut offsets, is_exemplar);
+        let from = if is_exemplar { 0 } else { offsets.len() };
+        let mut r = self.parse_lvals_into(&mut offsets, is_exemplar);
+        if r.is_err() || std::str::from_utf8(&self.b[self.start..self.l.i]).is_err() {
+            if let Some((e, start, end)) = check_label_values(self.b, &offsets, from, !is_exemplar) {
+                self.l.start = start;
+                self.l.i = end;
+                self.l.state = if is_exemplar { S_EXEMPLAR } else { S_LABELS };
+                r = Err(e);
+            }
+        }
         if r.is_err() {
             offsets.clear();
         }
@@ -508,12 +499,7 @@ impl<'a> OpenMetricsParser<'a> {
             if t2 != Token::LValue {
                 return Err(self.parse_error("expected label value", t2));
             }
-            let buf = &self.b[self.l.start..self.l.i];
-            if std::str::from_utf8(buf).is_err() {
-                let mut m = String::from("invalid UTF-8 label value: ");
-                append_quote_bytes(&mut m, buf);
-                return Err(Error::Msg(m));
-            }
+            // The value is checked for valid UTF-8 in `parse_lvals` (all values at once, same result as Go).
             offsets.push(self.l.start + 1);
             offsets.push(self.l.i - 1);
             t = self.next_token();
@@ -632,6 +618,7 @@ impl Parser for OpenMetricsParser<'_> {
     fn labels(&mut self, l: &mut Labels) {
         build_text_labels(
             self.b,
+            self.series,
             &self.offsets,
             self.mtype,
             &self.unit,

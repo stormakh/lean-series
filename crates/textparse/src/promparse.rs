@@ -7,6 +7,7 @@ use model::histogram::{FloatHistogram, Histogram};
 use model::labels::{Labels, ScratchBuilder};
 use model::metadata::MetricType;
 
+use crate::lexutil;
 use crate::strconv::{self, append_quote_bytes};
 use crate::token::*;
 use crate::{Entry, Error, Parser, ParserKind};
@@ -15,22 +16,12 @@ const NONE: usize = usize::MAX;
 
 #[inline(always)]
 fn is_m(c: u8) -> bool {
-    c == b':' || c == b'_' || c.is_ascii_alphabetic()
-}
-
-#[inline(always)]
-fn is_md(c: u8) -> bool {
-    c == b':' || c == b'_' || c.is_ascii_alphanumeric()
+    lexutil::is(c, lexutil::M)
 }
 
 #[inline(always)]
 fn is_l(c: u8) -> bool {
-    c == b'_' || c.is_ascii_alphabetic()
-}
-
-#[inline(always)]
-fn is_ld(c: u8) -> bool {
-    c == b'_' || c.is_ascii_alphanumeric()
+    lexutil::is(c, lexutil::L)
 }
 
 #[inline(always)]
@@ -72,17 +63,27 @@ impl PromLexer {
     }
 
     fn consume_comment(&mut self, b: &[u8]) -> Token {
-        let mut c = self.cur(b);
-        loop {
-            match c {
-                0 => return Token::Eof,
-                b'\n' => {
-                    self.state = S_INIT;
-                    return Token::Comment;
+        // Go: `for c := l.cur(); ; c = l.next()` until \0 (EOF) or \n. `next()` skips null bytes in sComment.
+        match self.cur(b) {
+            0 => return Token::Eof,
+            b'\n' => {}
+            _ => {
+                let mut i = self.i + 1;
+                if self.state == S_COMMENT {
+                    i = lexutil::find(b, i, b'\n');
+                } else {
+                    while i < b.len() && b[i] != 0 && b[i] != b'\n' {
+                        i += 1;
+                    }
                 }
-                _ => c = self.next(b),
+                self.i = i.min(b.len());
+                if self.i >= b.len() || b[self.i] == 0 {
+                    return Token::Eof;
+                }
             }
         }
+        self.state = S_INIT;
+        Token::Comment
     }
 
     #[inline]
@@ -102,20 +103,15 @@ impl PromLexer {
     /// `\"(\\.|[^\\"])*\"` after the opening quote. Returns false on abort.
     #[inline]
     fn quoted(&mut self, b: &[u8]) -> bool {
-        loop {
-            match self.next(b) {
-                b'"' => {
-                    self.next(b);
-                    return true;
-                }
-                b'\\' => {
-                    let c = self.next(b);
-                    if c == 0 || c == b'\n' {
-                        return false;
-                    }
-                }
-                0 => return false,
-                _ => {}
+        match lexutil::scan_quoted(b, self.i, self.state == S_LVALUE, true) {
+            Ok(close) => {
+                self.i = close;
+                self.next(b);
+                true
+            }
+            Err(abort) => {
+                self.i = abort;
+                false
             }
         }
     }
@@ -160,7 +156,7 @@ impl PromLexer {
                             self.consume_comment(b)
                         }
                         c if is_m(c) => {
-                            while is_md(self.next(b)) {}
+                            self.i = lexutil::scan_while(b, self.i + 1, lexutil::MD);
                             self.state = S_VALUE;
                             Token::MName
                         }
@@ -215,7 +211,7 @@ impl PromLexer {
                             }
                         }
                         c if is_m(c) => {
-                            while is_md(self.next(b)) {}
+                            self.i = lexutil::scan_while(b, self.i + 1, lexutil::MD);
                             self.state = S_META2;
                             Token::MName
                         }
@@ -245,12 +241,8 @@ impl PromLexer {
                     if !text {
                         return Token::Whitespace;
                     }
-                    loop {
-                        c = self.next(b);
-                        if c == 0 || c == b'\n' {
-                            break;
-                        }
-                    }
+                    // {C}*: next() skips null bytes in sMeta2, so only \n or the end stops it.
+                    self.i = lexutil::find(b, self.i + 1, b'\n');
                     self.state = S_INIT;
                     return Token::Text;
                 }
@@ -280,7 +272,7 @@ impl PromLexer {
                             Token::BraceClose
                         }
                         c if is_l(c) => {
-                            while is_ld(self.next(b)) {}
+                            self.i = lexutil::scan_while(b, self.i + 1, lexutil::LD);
                             Token::LName
                         }
                         _ => self.abort(b),
@@ -330,7 +322,7 @@ impl PromLexer {
                         }
                         b'\t' | b' ' => self.whitespace(b),
                         b'0'..=b'9' => {
-                            while self.next(b).is_ascii_digit() {}
+                            self.i = lexutil::scan_while(b, self.i + 1, lexutil::D);
                             Token::Timestamp
                         }
                         _ => self.abort(b),
@@ -345,9 +337,9 @@ impl PromLexer {
 /// Reusable buffers for building label sets.
 #[derive(Default)]
 pub(crate) struct LabelScratch {
-    pub(crate) mname: Vec<u8>,
-    pub(crate) name: Vec<u8>,
-    pub(crate) value: Vec<u8>,
+    pub(crate) mname: String,
+    pub(crate) name: String,
+    pub(crate) value: String,
     pub(crate) name_s: String,
     pub(crate) value_s: String,
     pub(crate) float: String,
@@ -366,11 +358,60 @@ pub(crate) fn lossy<'s>(b: &'s [u8], scratch: &'s mut String) -> &'s str {
     }
 }
 
+/// The text of `b[a..z]`: a slice of the already validated `whole` (which starts at `b[s0]`) when possible,
+/// else a lossy UTF-8 copy.
+#[inline]
+fn part<'s>(b: &'s [u8], whole: Option<&'s str>, s0: usize, a: usize, z: usize, scratch: &'s mut String) -> &'s str {
+    if let Some(w) = whole {
+        if a >= s0 {
+            if let Some(t) = w.get(a - s0..z - s0) {
+                return t;
+            }
+        }
+    }
+    lossy(&b[a..z], scratch)
+}
+
+/// Go `lvalReplacer` on text: `\"`, `\\` and `\n` are replaced, left to right.
+#[inline]
+pub(crate) fn unreplace_str<'s>(s: &'s str, out: &'s mut String) -> &'s str {
+    if !s.as_bytes().contains(&b'\\') {
+        return s;
+    }
+    out.clear();
+    let b = s.as_bytes();
+    let mut last = 0;
+    let mut i = 0;
+    while i + 1 < b.len() {
+        if b[i] == b'\\' {
+            let r = match b[i + 1] {
+                b'\\' => "\\",
+                b'n' => "\n",
+                b'"' => "\"",
+                _ => {
+                    i += 1;
+                    continue;
+                }
+            };
+            out.push_str(&s[last..i]);
+            out.push_str(r);
+            i += 2;
+            last = i;
+            continue;
+        }
+        i += 1;
+    }
+    out.push_str(&s[last..]);
+    out.as_str()
+}
+
 /// Builds the labels of a text-format series (shared by the Prometheus and OpenMetrics parsers): metric name,
 /// optional type/unit labels, then the label pairs from `offsets` (pairs of name and value ranges from index 2).
+/// `series` is the byte range of the series; it is UTF-8 validated once and sliced for the parts.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_text_labels(
     b: &[u8],
+    series: (usize, usize),
     offsets: &[usize],
     mtype: MetricType,
     unit: &[u8],
@@ -381,11 +422,13 @@ pub(crate) fn build_text_labels(
 ) {
     builder.reset();
     let LabelScratch { mname, name, value, name_s, value_s, float } = sc;
+    let whole = std::str::from_utf8(&b[series.0..series.1]).ok();
+    let s0 = series.0;
     let type_set = mtype != MetricType::Empty && mtype != MetricType::Unknown;
     let metric_name_empty;
     let unit_empty;
     {
-        let metric_name = lossy(crate::unreplace(&b[offsets[0]..offsets[1]], mname), name_s);
+        let metric_name = unreplace_str(part(b, whole, s0, offsets[0], offsets[1], name_s), mname);
         let unit = lossy(unit, value_s);
         metric_name_empty = metric_name.is_empty();
         unit_empty = unit.is_empty();
@@ -405,7 +448,7 @@ pub(crate) fn build_text_labels(
     }
     let mut i = 2;
     while i < offsets.len() {
-        let label = lossy(crate::unreplace(&b[offsets[i]..offsets[i + 1]], name), name_s);
+        let label = unreplace_str(part(b, whole, s0, offsets[i], offsets[i + 1], name_s), name);
         if enable_type_and_unit_labels {
             let is_empty_for = match label {
                 "__name__" => metric_name_empty,
@@ -418,13 +461,35 @@ pub(crate) fn build_text_labels(
                 continue;
             }
         }
-        let v = lossy(crate::unreplace(&b[offsets[i + 2]..offsets[i + 3]], value), value_s);
+        let v = unreplace_str(part(b, whole, s0, offsets[i + 2], offsets[i + 3], value_s), value);
         let v = crate::normalize_floats_in_label_values(mtype, label, v, float);
         builder.add(label, v);
         i += 4;
     }
     builder.sort();
     builder.overwrite(l);
+}
+
+/// Checks the label values in `offsets[from..]` (name and value pairs) in order, like Go does when it reads each
+/// value token. On the first invalid one returns the Go error and the token range `(start, end)` of that value
+/// (the quotes and, as the lexer skips them, the null bytes after the closing quote).
+pub(crate) fn check_label_values(b: &[u8], offsets: &[usize], from: usize, skip_nulls: bool) -> Option<(Error, usize, usize)> {
+    let mut i = from;
+    while i + 3 < offsets.len() {
+        let (vs, ve) = (offsets[i + 2], offsets[i + 3]);
+        if std::str::from_utf8(&b[vs..ve]).is_err() {
+            let start = vs - 1;
+            let mut end = ve + 1;
+            while skip_nulls && end < b.len() && b[end] == 0 {
+                end += 1;
+            }
+            let mut m = String::from("invalid UTF-8 label value: ");
+            append_quote_bytes(&mut m, &b[start..end]);
+            return Some((Error::Msg(m), start, end));
+        }
+        i += 4;
+    }
+    None
 }
 
 /// Go `parseFloat` of the text parsers: rejects `p`, `P` and `_` (pre-Go 1.13 float formats only).
@@ -504,7 +569,24 @@ impl<'a> PromParser<'a> {
         parse_error(&self.b, self.l.start, self.l.i, self.start, exp, got)
     }
 
+    /// Go `parseLVals`. Label values are UTF-8 checked together after the label set (one check of the whole
+    /// set when it is valid); an invalid value gives Go's error and lexer position as if checked on reading it.
     fn parse_lvals(&mut self) -> Result<(), Error> {
+        let from = self.offsets.len();
+        let r = self.parse_lvals_tokens();
+        if r.is_ok() && std::str::from_utf8(&self.b[self.start..self.l.i]).is_ok() {
+            return r;
+        }
+        if let Some((e, start, end)) = check_label_values(&self.b, &self.offsets, from, true) {
+            self.l.start = start;
+            self.l.i = end;
+            self.l.state = S_LABELS;
+            return Err(e);
+        }
+        r
+    }
+
+    fn parse_lvals_tokens(&mut self) -> Result<(), Error> {
         let mut t = self.next_token();
         loop {
             let mut cur_start = self.l.start;
@@ -543,12 +625,7 @@ impl<'a> PromParser<'a> {
             if t2 != Token::LValue {
                 return Err(self.parse_error("expected label value", t2));
             }
-            let buf = &self.b[self.l.start..self.l.i];
-            if std::str::from_utf8(buf).is_err() {
-                let mut m = String::from("invalid UTF-8 label value: ");
-                append_quote_bytes(&mut m, buf);
-                return Err(Error::Msg(m));
-            }
+            // The value is checked for valid UTF-8 in `parse_lvals` (all values at once, same result as Go).
             self.offsets.push(self.l.start + 1);
             self.offsets.push(self.l.i - 1);
             t = self.next_token();
@@ -631,6 +708,7 @@ impl Parser for PromParser<'_> {
     fn labels(&mut self, l: &mut Labels) {
         build_text_labels(
             &self.b,
+            self.series,
             &self.offsets,
             self.mtype,
             b"",
