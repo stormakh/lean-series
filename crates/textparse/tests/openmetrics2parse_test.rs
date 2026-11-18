@@ -362,7 +362,7 @@ req_duration {count:3,sum:6.0,schema:0,zero_threshold:0.001,zero_count:0,positiv
             ..Default::default()
         }),
     };
-    let classic_series = vec![
+    let classic_series = [
         pe! { m: "req_duration_count", v: 3.0, lset: ls!("__name__", "req_duration_count") },
         pe! { m: "req_duration_sum", v: 6.0, lset: ls!("__name__", "req_duration_sum") },
         pe! { m: b"req_duration_bucket\xffle\xff0.1", v: 1.0, lset: ls!("__name__", "req_duration_bucket", "le", "0.1") },

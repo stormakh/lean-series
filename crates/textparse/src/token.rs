@@ -80,7 +80,7 @@ impl Token {
             Token::CompZeroCount => "COMPZEROCOUNT",
             Token::CompNegSpans => "COMPNEGSPANS",
             Token::CompNegBuckets => "COMPNEGBUCKETS",
-            Token::CompPosSpans => "COMPPOSSPANS",
+            Token::CompPosSpans => "COMPPOSPANS",
             Token::CompPosBuckets => "COMPPOSBUCKETS",
             Token::CompBucket => "COMPBUCKET",
             Token::CompQuantile => "COMPQUANTILE",

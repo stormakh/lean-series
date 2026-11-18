@@ -2,6 +2,7 @@
 //! Like golex it never backtracks: a state without a transition for the current byte either accepts its rule
 //! (when the state accepts) or aborts with an invalid token. The comments name the golex states (`yystateN`).
 
+use crate::lexutil;
 use crate::token::*;
 
 /// `[a-zA-Z_:]`.
@@ -10,34 +11,16 @@ fn is_m(c: u8) -> bool {
     c == b':' || c == b'_' || c.is_ascii_alphabetic()
 }
 
-/// `[0-9:A-Za-z_]` (golex writes it as `'0'..=':'`).
-#[inline(always)]
-fn is_md(c: u8) -> bool {
-    c == b':' || c == b'_' || c.is_ascii_alphanumeric()
-}
-
 /// `[a-zA-Z_]`.
 #[inline(always)]
 fn is_l(c: u8) -> bool {
     c == b'_' || c.is_ascii_alphabetic()
 }
 
-/// `[0-9A-Za-z_]`.
-#[inline(always)]
-fn is_ld(c: u8) -> bool {
-    c == b'_' || c.is_ascii_alphanumeric()
-}
-
 /// `[^ \n]` as golex compiles it (`\x01-\t`, `\v-\x1f`, `!-\xff`: also excluding \0, which is the EOF byte).
 #[inline(always)]
 fn is_vc(c: u8) -> bool {
     !matches!(c, 0 | b'\n' | b' ')
-}
-
-/// `[^\n]` inside quotes after a backslash, and `{C}` (`\x01-\t`, `\v-\xff`).
-#[inline(always)]
-fn is_c(c: u8) -> bool {
-    c != 0 && c != b'\n'
 }
 
 /// `[^,}\[\] \n\r]` (yystate196/197), and without `,` `}` `[` for the bracketed form (yystate198).
@@ -107,22 +90,29 @@ impl Om2Lexer {
     /// `(\\.|[^\\"\n])*"`. On success the closing quote is consumed and the byte after it is read.
     #[inline]
     fn quoted(&mut self, b: &[u8], newline: bool) -> bool {
-        loop {
-            match self.next(b) {
-                b'"' => {
-                    self.next(b);
-                    return true;
-                }
-                b'\\' => {
-                    if !is_c(self.next(b)) {
-                        return false;
-                    }
-                }
-                0 => return false,
-                b'\n' if !newline => return false,
-                _ => {}
+        let skip_nulls = matches!(self.state, S_LVALUE | S_EVALUE | S_META2 | S_COMMENT);
+        match lexutil::scan_quoted(b, self.i, skip_nulls, newline) {
+            Ok(close) => {
+                // The byte after the closing quote is read in the same state (null bytes skipped as `next` does).
+                self.i = close;
+                self.next(b);
+                true
+            }
+            Err(p) => {
+                self.i = p;
+                false
             }
         }
+    }
+
+    /// `[^ \n]*` from `self.i + 1` in a state where `next` does not skip null bytes.
+    #[inline(always)]
+    fn scan_vc(&mut self, b: &[u8]) {
+        let mut i = self.i + 1;
+        while i < b.len() && is_vc(b[i]) {
+            i += 1;
+        }
+        self.i = i.min(b.len());
     }
 
     /// `{S}[^ \n]+` after the space (the space is the current byte): false when the first byte does not match.
@@ -182,7 +172,7 @@ impl Om2Lexer {
                 return Token::Comment;
             }
             if is_vc(c) {
-                while is_vc(self.next(b)) {}
+                self.scan_vc(b);
             }
             return Token::Timestamp;
         }
@@ -194,7 +184,7 @@ impl Om2Lexer {
                 if c == b'@' {
                     c = self.next(b);
                     if is_vc(c) {
-                        while is_vc(self.next(b)) {}
+                        self.scan_vc(b);
                         self.state = S_TIMESTAMP;
                         return Token::StartTimestamp;
                     }
@@ -202,14 +192,14 @@ impl Om2Lexer {
                 }
             }
             if is_vc(c) {
-                while is_vc(self.next(b)) {}
+                self.scan_vc(b);
             }
             return Token::Timestamp;
         }
         if !is_vc(c) {
             return Token::Invalid;
         }
-        while is_vc(self.next(b)) {}
+        self.scan_vc(b);
         Token::Timestamp
     }
 
@@ -234,7 +224,7 @@ impl Om2Lexer {
                         continue;
                     }
                     c if is_m(c) => {
-                        while is_md(self.next(b)) {}
+                        self.i = lexutil::scan_while(b, self.i + 1, lexutil::MD);
                         self.state = S_VALUE;
                         return Token::MName;
                     }
@@ -285,7 +275,7 @@ impl Om2Lexer {
                             Token::MName
                         }
                         c if is_m(c) => {
-                            while is_md(self.next(b)) {}
+                            self.i = lexutil::scan_while(b, self.i + 1, lexutil::MD);
                             self.state = S_META2;
                             Token::MName
                         }
@@ -297,17 +287,14 @@ impl Om2Lexer {
                     if c != b' ' {
                         return Token::Invalid;
                     }
-                    loop {
-                        match self.next(b) {
-                            b'\n' => {
-                                self.next(b);
-                                self.state = S_INIT;
-                                return Token::Text;
-                            }
-                            0 => return Token::Invalid,
-                            _ => {}
-                        }
+                    // `next` skips null bytes here, so only the end of the input stops the scan for `\n`.
+                    self.i = lexutil::find(b, self.i + 1, b'\n');
+                    if self.i >= b.len() {
+                        return Token::Invalid;
                     }
+                    self.next(b);
+                    self.state = S_INIT;
+                    return Token::Text;
                 }
                 // yystart34 (sLabels) and yystart62 (sExemplar).
                 S_LABELS | S_EXEMPLAR => {
@@ -334,7 +321,7 @@ impl Om2Lexer {
                             Token::BraceClose
                         }
                         c if is_l(c) => {
-                            while is_ld(self.next(b)) {}
+                            self.i = lexutil::scan_while(b, self.i + 1, lexutil::LD);
                             Token::LName
                         }
                         _ => Token::Invalid,
@@ -362,7 +349,7 @@ impl Om2Lexer {
                             if !is_vc(c) {
                                 return Token::Invalid;
                             }
-                            while is_vc(self.next(b)) {}
+                            self.scan_vc(b);
                             self.state = S_TIMESTAMP;
                             Token::Value
                         }
