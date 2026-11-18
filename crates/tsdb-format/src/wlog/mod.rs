@@ -5,12 +5,18 @@
 //! `[type byte][len u16 BE][crc32c u32 BE]`. The type byte holds the fragment type in the low 3 bits, the Snappy
 //! flag (0x08) and the zstd flag (0x10). A zero type byte pads the rest of the page.
 
+mod checkpoint;
 pub mod compression;
 mod live_reader;
 mod reader;
 mod segment;
 mod wl;
 
+pub use checkpoint::{
+    CHECKPOINT_PREFIX, CHECKPOINT_TEMP_FILE_SUFFIX, CheckpointStats, FLUSH_THRESHOLD,
+    METADATA_BATCH_SIZE, checkpoint, checkpoint_dir, delete_checkpoints, delete_temp_checkpoints,
+    last_checkpoint, read_min_valid_time,
+};
 pub use live_reader::{LiveReader, LiveReaderMetrics};
 pub use reader::Reader;
 pub use segment::{
@@ -123,6 +129,8 @@ pub enum Error {
     Wrap(String, Box<Error>),
     /// Go `*CorruptionErr`.
     Corruption(Box<CorruptionErr>),
+    /// Go `record.ErrNotFound` ("not found"), returned by `last_checkpoint`.
+    NotFound,
 }
 
 impl Error {
@@ -141,6 +149,15 @@ impl Error {
             Error::Eof => true,
             Error::Wrap(_, e) => e.is_eof(),
             Error::Corruption(c) => c.err.is_eof(),
+            _ => false,
+        }
+    }
+
+    /// Go `errors.Is(err, record.ErrNotFound)`.
+    pub fn is_not_found(&self) -> bool {
+        match self {
+            Error::NotFound => true,
+            Error::Wrap(_, e) => e.is_not_found(),
             _ => false,
         }
     }
@@ -174,6 +191,7 @@ impl fmt::Display for Error {
             Error::Msg(s) => f.write_str(s),
             Error::Wrap(ctx, e) => write!(f, "{ctx}: {e}"),
             Error::Corruption(c) => write!(f, "{c}"),
+            Error::NotFound => f.write_str(crate::record::ERR_NOT_FOUND),
         }
     }
 }
