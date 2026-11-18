@@ -11,6 +11,10 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use std::sync::Arc;
+
+use chunkenc::{Chunk, Encoding};
+use tsdb_format::chunks::{ChunkDiskMapper, ChunkDiskMapperRef, DEFAULT_WRITE_BUFFER_SIZE};
 use tsdb_format::record::{Decoder, Encoder, Type};
 use tsdb_format::tombstones::{self, Interval};
 use tsdb_format::wlog::{self, Reader, WL, compression};
@@ -227,6 +231,67 @@ fn rewrite_wals(go: &Path, out: &Path) {
     eprintln!("ok   every WAL record decodes and re-encodes to the same bytes");
 }
 
+struct HeadChunk {
+    series: u64,
+    r: ChunkDiskMapperRef,
+    mint: i64,
+    maxt: i64,
+    num_samples: u16,
+    enc: u8,
+    ooo: bool,
+    bytes: Vec<u8>,
+}
+
+fn read_head_chunks(dir: &Path) -> Vec<HeadChunk> {
+    let cdm = ChunkDiskMapper::new(&dir.join("chunks_head"), None, DEFAULT_WRITE_BUFFER_SIZE, 0).unwrap();
+    let mut out = Vec::new();
+    cdm.iterate_all_chunks(|series, r, mint, maxt, num_samples, enc, ooo| {
+        out.push(HeadChunk { series, r, mint, maxt, num_samples, enc: enc.0, ooo, bytes: Vec::new() });
+        Ok(())
+    })
+    .unwrap();
+    for c in &mut out {
+        c.bytes = cdm.chunk_bytes_with(c.r, |_, b| b.to_vec()).unwrap();
+    }
+    cdm.close().unwrap();
+    out
+}
+
+fn dump_head_chunks(dir: &Path, out: &mut String) {
+    for c in read_head_chunks(dir) {
+        let _ = writeln!(
+            out,
+            "headchunk {} {} {} {} {} {} {} {}",
+            c.series,
+            c.r.0,
+            c.mint,
+            c.maxt,
+            c.num_samples,
+            c.enc,
+            c.ooo,
+            hex(&c.bytes)
+        );
+    }
+}
+
+/// Writes the Go head chunks with the Rust ChunkDiskMapper, cutting a new file where Go's file number changes.
+fn rewrite_head_chunks(go: &Path, out: &Path) {
+    let cdm = ChunkDiskMapper::new(&out.join("chunks_head"), None, DEFAULT_WRITE_BUFFER_SIZE, 0).unwrap();
+    cdm.iterate_all_chunks(|_, _, _, _, _, _, _| Ok(())).unwrap();
+    let mut prev_file = None;
+    for c in read_head_chunks(go) {
+        let file = c.r.unpack().0;
+        if prev_file.is_some_and(|p| p != file) {
+            cdm.cut_new_file();
+        }
+        prev_file = Some(file);
+        let chk: Arc<dyn Chunk> = Arc::from(chunkenc::from_data(Encoding(c.enc), c.bytes).unwrap());
+        let r = cdm.write_chunk(c.series, c.mint, c.maxt, chk, c.ooo, None);
+        assert_eq!(r, c.r, "head chunk ref differs from Go's");
+    }
+    cdm.close().unwrap();
+}
+
 fn dump(_dir: &Path) -> String {
     unimplemented!()
 }
@@ -242,20 +307,23 @@ fn tmp_wal_only() {
     let want: String = fs::read_to_string(root.join("go.dump.txt"))
         .unwrap()
         .lines()
-        .filter(|l| ["wal ", "rec ", "checkpoint ", "cprec ", "cpmeta ", "tombstone "].iter().any(|p| l.starts_with(p)))
+        .filter(|l| ["headchunk ", "wal ", "rec ", "checkpoint ", "cprec ", "cpmeta ", "tombstone "].iter().any(|p| l.starts_with(p)))
         .map(|l| format!("{l}\n"))
         .collect();
     let mut got = String::new();
+    dump_head_chunks(&go, &mut got);
     dump_wals(&go, &mut got);
     dump_tombstones(&go, &mut got);
     compare_dumps("wal go", &want, &got);
     let out = root.join("rust");
     let _ = fs::remove_dir_all(&out);
     fs::create_dir_all(&out).unwrap();
+    rewrite_head_chunks(&go, &out);
     rewrite_wals(&go, &out);
     let (tr, _) = tombstones::read_tombstones(&go).unwrap();
     tombstones::write_file(&Default::default(), &out, &tr).unwrap();
     let mut got = String::new();
+    dump_head_chunks(&out, &mut got);
     dump_wals(&out, &mut got);
     dump_tombstones(&out, &mut got);
     compare_dumps("wal rust", &want, &got);
