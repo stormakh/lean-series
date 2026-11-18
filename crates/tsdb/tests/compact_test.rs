@@ -1092,4 +1092,241 @@ fn test_compaction_populate_block() {
     }
 }
 
-//REST//
+/// Go `blockPopulatorFunc`.
+struct CanceledPopulator;
+
+impl BlockPopulator for CanceledPopulator {
+    fn populate_block(
+        &self,
+        _: &Context,
+        _: &tsdb::compact::CompactorMetrics,
+        _: &tsdb::Logger,
+        _: &Arc<dyn chunkenc::Pool>,
+        _: &storage::VerticalChunkSeriesMergeFunc,
+        _: &[&dyn BlockReader],
+        _: &mut BlockMeta,
+        _: &mut dyn tsdb::IndexWriter,
+        _: &mut dyn tsdb::ChunkWriter,
+        _: tsdb::compact::IndexReaderPostingsFunc,
+    ) -> Result<(), Error> {
+        Err(storage::ERR_CANCELED)
+    }
+}
+
+// Ensures that a compaction aborted via context cancellation does not mark its source blocks as Compaction.Failed.
+#[test]
+fn test_canceled_compaction_does_not_mark_blocks_failed() {
+    let tmpdir = TempDir::new();
+    let block_dirs = vec![
+        create_block(tmpdir.path(), &gen_series(1, 1, 0, 100)),
+        create_block(tmpdir.path(), &gen_series(1, 1, 100, 200)),
+    ];
+    let compactor = new_leveled_compactor(&bg(), None, vec![200], None, None).unwrap();
+    let err = compactor.compact_with_block_populator(tmpdir.path(), &block_dirs, &[], &CanceledPopulator).unwrap_err();
+    assert!(err.is(&storage::ERR_CANCELED));
+    for dir in &block_dirs {
+        let (meta, _) = tsdb::read_meta_file(dir).unwrap();
+        assert!(!meta.compaction.failed, "block {} should not be marked as compaction failed", meta.ulid);
+    }
+}
+
+fn ulid_ms(ms: u64) -> Ulid {
+    Ulid::from_parts(ms, [0; 10])
+}
+
+#[test]
+fn test_compact_block_metas() {
+    use tsdb::{BlockDesc, BlockMetaCompaction};
+    let (p1, p2, p3, p4) = (ulid_ms(100), ulid_ms(200), ulid_ms(300), ulid_ms(400));
+    let bm = |u, mint, maxt, level, sources: Vec<Ulid>| BlockMeta {
+        ulid: u,
+        min_time: mint,
+        max_time: maxt,
+        compaction: BlockMetaCompaction { level, sources, ..Default::default() },
+        ..BlockMeta::default()
+    };
+    let input = [
+        bm(p1, 1000, 2000, 2, vec![ulid_ms(1), ulid_ms(10)]),
+        bm(p2, 200, 500, 1, vec![]),
+        bm(p3, 500, 2500, 3, vec![ulid_ms(5), ulid_ms(6)]),
+        bm(p4, 100, 900, 1, vec![]),
+    ];
+    let out_ulid = ulid_ms(1000);
+    let refs: Vec<&BlockMeta> = input.iter().collect();
+    let output = compact_block_metas(out_ulid, &refs);
+    let expected = BlockMeta {
+        ulid: out_ulid,
+        min_time: 100,
+        max_time: 2500,
+        stats: BlockStats::default(),
+        compaction: BlockMetaCompaction {
+            level: 4,
+            sources: vec![ulid_ms(1), ulid_ms(5), ulid_ms(6), ulid_ms(10)],
+            parents: vec![
+                BlockDesc { ulid: p1, min_time: 1000, max_time: 2000 },
+                BlockDesc { ulid: p2, min_time: 200, max_time: 500 },
+                BlockDesc { ulid: p3, min_time: 500, max_time: 2500 },
+                BlockDesc { ulid: p4, min_time: 100, max_time: 900 },
+            ],
+            ..Default::default()
+        },
+        ..BlockMeta::default()
+    };
+    assert_eq!(expected, output);
+}
+
+// Verifies that CompactBlockMetas propagates the compaction hints to the merged block. See #18379.
+#[test]
+fn test_compact_block_metas_hints() {
+    let (p1, p2, out) = (ulid_ms(100), ulid_ms(200), ulid_ms(1000));
+    let plain = |u| {
+        let mut m = BlockMeta { ulid: u, min_time: 0, max_time: 1000, ..BlockMeta::default() };
+        m.compaction.level = 1;
+        m
+    };
+    let stale = |u| {
+        let mut m = plain(u);
+        m.compaction.set_stale_series();
+        m
+    };
+    let ooo = |u| {
+        let mut m = plain(u);
+        m.compaction.set_out_of_order();
+        m
+    };
+    // A single source carrying both the from-stale-series and the from-out-of-order hints.
+    let stale_ooo = |u| {
+        let mut m = plain(u);
+        m.compaction.set_stale_series();
+        m.compaction.set_out_of_order();
+        m
+    };
+    let cbm = |v: Vec<BlockMeta>| compact_block_metas(out, &v.iter().collect::<Vec<_>>());
+
+    // Single source carrying both hints keeps both.
+    let o = cbm(vec![stale_ooo(p1)]);
+    assert!(o.compaction.from_stale_series(), "merged block must keep the from-stale-series hint");
+    assert!(o.compaction.from_out_of_order());
+    // Stale+ooo source with an ooo-only source keeps both.
+    let o = cbm(vec![stale_ooo(p1), ooo(p2)]);
+    assert!(o.compaction.from_stale_series());
+    assert!(o.compaction.from_out_of_order());
+    // Stale+ooo source with a plain source keeps stale and drops ooo.
+    let o = cbm(vec![stale_ooo(p1), plain(p2)]);
+    assert!(o.compaction.from_stale_series());
+    assert!(!o.compaction.from_out_of_order());
+    // Stale hint is preserved when a source is stale.
+    let o = cbm(vec![stale(p1), stale(p2)]);
+    assert!(o.compaction.from_stale_series());
+    assert!(!o.compaction.from_out_of_order());
+    // Out-of-order hint is preserved when all sources are out-of-order.
+    let o = cbm(vec![ooo(p1), ooo(p2)]);
+    assert!(o.compaction.from_out_of_order());
+    assert!(!o.compaction.from_stale_series());
+    // Out-of-order hint is dropped when mixed with in-order.
+    let o = cbm(vec![ooo(p1), plain(p2)]);
+    assert!(!o.compaction.from_out_of_order());
+    // Stale kept and out-of-order dropped when sources mix stale and out-of-order.
+    let o = cbm(vec![stale(p1), ooo(p2)]);
+    assert!(o.compaction.from_stale_series());
+    assert!(!o.compaction.from_out_of_order());
+    // No hint when no source carries one.
+    let o = cbm(vec![plain(p1), plain(p2)]);
+    assert!(!o.compaction.from_stale_series());
+    assert!(!o.compaction.from_out_of_order());
+}
+
+#[test]
+fn test_compact_empty_result_block_with_tombstone() {
+    let ctx = bg();
+    let tmpdir = TempDir::new();
+    let block_dir = create_block(tmpdir.path(), &gen_series(1, 1, 0, 10));
+    let block = tsdb::block::open_block(None, &block_dir, None, None).unwrap();
+    // Write tombstone covering the whole block.
+    block
+        .delete(&ctx, 0, 10, &[model::matcher::Matcher::must_new(model::matcher::MatchType::Equal, DEFAULT_LABEL_NAME, "0")])
+        .unwrap();
+    let c = new_leveled_compactor(&ctx, None, vec![0], None, None).unwrap();
+    let ulids = c.compact(tmpdir.path(), &[block_dir.clone()], std::slice::from_ref(&block)).unwrap();
+    assert!(ulids.is_empty());
+    block.close().unwrap();
+}
+
+#[test]
+#[ignore = "needs head"]
+fn test_compaction_from_head() {
+    #[cfg(head)]
+    {
+        use model::matcher::{MatchType, Matcher};
+        use tsdb::head::{Head, HeadOptions, HeadStats};
+        // Multiple head chunks: verify compaction from a head with multiple head chunks per series produces correct
+        // blocks (the chunk cache path of PopulateBlock).
+        let chunk_dir = TempDir::new();
+        let opts = HeadOptions { chunk_range: 100, chunk_dir_root: chunk_dir.path().to_path_buf(), ..HeadOptions::default() };
+        let h = Head::new(None, None, opts, Arc::new(HeadStats::default())).unwrap();
+        let lbls = model::labels::from_strings(&["__name__", "test"]);
+        let mut exp_samples = Vec::new();
+        let mut app = h.appender(&bg());
+        for i in (0..1000).step_by(5) {
+            app.append(0, &lbls, i, i as f64).unwrap();
+            exp_samples.push(sf(0, i, i as f64));
+        }
+        assert!(app.commit().is_none());
+        // Verify we have multiple head chunks.
+        assert!(h.series_head_chunk_count(1) > 1, "need multiple head chunks for this test");
+
+        let dir = TempDir::new();
+        let c = new_leveled_compactor(&bg(), None, vec![1000000], None, None).unwrap();
+        let ulids = c.write(dir.path(), &*h, h.min_time(), h.max_time() + 1, None).unwrap();
+        assert_eq!(ulids.len(), 1);
+        let block = tsdb::block::open_block(None, &dir.path().join(ulids[0].to_string()), None, None).unwrap();
+        let mut q = tsdb::querier::new_block_querier(&block, i64::MIN, i64::MAX).unwrap();
+        {
+            let mut ss = q.select(&bg(), false, None, &[Matcher::must_new(MatchType::Equal, "__name__", "test")]);
+            assert!(ss.next(), "expected a series");
+            let s = ss.at().clone();
+            let mut it = s.iterator(None);
+            let mut act = Vec::new();
+            while it.next() == ValueType::Float {
+                let (t, v) = it.at();
+                act.push(sf(0, t, v));
+            }
+            assert!(it.err().is_none());
+            assert!(!ss.next(), "expected only one series");
+            assert!(ss.err().is_none());
+            assert_eq!(exp_samples, act, "compacted block should contain all samples");
+        }
+        let _ = q.close();
+        drop(q);
+        block.close().unwrap();
+        h.close().unwrap();
+    }
+}
+
+// The following tests drive the DB (db.go, ported separately): auto compaction switches, cancelling compactions on
+// close, failed reloads after compaction, head compaction with histograms and delayed compaction. They are ported
+// when the DB is merged; their Go bodies are in upstream/tsdb/compact_test.go.
+
+#[test]
+#[ignore = "needs db"]
+fn test_disable_auto_compactions() {}
+
+#[test]
+#[ignore = "needs db"]
+fn test_cancel_compactions() {}
+
+#[test]
+#[ignore = "needs db"]
+fn test_delete_compaction_block_after_failed_reload() {}
+
+#[test]
+#[ignore = "needs head"]
+fn test_head_compaction_with_histograms() {}
+
+#[test]
+#[ignore = "needs db"]
+fn test_delayed_compaction() {}
+
+#[test]
+#[ignore = "needs db"]
+fn test_delayed_compaction_does_not_block_unrelated_ops() {}
