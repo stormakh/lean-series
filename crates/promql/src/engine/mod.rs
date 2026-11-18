@@ -28,7 +28,7 @@ use crate::value::*;
 
 pub use aggregate::{HashRatioSampler, RatioSampler};
 pub use binop::{scalar_binop, vector_elem_binop};
-pub use eval::{EvalNodeHelper, EvalSeriesHelper, Evaluator, MatrixArg};
+pub use eval::{EvalNodeHelper, EvalSeriesHelper, Evaluator, MatrixArg, recover_evaluator};
 pub use eval::QueryBudget;
 pub use preprocess::{
     find_min_max_time, for_each_child_mut, get_time_ranges_for_selector, preprocess_expr, set_offset_for_at_modifier,
@@ -958,4 +958,39 @@ fn is_odd_int(x: f64) -> bool {
 /// Go `math.Mod`.
 pub fn go_mod(x: f64, y: f64) -> f64 {
     x % y
+}
+
+/// Go `evaluator.subqueryTimeRange` for an evaluator over `[start, end]` with `interval` (ms), after
+/// `setOffsetForAtModifier(start, expr)`. For tests of the subquery time grid.
+#[doc(hidden)]
+pub fn subquery_time_range_for(
+    start: i64,
+    end: i64,
+    interval: i64,
+    expr: &Expr,
+    no_step: &(dyn Fn(i64) -> i64 + Send + Sync),
+) -> Option<(i64, i64, i64)> {
+    let Expr::Subquery(sq) = expr else { return None };
+    let state = eval::QueryState::default();
+    set_offset_for_at_modifier(start, expr, &state);
+    let ctx = Context::background();
+    let querier = storage::noop_querier();
+    let ev = Evaluator {
+        start_timestamp: start,
+        end_timestamp: end,
+        interval,
+        max_samples: 0,
+        current_samples: 0,
+        budget: None,
+        lookback_delta: 0,
+        samples_stats: QuerySamples::new(false),
+        no_step_subquery_interval_fn: no_step,
+        enable_delayed_name_removal: false,
+        enable_type_and_unit_labels: false,
+        use_start_timestamps: false,
+        querier: &*querier,
+        ctx: &ctx,
+        state: &state,
+    };
+    Some(ev.subquery_time_range(sq))
 }

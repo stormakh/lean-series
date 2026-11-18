@@ -222,6 +222,51 @@ pub struct Evaluator<'a> {
     pub(crate) state: &'a QueryState,
 }
 
+/// Go `evaluator.recover`: turns the result of an evaluation, or its panic, into the returned error and
+/// warnings. Runtime panics are logged with `log` (with the expression) and become "unexpected error: ...".
+pub fn recover_evaluator<T>(
+    expr: Option<&Expr>,
+    res: std::thread::Result<Result<T, Error>>,
+    log: &mut dyn FnMut(&str),
+) -> (Option<T>, Annotations, Option<Error>) {
+    match res {
+        Ok(Ok(v)) => (Some(v), Annotations::new(), None),
+        Ok(Err(e)) => match e.downcast_ref::<ErrWithWarnings>() {
+            Some(w) => (None, w.warnings.clone(), Some(w.err.clone())),
+            None => (None, Annotations::new(), Some(e)),
+        },
+        Err(p) => {
+            if let Some(e) = p.downcast_ref::<Error>() {
+                return match e.downcast_ref::<ErrWithWarnings>() {
+                    Some(w) => (None, w.warnings.clone(), Some(w.err.clone())),
+                    None => (None, Annotations::new(), Some(e.clone())),
+                };
+            }
+            let msg = p
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string()))
+                .unwrap_or_default();
+            let msg = go_runtime_error_text(&msg);
+            let e = expr.map(|e| e.to_string()).unwrap_or_default();
+            log(&format!("runtime panic during query evaluation expr={:?} err={:?}", e, msg));
+            (None, Annotations::new(), Some(Error::msg(format!("unexpected error: {}", msg))))
+        }
+    }
+}
+
+/// The Go runtime error text of a Rust panic message, where they correspond (index out of range); other
+/// messages are returned as they are.
+fn go_runtime_error_text(msg: &str) -> String {
+    // "index out of bounds: the len is 0 but the index is 123"
+    if let Some(rest) = msg.strip_prefix("index out of bounds: the len is ") {
+        if let Some((len, idx)) = rest.split_once(" but the index is ") {
+            return format!("runtime error: index out of range [{}] with length {}", idx, len);
+        }
+    }
+    msg.to_string()
+}
+
 /// Go `ErrTooManySamples(env)`.
 pub(crate) fn err_too_many_samples() -> Error {
     PromqlError::TooManySamples(ENV.to_string()).err()
@@ -430,20 +475,10 @@ impl<'a> Evaluator<'a> {
             let v = if self.enable_delayed_name_removal { self.cleanup_metric_labels(v)? } else { v };
             Ok::<_, Error>((v, ws))
         }));
-        match res {
-            Ok(Ok((v, ws))) => (Some(v), ws, None),
-            Ok(Err(e)) => match e.downcast_ref::<ErrWithWarnings>() {
-                Some(w) => (None, w.warnings.clone(), Some(w.err.clone())),
-                None => (None, Annotations::new(), Some(e)),
-            },
-            Err(p) => {
-                let msg = p
-                    .downcast_ref::<String>()
-                    .cloned()
-                    .or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string()))
-                    .unwrap_or_default();
-                (None, Annotations::new(), Some(Error::msg(format!("unexpected error: {}", msg))))
-            }
+        let (v, ws, err) = recover_evaluator(Some(expr), res, &mut |msg| eprintln!("{}", msg));
+        match v {
+            Some((v, w)) => (Some(v), w, err),
+            None => (None, ws, err),
         }
     }
 
@@ -1337,7 +1372,7 @@ impl<'a> Evaluator<'a> {
     // Subqueries.
 
     /// Go `subqueryTimeRange`.
-    pub(crate) fn subquery_time_range(&self, e: &SubqueryExpr) -> (i64, i64, i64) {
+    pub fn subquery_time_range(&self, e: &SubqueryExpr) -> (i64, i64, i64) {
         let offset_ms = dur_ms(self.state.subquery_offset(e));
         let range_ms = dur_ms(e.range);
         let interval = if e.step != 0 { dur_ms(e.step) } else { (self.no_step_subquery_interval_fn)(range_ms) };
