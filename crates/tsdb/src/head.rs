@@ -850,6 +850,8 @@ impl MemSeriesInner {
         if self.mmapped_chunks.len() + self.head_chunks.len() >= (OOO_CHUNK_ID_MASK - 1) as usize {
             panic!("too many in-order head chunks for series {} ({})", lset, sref);
         }
+        // Most series hold one or two head chunks: grow one at a time (a Vec would start at 4).
+        self.head_chunks.reserve_exact(1);
         self.head_chunks.push(chk);
         self.head_chunks.last_mut().expect("pushed")
     }
@@ -938,6 +940,7 @@ impl MemSeriesInner {
             return 0;
         }
         let n = self.head_chunks.len() - 1;
+        self.mmapped_chunks.reserve_exact(n);
         for chk in self.head_chunks.drain(..n) {
             let num_samples = chk.chunk.num_samples() as u16;
             let encoding = chk.chunk.encoding();
