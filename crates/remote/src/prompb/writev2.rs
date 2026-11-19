@@ -460,6 +460,14 @@ pub fn from_metadata_type(t: ModelMetricType) -> MetadataType {
     }
 }
 
+/// Go `FromMetadataType` on a raw `model.MetricType` string (any text is allowed in Go).
+pub fn from_metadata_type_str(t: &str) -> MetadataType {
+    match ModelMetricType::parse(t) {
+        Some(m) if m.as_str() == t => from_metadata_type(m),
+        _ => MetadataType::UNSPECIFIED,
+    }
+}
+
 /// Go writev2 `FromIntHistogram`.
 pub fn from_int_histogram(st: i64, timestamp: i64, h: &ModelHistogram) -> Histogram {
     let mut r = super::codec::from_int_histogram(timestamp, h);
