@@ -115,40 +115,37 @@ fn serve(c: TcpStream, h: &Handler) {
         Err(_) => return,
     });
     let mut w = c;
-    loop {
-        let mut line = String::new();
-        if r.read_line(&mut line).unwrap_or(0) == 0 {
-            return;
-        }
-        let mut parts = line.split_whitespace();
-        let method = parts.next().unwrap_or("").to_string();
-        let path = parts.next().unwrap_or("").to_string();
-        let mut headers = Vec::new();
-        loop {
-            let mut hl = String::new();
-            if r.read_line(&mut hl).unwrap_or(0) == 0 {
-                return;
-            }
-            let hl = hl.trim_end();
-            if hl.is_empty() {
-                break;
-            }
-            if let Some((k, v)) = hl.split_once(':') {
-                headers.push((k.trim().to_string(), v.trim().to_string()));
-            }
-        }
-        let len: usize = headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("Content-Length")).and_then(|(_, v)| v.parse().ok()).unwrap_or(0);
-        let mut body = vec![0u8; len];
-        if r.read_exact(&mut body).is_err() {
-            return;
-        }
-        let req = TestRequest { method, path, headers, body };
-        let status = h(&req);
-        let resp = format!("HTTP/1.1 {status} X\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-        let _ = w.write_all(resp.as_bytes());
-        let _ = w.flush();
+    let mut line = String::new();
+    if r.read_line(&mut line).unwrap_or(0) == 0 {
         return;
     }
+    let mut parts = line.split_whitespace();
+    let method = parts.next().unwrap_or("").to_string();
+    let path = parts.next().unwrap_or("").to_string();
+    let mut headers = Vec::new();
+    loop {
+        let mut hl = String::new();
+        if r.read_line(&mut hl).unwrap_or(0) == 0 {
+            return;
+        }
+        let hl = hl.trim_end();
+        if hl.is_empty() {
+            break;
+        }
+        if let Some((k, v)) = hl.split_once(':') {
+            headers.push((k.trim().to_string(), v.trim().to_string()));
+        }
+    }
+    let len: usize = headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("Content-Length")).and_then(|(_, v)| v.parse().ok()).unwrap_or(0);
+    let mut body = vec![0u8; len];
+    if r.read_exact(&mut body).is_err() {
+        return;
+    }
+    let req = TestRequest { method, path, headers, body };
+    let status = h(&req);
+    let resp = format!("HTTP/1.1 {status} X\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    let _ = w.write_all(resp.as_bytes());
+    let _ = w.flush();
 }
 
 /// Go `json.Unmarshal(b, &[]*Alert)`: the alerts' labels and annotations from a request body.
