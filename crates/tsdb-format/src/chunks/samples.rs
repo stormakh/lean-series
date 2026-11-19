@@ -148,7 +148,7 @@ pub fn generate_samples_with<S>(
 pub fn chunk_from_samples<S: Sample>(s: &[S]) -> Result<Meta, Error> {
     if s.is_empty() {
         return Ok(Meta {
-            chunk: Some(Box::new(XorChunk::new())),
+            chunk: Some(std::sync::Arc::new(XorChunk::new())),
             ..Default::default()
         });
     }
@@ -185,8 +185,8 @@ pub fn chunk_from_samples<S: Sample>(s: &[S]) -> Result<Meta, Error> {
         }
     }
     Ok(Meta {
-        r#ref: 0,
-        chunk: Some(c),
+        chunk_ref: 0,
+        chunk: Some(std::sync::Arc::from(c)),
         min_time: mint,
         max_time: maxt,
     })
