@@ -71,43 +71,59 @@ pub fn trim_string_by_bytes(s: &[u8], mut size: usize) -> &[u8] {
 }
 
 fn json_entry(query: &[u8], timestamp: i64) -> Vec<u8> {
-    let mut out = String::from("{\"query\":");
-    json_write_str(&String::from_utf8_lossy(query), &mut out);
-    out.push_str(",\"timestamp_sec\":");
-    out.push_str(&timestamp.to_string());
-    out.push('}');
-    out.into_bytes()
+    let mut out = Vec::with_capacity(query.len() + query.len() / 8 + 48);
+    out.extend_from_slice(b"{\"query\":");
+    match std::str::from_utf8(query) {
+        Ok(q) => json_write_str(q, &mut out),
+        Err(_) => json_write_str(&String::from_utf8_lossy(query), &mut out),
+    }
+    out.extend_from_slice(b",\"timestamp_sec\":");
+    out.extend_from_slice(timestamp.to_string().as_bytes());
+    out.push(b'}');
+    out
 }
 
 /// Writes a JSON string like Go's encoding/json.
-fn json_write_str(v: &str, out: &mut String) {
-    use std::fmt::Write as _;
-    out.push('"');
-    // Fast path: printable ASCII without characters that need escaping (the usual query text).
-    if v.bytes().all(|b| (0x20..0x7f).contains(&b) && !matches!(b, b'"' | b'\\' | b'<' | b'>' | b'&')) {
-        out.push_str(v);
-        out.push('"');
-        return;
-    }
-    for c in v.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '<' => out.push_str("\\u003c"),
-            '>' => out.push_str("\\u003e"),
-            '&' => out.push_str("\\u0026"),
-            '\u{2028}' => out.push_str("\\u2028"),
-            '\u{2029}' => out.push_str("\\u2029"),
-            c if (c as u32) < 0x20 => {
-                let _ = write!(out, "\\u{:04x}", c as u32);
+/// Copies runs of plain bytes at once (query texts are mostly plain, but have quotes in label matchers).
+fn json_write_str(v: &str, out: &mut Vec<u8>) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let b = v.as_bytes();
+    out.push(b'"');
+    let mut start = 0;
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        let (esc, n): (&[u8], usize) = match c {
+            b'"' => (b"\\\"", 1),
+            b'\\' => (b"\\\\", 1),
+            b'\n' => (b"\\n", 1),
+            b'\r' => (b"\\r", 1),
+            b'\t' => (b"\\t", 1),
+            b'<' => (b"\\u003c", 1),
+            b'>' => (b"\\u003e", 1),
+            b'&' => (b"\\u0026", 1),
+            // U+2028 and U+2029 (E2 80 A8 / E2 80 A9)
+            0xE2 if i + 2 < b.len() && b[i + 1] == 0x80 && b[i + 2] == 0xA8 => (b"\\u2028", 3),
+            0xE2 if i + 2 < b.len() && b[i + 1] == 0x80 && b[i + 2] == 0xA9 => (b"\\u2029", 3),
+            _ if c < 0x20 => (b"", 1),
+            _ => {
+                i += 1;
+                continue;
             }
-            c => out.push(c),
+        };
+        out.extend_from_slice(&b[start..i]);
+        if esc.is_empty() {
+            out.extend_from_slice(b"\\u00");
+            out.push(HEX[(c >> 4) as usize]);
+            out.push(HEX[(c & 15) as usize]);
+        } else {
+            out.extend_from_slice(esc);
         }
+        i += n;
+        start = i;
     }
-    out.push('"');
+    out.extend_from_slice(&b[start..]);
+    out.push(b'"');
 }
 
 /// Go `newJSONEntry`.
