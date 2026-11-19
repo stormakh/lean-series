@@ -10,3 +10,8 @@ promql = { path = "../promql" }
 storage = { path = "../storage" }
 yaml = { path = "../yaml" }
 yaml-rust2 = { version = "0.13", default-features = false }
+discovery = { path = "../discovery" }
+notifier = { path = "../notifier" }
+template = { path = "../template" }
+json = { path = "../json" }
+util = { path = "../util" }
