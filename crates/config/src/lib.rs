@@ -860,6 +860,22 @@ impl Marshal for TsdbRetentionConfig {
     }
 }
 
+fn default_tsdb_retention() -> &'static RwLock<TsdbRetentionConfig> {
+    static D: OnceLock<RwLock<TsdbRetentionConfig>> = OnceLock::new();
+    D.get_or_init(|| RwLock::new(TsdbRetentionConfig::default()))
+}
+
+/// Go `DefaultTSDBRetentionConfig` (a variable: `cmd/prometheus` sets it from the retention flags, 15d by
+/// default, before it loads the configuration). It is the retention of a config without one.
+pub fn default_tsdb_retention_config() -> TsdbRetentionConfig {
+    default_tsdb_retention().read().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// Sets `DefaultTSDBRetentionConfig`.
+pub fn set_default_tsdb_retention_config(c: TsdbRetentionConfig) {
+    *default_tsdb_retention().write().unwrap_or_else(|e| e.into_inner()) = c;
+}
+
 /// Go `ChunkEncodingConfig`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ChunkEncodingConfig {
@@ -899,7 +915,7 @@ impl Unmarshal for TsdbConfig {
                 f => return Err(msg(format!("'storage.tsdb.chunk_encoding.floats' must be 'xor' or 'xor2', or the field must be omitted entirely, got {}", yaml::go_quote(f)))),
             }
             if self.retention.is_none() {
-                self.retention = Some(TsdbRetentionConfig::default());
+                self.retention = Some(default_tsdb_retention_config());
             }
             Ok(())
         })
@@ -1706,7 +1722,7 @@ impl Unmarshal for Config {
                 self.runtime = default_runtime_config();
             }
             if self.storage_config.tsdb_config.is_none() {
-                self.storage_config.tsdb_config = Some(TsdbConfig { retention: Some(TsdbRetentionConfig::default()), ..Default::default() });
+                self.storage_config.tsdb_config = Some(TsdbConfig { retention: Some(default_tsdb_retention_config()), ..Default::default() });
             }
             for rf in &self.rule_files {
                 if !pat_rule_path(rf) {
@@ -1851,7 +1867,7 @@ pub fn load(s: &str, logger: &Logger) -> Result<Config, String> {
     let mut cfg = default_config();
     yaml::unmarshal_into(s, &mut cfg, true).map_err(|e| e.to_string())?;
     if cfg.storage_config.tsdb_config.is_none() {
-        cfg.storage_config.tsdb_config = Some(TsdbConfig { retention: Some(TsdbRetentionConfig::default()), ..Default::default() });
+        cfg.storage_config.tsdb_config = Some(TsdbConfig { retention: Some(default_tsdb_retention_config()), ..Default::default() });
     }
     let mut b = labels::ScratchBuilder::new(0);
     cfg.global_config.external_labels.range(|name, value| {

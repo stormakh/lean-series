@@ -1,5 +1,6 @@
 //! Port of Prometheus `util/` packages.
 
+pub mod logging;
 pub mod stats;
 
 /// Port of `util/annotations`. The code lives in `storage::annotations`, because storage needs it and cannot

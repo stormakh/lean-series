@@ -231,6 +231,17 @@ impl Group {
             return;
         }
 
+        let ctx = &promql::OriginContext::attach(
+            ctx,
+            vec![(
+                "ruleGroup".to_string(),
+                promql::LogValue::Map(vec![
+                    ("file".to_string(), promql::LogValue::Str(self.file().to_string())),
+                    ("name".to_string(), promql::LogValue::Str(self.name().to_string())),
+                ]),
+            )],
+        );
+
         let _stale = MarkStaleOnDrop(g.clone(), ctx.clone());
 
         let interval_ns = dur_nanos(self.interval).max(1);

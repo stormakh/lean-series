@@ -494,6 +494,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "server"
+version = "0.1.0"
+dependencies = [
+ "chunkenc",
+ "config",
+ "discovery",
+ "http",
+ "json",
+ "libc",
+ "model",
+ "net",
+ "notifier",
+ "promql",
+ "regex",
+ "remote",
+ "rules",
+ "scrape",
+ "storage",
+ "template",
+ "textparse",
+ "tsdb",
+ "tsdb-format",
+ "util",
+ "web",
+ "yaml",
+ "yaml-rust2",
+]
+
+[[package]]
 name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -604,8 +633,11 @@ dependencies = [
  "json",
  "model",
  "net",
+ "notifier",
  "promql",
  "regex",
+ "remote",
+ "rules",
  "scrape",
  "storage",
  "textparse",

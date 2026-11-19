@@ -1,0 +1,39 @@
+[package]
+name = "server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "prometheus"
+path = "src/main.rs"
+
+[dependencies]
+json = { path = "../json" }
+http = { path = "../http" }
+model = { path = "../model" }
+chunkenc = { path = "../chunkenc" }
+storage = { path = "../storage" }
+tsdb = { path = "../tsdb" }
+tsdb-format = { path = "../tsdb-format" }
+promql = { path = "../promql" }
+config = { path = "../config" }
+discovery = { path = "../discovery" }
+scrape = { path = "../scrape" }
+rules = { path = "../rules" }
+notifier = { path = "../notifier" }
+template = { path = "../template" }
+remote = { path = "../remote" }
+web = { path = "../web" }
+util = { path = "../util" }
+net = { path = "../net" }
+yaml = { path = "../yaml" }
+regex = "1.13"
+libc = "0.2"
+yaml-rust2 = { version = "0.13", default-features = false }
+
+[dev-dependencies]
+textparse = { path = "../textparse" }

@@ -2547,13 +2547,15 @@ impl Query {
         let mut querier = match self.queryable.querier(mint, maxt) {
             Ok(q) => q,
             Err(e) => {
-                self.stats.finish(QueryTiming::QueryPreparationTime);
+                let d = self.stats.finish(QueryTiming::QueryPreparationTime);
+                ng.metrics.observe_duration(1, d);
                 return Err((e, Annotations::new()));
             }
         };
         let state = QueryState::default();
         preprocess::populate_series(&*querier, &self.stmt, ctx, &state, &*ng.no_step_subquery_interval_fn);
-        self.stats.finish(QueryTiming::QueryPreparationTime);
+        let d = self.stats.finish(QueryTiming::QueryPreparationTime);
+        ng.metrics.observe_duration(1, d);
 
         set_offset_for_at_modifier(self.stmt.start, &self.stmt.expr, &state);
         self.stats.start(QueryTiming::InnerEvalTime);
@@ -2583,7 +2585,8 @@ impl Query {
         self.sample_stats = std::mem::take(&mut ev.samples_stats);
         drop(ev);
         drop(state);
-        self.stats.finish(QueryTiming::InnerEvalTime);
+        let d = self.stats.finish(QueryTiming::InnerEvalTime);
+        ng.metrics.observe_duration(2, d);
         let _ = querier.close();
         if let Some(e) = err {
             return Err((e, warnings));
@@ -2631,6 +2634,7 @@ impl Query {
     fn sort_matrix_result(&mut self, mat: &mut Matrix) {
         self.stats.start(QueryTiming::ResultSortTime);
         sort_matrix(mat);
-        self.stats.finish(QueryTiming::ResultSortTime);
+        let d = self.stats.finish(QueryTiming::ResultSortTime);
+        self.engine.inner.metrics.observe_duration(3, d);
     }
 }

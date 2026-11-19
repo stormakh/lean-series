@@ -31,6 +31,10 @@ pub struct ApiRequest {
     pub params: Vec<(String, String)>,
     /// Cancellation of the request (Go `r.Context()`).
     pub ctx: Context,
+    /// The client IP without the port (Go `r.RemoteAddr` host part); IPv6 without brackets.
+    pub remote_ip: String,
+    /// The full decoded request path, route prefix included (Go `httputil.ContextWithPath`).
+    pub path: String,
 }
 
 impl ApiRequest {
@@ -52,6 +56,8 @@ impl ApiRequest {
             headers: r.headers.clone(),
             params: r.params.clone(),
             ctx: Context::background(),
+            remote_ip: r.remote_ip.clone(),
+            path: http::util::path_decode(&r.path),
         }
     }
 

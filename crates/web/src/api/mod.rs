@@ -5,6 +5,7 @@
 //! ApiFuncResult` (Go `apiFunc`); the wrapper adds CORS, the TSDB-not-ready mapping, the ready check, compression,
 //! and writes the JSON response straight into the body buffer (no JSON tree).
 
+pub mod adapters;
 pub mod codec;
 pub mod jsonutil;
 pub mod openapi;
@@ -1034,6 +1035,7 @@ impl Api {
     }
 
     fn finish_query(&self, r: &ApiRequest, ctx: &Context, qry: &mut dyn ApiQuery, limit: i64, pending: Option<PendingCost>) -> ApiFuncResult {
+        let ctx = &crate::httputil::context_from_request(ctx, &r.remote_ip, &r.method, &r.path);
         let mut res = qry.exec(ctx);
         if let Some(e) = res.err.take() {
             return ApiFuncResult::error(return_api_error(e)).with_warnings(res.warnings);

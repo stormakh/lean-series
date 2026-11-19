@@ -296,6 +296,21 @@ fn write_log_value(v: &crate::engine::LogValue, out: &mut String) {
         LogValue::Int(i) => json::write_i64(*i, out),
         LogValue::Float(f) => json::write_f64(*f, out),
         LogValue::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+        LogValue::Map(m) => {
+            // Go's JSON encoder writes map keys sorted.
+            let mut m: Vec<&(String, LogValue)> = m.iter().collect();
+            m.sort_by(|a, b| a.0.cmp(&b.0));
+            out.push('{');
+            for (i, (k, v)) in m.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                json::write_str(k, out);
+                out.push(':');
+                write_log_value(v, out);
+            }
+            out.push('}');
+        }
     }
 }
 
