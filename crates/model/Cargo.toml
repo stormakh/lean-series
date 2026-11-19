@@ -7,5 +7,6 @@ license.workspace = true
 [dependencies]
 crypto = { path = "../crypto" }
 json = { path = "../json" }
+yaml = { path = "../yaml" }
 regex = "1.13"
 yaml-rust2 = "0.13"

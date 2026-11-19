@@ -1,0 +1,6 @@
+<ListTagsForResourceResponse xmlns="http://elasticache.amazonaws.com/doc/2015-02-02/">
+  <ListTagsForResourceResult>
+    <TagList><Tag><Key>env</Key><Value>e2e</Value></Tag><Tag><Key>owner.team</Key><Value>sre</Value></Tag></TagList>
+  </ListTagsForResourceResult>
+  <ResponseMetadata><RequestId>req-5</RequestId></ResponseMetadata>
+</ListTagsForResourceResponse>

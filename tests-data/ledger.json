@@ -4370,7 +4370,7 @@
 {
 "package": "model/textparse",
 "go": "FuzzProtobufParser_Labels",
-"file": "",
+"file": "protobufparse_test",
 "crate": "textparse",
 "rust": "fuzz_protobuf_parser_labels",
 "upstream": "pass"
@@ -35602,7 +35602,7 @@
 {
 "package": "util/fuzzing",
 "go": "FuzzParseExpr",
-"file": "",
+"file": "fuzz_test",
 "crate": "util",
 "rust": "fuzz_parse_expr",
 "upstream": "pass"
@@ -35610,7 +35610,7 @@
 {
 "package": "util/fuzzing",
 "go": "FuzzParseMetricSelector",
-"file": "",
+"file": "fuzz_test",
 "crate": "util",
 "rust": "fuzz_parse_metric_selector",
 "upstream": "pass"
@@ -35618,7 +35618,7 @@
 {
 "package": "util/fuzzing",
 "go": "FuzzParseMetricText",
-"file": "",
+"file": "fuzz_test",
 "crate": "util",
 "rust": "fuzz_parse_metric_text",
 "upstream": "pass"
@@ -35626,7 +35626,7 @@
 {
 "package": "util/fuzzing",
 "go": "FuzzParseOpenMetric",
-"file": "",
+"file": "fuzz_test",
 "crate": "util",
 "rust": "fuzz_parse_open_metric",
 "upstream": "pass"
@@ -35634,7 +35634,7 @@
 {
 "package": "util/fuzzing",
 "go": "FuzzParseProtobuf",
-"file": "",
+"file": "fuzz_test",
 "crate": "util",
 "rust": "fuzz_parse_protobuf",
 "upstream": "pass"
@@ -35642,7 +35642,7 @@
 {
 "package": "util/fuzzing",
 "go": "FuzzXOR2Chunk",
-"file": "",
+"file": "fuzz_test",
 "crate": "util",
 "rust": "fuzz_xor2_chunk",
 "upstream": "pass"
@@ -35650,7 +35650,7 @@
 {
 "package": "util/fuzzing",
 "go": "FuzzXORChunk",
-"file": "",
+"file": "fuzz_test",
 "crate": "util",
 "rust": "fuzz_xor_chunk",
 "upstream": "pass"

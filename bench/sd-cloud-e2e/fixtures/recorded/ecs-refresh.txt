@@ -1,0 +1,42 @@
+### POST / X-Amz-Target: AmazonEC2ContainerServiceV20141113.DescribeClusters
+>>> {}
+<<< {"clusters":[],"failures":[]}
+
+### POST / X-Amz-Target: AmazonEC2ContainerServiceV20141113.ListClusters
+>>> {"maxResults":100}
+<<< {"clusterArns":["arn:aws:ecs:us-west-2:123456789012:cluster/mixed-cluster"]}
+
+### POST / X-Amz-Target: AmazonEC2ContainerServiceV20141113.ListTasks
+>>> {"cluster":"arn:aws:ecs:us-west-2:123456789012:cluster/mixed-cluster","maxResults":100}
+<<< {"taskArns":["arn:aws:ecs:us-west-2:123456789012:task/mixed-cluster/task-awsvpc","arn:aws:ecs:us-west-2:123456789012:task/mixed-cluster/task-bridge"]}
+
+### POST / X-Amz-Target: AmazonEC2ContainerServiceV20141113.DescribeClusters
+>>> {"clusters":["arn:aws:ecs:us-west-2:123456789012:cluster/mixed-cluster"],"include":["TAGS"]}
+<<< {"clusters":[{"clusterArn":"arn:aws:ecs:us-west-2:123456789012:cluster/mixed-cluster","clusterName":"mixed-cluster","status":"ACTIVE"}],"failures":[]}
+
+### POST / X-Amz-Target: AmazonEC2ContainerServiceV20141113.ListServices
+>>> {"cluster":"arn:aws:ecs:us-west-2:123456789012:cluster/mixed-cluster","maxResults":100}
+<<< {"serviceArns":["arn:aws:ecs:us-west-2:123456789012:service/mixed-cluster/mixed-service"]}
+
+### POST / X-Amz-Target: AmazonEC2ContainerServiceV20141113.DescribeServices
+>>> {"cluster":"arn:aws:ecs:us-west-2:123456789012:cluster/mixed-cluster","services":["arn:aws:ecs:us-west-2:123456789012:service/mixed-cluster/mixed-service"],"include":["TAGS"]}
+<<< {"services":[{"serviceArn":"arn:aws:ecs:us-west-2:123456789012:service/mixed-cluster/mixed-service","serviceName":"mixed-service","clusterArn":"arn:aws:ecs:us-west-2:123456789012:cluster/mixed-cluster","status":"ACTIVE"}],"failures":[]}
+
+### POST / X-Amz-Target: AmazonEC2ContainerServiceV20141113.DescribeTasks
+>>> {"cluster":"arn:aws:ecs:us-west-2:123456789012:cluster/mixed-cluster","tasks":["arn:aws:ecs:us-west-2:123456789012:task/mixed-cluster/task-awsvpc","arn:aws:ecs:us-west-2:123456789012:task/mixed-cluster/task-bridge"],"include":["TAGS"]}
+<<< {"tasks":[{"taskArn":"arn:aws:ecs:us-west-2:123456789012:task/mixed-cluster/task-awsvpc","clusterArn":"arn:aws:ecs:us-west-2:123456789012:cluster/mixed-cluster","taskDefinitionArn":"arn:aws:ecs:us-west-2:123456789012:task-definition/awsvpc-task:1","group":"service:mixed-service","launchType":"FARGATE","lastStatus":"RUNNING","desiredStatus":"RUNNING","healthStatus":"HEALTHY","availabilityZone":"us-west-2a","attachments":[{"type":"ElasticNetworkInterface","details":[{"name":"subnetId","value":"subnet-12345"},{"name":"privateIPv4Address","value":"10.0.2.100"},{"name":"networkInterfaceId","value":"eni-mixed-awsvpc"}]}]},{"taskArn":"arn:aws:ecs:us-west-2:123456789012:task/mixed-cluster/task-bridge","clusterArn":"arn:aws:ecs:us-west-2:123456789012:cluster/mixed-cluster","taskDefinitionArn":"arn:aws:ecs:us-west-2:123456789012:task-definition/bridge-task:1","group":"service:mixed-service","launchType":"EC2","lastStatus":"RUNNING","desiredStatus":"RUNNING","healthStatus":"HEALTHY","availabilityZone":"us-west-2b","containerInstanceArn":"arn:aws:ecs:us-west-2:123456789012:container-instance/mixed-cluster/xyz789","attachments":[]}],"failures":[]}
+
+### POST / X-Amz-Target: AmazonEC2ContainerServiceV20141113.DescribeContainerInstances
+>>> {"cluster":"arn:aws:ecs:us-west-2:123456789012:cluster/mixed-cluster","containerInstances":["arn:aws:ecs:us-west-2:123456789012:container-instance/mixed-cluster/xyz789"]}
+<<< {"containerInstances":[{"containerInstanceArn":"arn:aws:ecs:us-west-2:123456789012:container-instance/mixed-cluster/xyz789","ec2InstanceId":"i-0987654321fedcba0","status":"ACTIVE"}],"failures":[]}
+
+### POST / X-Amz-Target: 
+>>> Action=DescribeNetworkInterfaces&NetworkInterfaceId.1=eni-mixed-awsvpc&Version=2016-11-15
+<<< <?xml version="1.0" encoding="UTF-8"?>
+<DescribeNetworkInterfacesResponse xmlns="http://ec2.amazonaws.com/doc/2016-11-15/"><requestId>req-2</requestId><networkInterfaceSet><item><networkInterfaceId>eni-mixed-awsvpc</networkInterfaceId><association><publicIp>52.2.3.4</publicIp></association></item></networkInterfaceSet></DescribeNetworkInterfacesResponse>
+
+### POST / X-Amz-Target: 
+>>> Action=DescribeInstances&InstanceId.1=i-0987654321fedcba0&Version=2016-11-15
+<<< <?xml version="1.0" encoding="UTF-8"?>
+<DescribeInstancesResponse xmlns="http://ec2.amazonaws.com/doc/2016-11-15/"><requestId>req-1</requestId><reservationSet><item><instancesSet><item><instanceId>i-0987654321fedcba0</instanceId><privateIpAddress>10.0.1.75</privateIpAddress><ipAddress>54.2.3.4</ipAddress><subnetId>subnet-bridge-2</subnetId><instanceType>t3.large</instanceType><tagSet><item><key>Name</key><value>mixed-host</value></item><item><key>Team</key><value>platform</value></item></tagSet></item></instancesSet></item></reservationSet></DescribeInstancesResponse>
+

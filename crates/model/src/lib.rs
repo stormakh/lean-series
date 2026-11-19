@@ -4,6 +4,7 @@
 pub mod exemplar;
 pub mod histogram;
 pub mod labels;
+pub mod labelset;
 pub mod matcher;
 pub mod metadata;
 pub mod regexp;
@@ -12,3 +13,4 @@ pub mod schema;
 pub mod timestamp;
 pub mod unicode;
 pub mod value;
+pub mod yaml_impls;

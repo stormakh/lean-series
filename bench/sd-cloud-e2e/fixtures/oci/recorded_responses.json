@@ -1,0 +1,257 @@
+{
+ "notes": "OCI SD recorded responses (oci-go-sdk wire JSON). Config: oci_sd_configs with auth api_key, region us-ashburn-1, tenancy ocid1.tenancy.oc1..test001, any user/fingerprint/key_file (RSA >= 2048 bits), no compartments (auto-discovery from the tenancy root), port 9100. host identity = identity.<region>.oci.<domain>, host iaas = iaas.<region>.<domain>. Match method + path + query parameters in any order; reply 200 with Content-Type application/json, the given extra headers and the JSON body. Expected: one group with source OCI and 2 targets: inst1 at 10.0.0.5:9100 (ipv6 label ,2001:db8::1,2001:db8::2,, tags, defined tags Cost=42 Rate=0.5 On=true CreatedBy) and inst2 at [2001:db8::9]:9100; inst3 is dropped (no ATTACHED VNIC).",
+ "requests": [
+  {
+   "method": "GET",
+   "host": "identity",
+   "path": "/20160918/compartments",
+   "query": {
+    "compartmentId": "ocid1.tenancy.oc1..test001",
+    "accessLevel": "ACCESSIBLE",
+    "compartmentIdInSubtree": "false",
+    "limit": "100"
+   },
+   "headers": {
+    "opc-next-page": "p2"
+   },
+   "body": [
+    {
+     "id": "ocid1.compartment.oc1..comp001",
+     "lifecycleState": "ACTIVE",
+     "name": "prod"
+    }
+   ]
+  },
+  {
+   "method": "GET",
+   "host": "identity",
+   "path": "/20160918/compartments",
+   "query": {
+    "compartmentId": "ocid1.tenancy.oc1..test001",
+    "accessLevel": "ACCESSIBLE",
+    "compartmentIdInSubtree": "false",
+    "limit": "100",
+    "page": "p2"
+   },
+   "body": [
+    {
+     "id": "ocid1.compartment.oc1..dead",
+     "lifecycleState": "DELETED",
+     "name": "old"
+    }
+   ]
+  },
+  {
+   "method": "GET",
+   "host": "identity",
+   "path": "/20160918/compartments",
+   "query": {
+    "compartmentId": "ocid1.compartment.oc1..comp001",
+    "accessLevel": "ACCESSIBLE",
+    "compartmentIdInSubtree": "false",
+    "limit": "100"
+   },
+   "body": []
+  },
+  {
+   "method": "GET",
+   "host": "iaas",
+   "path": "/20160918/instances",
+   "query": {
+    "compartmentId": "ocid1.tenancy.oc1..test001",
+    "limit": "100"
+   },
+   "body": []
+  },
+  {
+   "method": "GET",
+   "host": "iaas",
+   "path": "/20160918/instances",
+   "query": {
+    "compartmentId": "ocid1.compartment.oc1..comp001",
+    "limit": "100"
+   },
+   "headers": {
+    "opc-next-page": "i2"
+   },
+   "body": [
+    {
+     "id": "ocid1.instance.oc1.iad.inst1",
+     "displayName": "web-1",
+     "shape": "VM.Standard.E4.Flex",
+     "availabilityDomain": "Uocm:US-ASHBURN-AD-1",
+     "faultDomain": "FAULT-DOMAIN-1",
+     "imageId": "ocid1.image.oc1.iad.img001",
+     "region": "iad",
+     "compartmentId": "ocid1.compartment.oc1..comp001",
+     "lifecycleState": "RUNNING",
+     "timeCreated": "2026-01-01T00:00:00.000Z",
+     "freeformTags": {
+      "env": "prod",
+      "My-Tag.Key": "v"
+     },
+     "definedTags": {
+      "Oracle-Tags": {
+       "CreatedBy": "a@example.com",
+       "Cost": 42,
+       "Rate": 0.5,
+       "On": true,
+       "Nil": null,
+       "List": [
+        "x"
+       ]
+      }
+     }
+    }
+   ]
+  },
+  {
+   "method": "GET",
+   "host": "iaas",
+   "path": "/20160918/instances",
+   "query": {
+    "compartmentId": "ocid1.compartment.oc1..comp001",
+    "limit": "100",
+    "page": "i2"
+   },
+   "body": [
+    {
+     "id": "ocid1.instance.oc1.iad.inst2",
+     "displayName": "web-2",
+     "shape": "VM.Standard.E4.Flex",
+     "availabilityDomain": "Uocm:US-ASHBURN-AD-1",
+     "faultDomain": "FAULT-DOMAIN-1",
+     "imageId": "ocid1.image.oc1.iad.img001",
+     "region": "iad",
+     "compartmentId": "ocid1.compartment.oc1..comp001",
+     "lifecycleState": "RUNNING",
+     "timeCreated": "2026-01-01T00:00:00.000Z",
+     "freeformTags": {},
+     "definedTags": {}
+    },
+    {
+     "id": "ocid1.instance.oc1.iad.inst3",
+     "displayName": "web-3",
+     "shape": "VM.Standard.E4.Flex",
+     "availabilityDomain": "Uocm:US-ASHBURN-AD-1",
+     "faultDomain": "FAULT-DOMAIN-1",
+     "imageId": "ocid1.image.oc1.iad.img001",
+     "region": "iad",
+     "compartmentId": "ocid1.compartment.oc1..comp001",
+     "lifecycleState": "RUNNING",
+     "timeCreated": "2026-01-01T00:00:00.000Z",
+     "freeformTags": {},
+     "definedTags": {}
+    }
+   ]
+  },
+  {
+   "method": "GET",
+   "host": "iaas",
+   "path": "/20160918/vnicAttachments",
+   "query": {
+    "compartmentId": "ocid1.compartment.oc1..comp001",
+    "instanceId": "ocid1.instance.oc1.iad.inst1",
+    "limit": "100"
+   },
+   "body": [
+    {
+     "id": "ocid1.vnicattachment.oc1.iad.s1",
+     "instanceId": "ocid1.instance.oc1.iad.inst1",
+     "vnicId": "ocid1.vnic.oc1.iad.s1",
+     "lifecycleState": "ATTACHED",
+     "compartmentId": "ocid1.compartment.oc1..comp001"
+    },
+    {
+     "id": "ocid1.vnicattachment.oc1.iad.p1",
+     "instanceId": "ocid1.instance.oc1.iad.inst1",
+     "vnicId": "ocid1.vnic.oc1.iad.p1",
+     "lifecycleState": "ATTACHED",
+     "compartmentId": "ocid1.compartment.oc1..comp001"
+    }
+   ]
+  },
+  {
+   "method": "GET",
+   "host": "iaas",
+   "path": "/20160918/vnicAttachments",
+   "query": {
+    "compartmentId": "ocid1.compartment.oc1..comp001",
+    "instanceId": "ocid1.instance.oc1.iad.inst2",
+    "limit": "100"
+   },
+   "body": [
+    {
+     "id": "ocid1.vnicattachment.oc1.iad.p2",
+     "instanceId": "ocid1.instance.oc1.iad.inst2",
+     "vnicId": "ocid1.vnic.oc1.iad.p2",
+     "lifecycleState": "ATTACHED",
+     "compartmentId": "ocid1.compartment.oc1..comp001"
+    }
+   ]
+  },
+  {
+   "method": "GET",
+   "host": "iaas",
+   "path": "/20160918/vnicAttachments",
+   "query": {
+    "compartmentId": "ocid1.compartment.oc1..comp001",
+    "instanceId": "ocid1.instance.oc1.iad.inst3",
+    "limit": "100"
+   },
+   "body": [
+    {
+     "id": "ocid1.vnicattachment.oc1.iad.x3",
+     "instanceId": "ocid1.instance.oc1.iad.inst3",
+     "vnicId": "ocid1.vnic.oc1.iad.x3",
+     "lifecycleState": "DETACHED",
+     "compartmentId": "ocid1.compartment.oc1..comp001"
+    }
+   ]
+  },
+  {
+   "method": "GET",
+   "host": "iaas",
+   "path": "/20160918/vnics/ocid1.vnic.oc1.iad.s1",
+   "query": {},
+   "body": {
+    "id": "ocid1.vnic.oc1.iad.s1",
+    "isPrimary": false,
+    "privateIp": "10.0.1.9",
+    "lifecycleState": "AVAILABLE"
+   }
+  },
+  {
+   "method": "GET",
+   "host": "iaas",
+   "path": "/20160918/vnics/ocid1.vnic.oc1.iad.p1",
+   "query": {},
+   "body": {
+    "id": "ocid1.vnic.oc1.iad.p1",
+    "isPrimary": true,
+    "privateIp": "10.0.0.5",
+    "publicIp": "203.0.113.10",
+    "hostnameLabel": "web-1",
+    "ipv6Addresses": [
+     "2001:db8::2",
+     "2001:db8::1"
+    ],
+    "lifecycleState": "AVAILABLE"
+   }
+  },
+  {
+   "method": "GET",
+   "host": "iaas",
+   "path": "/20160918/vnics/ocid1.vnic.oc1.iad.p2",
+   "query": {},
+   "body": {
+    "id": "ocid1.vnic.oc1.iad.p2",
+    "isPrimary": true,
+    "ipv6Addresses": [
+     "2001:db8::9"
+    ],
+    "lifecycleState": "AVAILABLE"
+   }
+  }
+ ]
+}
