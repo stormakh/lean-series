@@ -846,6 +846,20 @@ impl Head {
         }
     }
 
+    /// Go `appendChunkAndMmap` (tests): runs `append` on the locked series and m-maps as WAL replay does.
+    #[doc(hidden)]
+    pub fn test_append_chunk_and_mmap(
+        &self,
+        ms: &MemSeries,
+        g: &mut MemSeriesInner,
+        append: impl FnOnce(&mut MemSeriesInner) -> (bool, bool),
+    ) -> (bool, bool) {
+        let prev = g.head_chunk_count();
+        let (in_order, created) = append(g);
+        self.after_replay_append(ms, g, prev, created);
+        (in_order, created)
+    }
+
     /// Go `appendChunkAndMmap` (after the append): if a new head chunk was created, m-maps the completed ones.
     fn after_replay_append(&self, ms: &MemSeries, g: &mut MemSeriesInner, prev: u32, chunk_created: bool) {
         if chunk_created {
