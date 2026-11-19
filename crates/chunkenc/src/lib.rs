@@ -297,6 +297,11 @@ pub trait Chunk: Any + Send + Sync + fmt::Debug {
     fn reset(&mut self, stream: Vec<u8>);
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
+    /// A copy that can be appended to as this chunk can (with the bit position in its last byte), if the type
+    /// supports it.
+    fn clone_chunk(&self) -> Option<Box<dyn Chunk>> {
+        None
+    }
 }
 
 /// Dynamic iterator over any chunk encoding (enum dispatch, no allocation). Go returns the `Iterator` interface.
@@ -716,6 +721,9 @@ macro_rules! impl_chunk {
             }
             fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
                 self
+            }
+            fn clone_chunk(&self) -> Option<Box<dyn $crate::Chunk>> {
+                Some(Box::new(self.clone()))
             }
         }
     };

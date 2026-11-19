@@ -424,12 +424,15 @@ impl MemChunk {
         overlaps_closed_interval(self.min_time, self.max_time, mint, maxt)
     }
 
-    /// The chunk for appending. The open chunk is never shared; if it is (which should not happen), its bytes
-    /// are copied first so readers keep a consistent view.
+    /// The chunk for appending. Readers share the open chunk instead of copying it; when one still holds it, the
+    /// chunk is copied first (copy on write), so readers keep a consistent view.
     pub(crate) fn chunk_mut(&mut self) -> &mut dyn Chunk {
         if Arc::get_mut(&mut self.chunk).is_none() {
-            let c = chunkenc::from_data(self.chunk.encoding(), self.chunk.bytes().to_vec())
-                .expect("copy of a valid head chunk");
+            let c = match self.chunk.clone_chunk() {
+                Some(c) => c,
+                None => chunkenc::from_data(self.chunk.encoding(), self.chunk.bytes().to_vec())
+                    .expect("copy of a valid head chunk"),
+            };
             self.chunk = Arc::from(c);
         }
         Arc::get_mut(&mut self.chunk).expect("unshared chunk")
