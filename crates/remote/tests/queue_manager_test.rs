@@ -2899,6 +2899,108 @@ fn test_append_to_convert_nhcb_to_classic() {
         stop.stop();
     }
 
-    // TODO(tsdb): the "exemplars" subtest needs a TSDB head (tsdb.NewHead) behind the remote write handler;
-    // it waits for the tsdb crate.
+    // exemplars
+    for kind in ["integer histogram", "float histogram", "classic control", "native control"] {
+        use model::matcher::{MatchType, Matcher};
+        use remote::remoteapi::{MessageTypes, WriteMessageType as RwMsg};
+        // Use a fresh receiver so an existing base series cannot hide incorrect exemplar routing.
+        let opts = tsdb::head::HeadOptions {
+            chunk_dir_root: temp_dir(),
+            enable_exemplar_storage: true,
+            ..Default::default()
+        };
+        opts.max_exemplars.store(10, Ordering::SeqCst);
+        let head = tsdb::head::Head::new(None, None, opts, None).unwrap();
+        head.init(i64::MIN).unwrap();
+        let handler = Arc::new(remote::write_handler::new_write_handler(
+            discovery::log::Logger::nop(),
+            None,
+            head.clone(),
+            MessageTypes(vec![RwMsg::V1]),
+            false,
+            false,
+        ));
+        let c = TestWriteClient::new(V1);
+        let statuses = Arc::new(Mutex::new(Vec::<u16>::new()));
+        let (cc, st2, h2) = (c.clone(), statuses.clone(), handler.clone());
+        let client = Arc::new(MockWriteClient {
+            name: c.name().to_string(),
+            endpoint: c.endpoint().to_string(),
+            store_func: Box::new(move |ctx, payload, attempt| {
+                let req = http::Request {
+                    method: "POST".into(),
+                    path: "/".into(),
+                    headers: vec![
+                        ("content-type".into(), RwMsg::V1.content_type_header().into()),
+                        ("content-encoding".into(), "snappy".into()),
+                    ],
+                    body: payload.to_vec(),
+                    ..Default::default()
+                };
+                let response = h2.serve(ctx, req);
+                st2.lock().unwrap().push(response.status);
+                if response.status != 204 {
+                    return Err(Error::msg(format!(
+                        "receiver returned HTTP {}: {}",
+                        response.status,
+                        String::from_utf8_lossy(response.body_bytes())
+                    )));
+                }
+                cc.store(ctx, payload, attempt)
+            }),
+        });
+        let (m, stop) = new_test_nhcb_queue_manager(
+            client,
+            NhcbOpts { proto_msg: V1, send_exemplars: true, send_native_histograms: kind == "native control", ..Default::default() },
+        );
+        if kind == "classic control" {
+            m.store_series(&classic_series, 0);
+            for (i, series) in classic_series.iter().enumerate() {
+                assert!(m.append(&[RefSample { r#ref: series.r#ref, st: 0, t: 1000, v: classic_values[i] }]));
+            }
+        } else {
+            m.store_series(&[base_series.clone()], 0);
+            let mut h = new_histogram();
+            if kind == "native control" {
+                // Use an exponential histogram to exercise native delivery without NHCB conversion.
+                h.schema = 0;
+                h.custom_values = None;
+            }
+            append_histogram(&m, h, 1000, kind == "float histogram");
+        }
+        // Ref 1 identifies the le="1.0" bucket in the classic control and the original histogram otherwise.
+        let exemplar_labels = labels::from_strings(&["trace_id", "abc"]);
+        assert!(m.append_exemplars(&[RefExemplar { r#ref: 1, t: 1000, v: 0.5, labels: exemplar_labels.clone() }]));
+        stop.stop();
+        assert_eq!(1, deep_len(&[&c.lock().received_exemplars]), "{kind}: sender must transmit exactly one exemplar");
+        // RW1 may return HTTP 204 after dropping an exemplar for an unknown series, so query storage below.
+        let statuses = statuses.lock().unwrap().clone();
+        assert!(!statuses.is_empty(), "{kind}");
+        for status in statuses {
+            assert_eq!(204, status, "{kind}");
+        }
+        if kind == "native control" {
+            assert_eq!(1, head.num_series(), "{kind}");
+            assert_eq!(1, c.lock().received_histograms.get(&base_series.labels.to_string()).map_or(0, |v| v.len()), "{kind}");
+        } else {
+            assert_eq!(classic_series.len() as u64, head.num_series(), "{kind}");
+            require_initial_samples(&c);
+        }
+        let q = head.exemplar_querier(&Context::background()).unwrap();
+        let got = q.select(0, 2000, &[vec![Matcher::must_new(MatchType::Regexp, "__name__", "latency.*")]]).unwrap();
+        assert_eq!(1, got.len(), "{kind}: receiver must preserve the histogram exemplar");
+        assert_eq!(1, got[0].exemplars.len(), "{kind}");
+        assert_eq!(exemplar_labels, got[0].exemplars[0].labels);
+        assert_eq!(0.5, got[0].exemplars[0].value);
+        assert_eq!(1000, got[0].exemplars[0].ts);
+        if kind == "native control" {
+            assert_eq!(base_series.labels, got[0].series_labels);
+        } else {
+            assert_eq!("latency_bucket", got[0].series_labels.get("__name__"));
+            let bound: f64 = got[0].series_labels.get("le").parse().unwrap();
+            assert!(bound >= 0.5, "{kind}");
+            assert!(c.lock().received_samples.get(&got[0].series_labels.to_string()).is_some_and(|v| !v.is_empty()), "{kind}");
+        }
+        head.close().unwrap();
+    }
 }
