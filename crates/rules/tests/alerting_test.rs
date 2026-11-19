@@ -1,4 +1,6 @@
 //! Port of upstream/rules/alerting_test.go.
+mod common;
+
 use std::collections::HashMap;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -8,7 +10,7 @@ use model::histogram::{FloatHistogram, Span};
 use model::labels::{self, Labels, ValidationScheme};
 use model::relabel::{self, Action};
 use promql::parser::{self, Expr, NumberLiteral};
-use promql::promqltest::{self, TestStorage};
+use promql::promqltest;
 use promql::{Engine, EngineOpts, Sample, Vector};
 use rules::alerting::ERR_DUPLICATE_ALERT_LABEL_SET;
 use rules::log::Logger;
@@ -39,8 +41,11 @@ fn test_engine() -> Arc<Engine> {
     }))
 }
 
-fn loaded(input: &str) -> Arc<dyn Queryable> {
-    Arc::new(promqltest::loaded_storage(input).unwrap())
+/// Go `promqltest.LoadedStorage`: the real TSDB (kept alive by the first value) and it as a queryable.
+fn loaded(input: &str) -> (common::TestStorage, Arc<dyn Queryable>) {
+    let st = common::loaded_storage(input);
+    let q: Arc<dyn Queryable> = st.db.clone();
+    (st, q)
 }
 
 fn sample(metric: &[&str], f: f64, t: i64) -> Sample {
@@ -148,7 +153,7 @@ fn test_alerting_rule_template_with_histogram() {
 
 #[test]
 fn test_alerting_rule_labels_update() {
-    let storage = loaded(
+    let (_st, storage) = loaded(
         r#"
 		load 1m
 			http_requests{job="app-server", instance="0"}	75 85 70 70 stale
@@ -206,7 +211,7 @@ fn test_alerting_rule_labels_update() {
 
 #[test]
 fn test_alerting_rule_external_labels_in_template() {
-    let storage = loaded(
+    let (_st, storage) = loaded(
         r#"
 		load 1m
 			http_requests{job="app-server", instance="0"}	75 85 70 70
@@ -269,7 +274,7 @@ fn test_alerting_rule_external_labels_in_template() {
 
 #[test]
 fn test_alerting_rule_external_url_in_template() {
-    let storage = loaded(
+    let (_st, storage) = loaded(
         r#"
 		load 1m
 			http_requests{job="app-server", instance="0"}	75 85 70 70
@@ -331,7 +336,7 @@ fn test_alerting_rule_external_url_in_template() {
 
 #[test]
 fn test_alerting_rule_empty_label_from_template() {
-    let storage = loaded(
+    let (_st, storage) = loaded(
         r#"
 		load 1m
 			http_requests{job="app-server", instance="0"}	75 85 70 70
@@ -363,7 +368,7 @@ fn test_alerting_rule_empty_label_from_template() {
 
 #[test]
 fn test_alerting_rule_query_in_template() {
-    let storage = loaded(
+    let (_st, storage) = loaded(
         r#"
 		load 1m
 			http_requests{job="app-server", instance="0"}	70 85 70 70
@@ -429,7 +434,8 @@ instance: {{ $v.Labels.instance }}, value: {{ printf "%.0f" $v.Value }};
 
 #[test]
 fn test_alerting_rule_duplicate() {
-    let storage: Arc<dyn Queryable> = Arc::new(TestStorage::new());
+    let st = common::new();
+    let storage: Arc<dyn Queryable> = st.db.clone();
     let engine = Arc::new(promqltest::new_test_engine_with_opts(EngineOpts {
         max_samples: 10,
         timeout: Duration::from_secs(10),
@@ -452,7 +458,7 @@ fn test_alerting_rule_duplicate() {
 
 #[test]
 fn test_alerting_rule_limit() {
-    let storage = loaded(
+    let (_st, storage) = loaded(
         r#"
 		load 1m
 			metric{label="1"} 1
@@ -653,7 +659,7 @@ fn test_send_alerts_dont_affect_active_alerts() {
 
 #[test]
 fn test_keep_firing_for() {
-    let storage = loaded(
+    let (_st, storage) = loaded(
         r#"
 		load 1m
 			http_requests{job="app-server", instance="0"}	75 85 70 70 10x5
@@ -706,7 +712,7 @@ fn test_keep_firing_for() {
 
 #[test]
 fn test_pending_and_keep_firing_for() {
-    let storage = loaded(
+    let (_st, storage) = loaded(
         r#"
 		load 1m
 			http_requests{job="app-server", instance="0"}	75 10x10
