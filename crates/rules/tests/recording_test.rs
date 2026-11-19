@@ -4,7 +4,9 @@ use std::time::Duration;
 
 use model::labels::{self, Labels};
 use promql::parser::{self, Expr, NumberLiteral};
-use promql::promqltest::{self, TestStorage};
+use promql::promqltest;
+
+mod common;
 use promql::{Engine, EngineOpts, Sample, Vector};
 use rules::recording::ERR_DUPLICATE_RECORDING_LABEL_SET;
 use rules::{engine_query_func, from_origin_context, new_rule_detail, QueryFunc, RecordingRule, Rule, RuleDetail, RuleRef, Time};
@@ -90,22 +92,20 @@ fn rule_eval_test_scenarios() -> Vec<Scenario> {
     ]
 }
 
-fn set_up_rule_eval_test() -> Arc<dyn Queryable> {
-    Arc::new(
-        promqltest::loaded_storage(
+fn set_up_rule_eval_test() -> common::TestStorage {
+    common::loaded_storage(
             r#"
 		load 1m
 			metric{label_a="1",label_b="3"} 1
 			metric{label_a="2",label_b="4"} 10
 	"#,
-        )
-        .unwrap(),
     )
 }
 
 #[test]
 fn test_rule_eval() {
-    let storage = set_up_rule_eval_test();
+    let st = set_up_rule_eval_test();
+    let storage: Arc<dyn Queryable> = st.db.clone();
     let ng = test_engine();
     for scenario in rule_eval_test_scenarios() {
         let rule = RecordingRule::new("test_rule", scenario.expr, scenario.rule_labels);
@@ -118,7 +118,8 @@ fn test_rule_eval() {
 
 #[test]
 fn test_rule_eval_duplicate() {
-    let storage: Arc<dyn Queryable> = Arc::new(TestStorage::new());
+    let st = common::new();
+    let storage: Arc<dyn Queryable> = st.db.clone();
     let engine = Arc::new(promqltest::new_test_engine_with_opts(EngineOpts {
         max_samples: 10,
         timeout: Duration::from_secs(10),
@@ -133,16 +134,14 @@ fn test_rule_eval_duplicate() {
 
 #[test]
 fn test_recording_rule_limit() {
-    let storage: Arc<dyn Queryable> = Arc::new(
-        promqltest::loaded_storage(
-            r#"
+    let st = common::loaded_storage(
+        r#"
 		load 1m
 			metric{label="1"} 1
 			metric{label="2"} 1
 	"#,
-        )
-        .unwrap(),
     );
+    let storage: Arc<dyn Queryable> = st.db.clone();
     let tests: &[(i64, &str)] = &[(0, ""), (-1, ""), (2, ""), (1, "exceeded limit of 1 with 2 series")];
     let rule = RecordingRule::new("foo", parse("metric > 0"), labels::from_strings(&["test", "test"]));
     let ng = test_engine();

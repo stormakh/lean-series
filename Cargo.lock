@@ -365,6 +365,7 @@ dependencies = [
  "scrape",
  "storage",
  "template",
+ "tsdb",
  "util",
  "yaml",
  "yaml-rust2",

@@ -20,3 +20,4 @@ chunkenc = { path = "../chunkenc" }
 [dev-dependencies]
 scrape = { path = "../scrape" }
 config = { path = "../config" }
+tsdb = { path = "../tsdb" }
