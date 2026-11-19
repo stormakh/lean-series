@@ -540,6 +540,7 @@ dependencies = [
  "regex",
  "scrape",
  "storage",
+ "textparse",
  "tsdb",
  "tsdb-format",
  "util",
