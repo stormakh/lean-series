@@ -1560,7 +1560,8 @@ impl DB {
     }
 
     /// Go `compactBlocks`: compacts all the eligible on-disk blocks. The cmtx must be held.
-    fn compact_blocks(&self, st: &CompactionState) -> Result<(), Error> {
+    #[doc(hidden)]
+    pub fn compact_blocks(&self, st: &CompactionState) -> Result<(), Error> {
         loop {
             // If we have a lot of blocks to compact the whole process might take long enough that we end up with
             // a head block that needs to be written. Stop compactions early in that case.
@@ -1823,7 +1824,8 @@ impl DB {
     }
 
     /// Go `generateCompactionDelay`.
-    fn generate_compaction_delay(&self) -> Duration {
+    #[doc(hidden)]
+    pub fn generate_compaction_delay(&self) -> Duration {
         let pct = rlock(&self.opts).compaction_delay_max_percent as i64;
         let n = self.head.chunk_range() * pct / 100;
         if n <= 0 {
