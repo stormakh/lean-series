@@ -83,6 +83,12 @@ fn json_entry(query: &[u8], timestamp: i64) -> Vec<u8> {
 fn json_write_str(v: &str, out: &mut String) {
     use std::fmt::Write as _;
     out.push('"');
+    // Fast path: printable ASCII without characters that need escaping (the usual query text).
+    if v.bytes().all(|b| (0x20..0x7f).contains(&b) && !matches!(b, b'"' | b'\\' | b'<' | b'>' | b'&')) {
+        out.push_str(v);
+        out.push('"');
+        return;
+    }
     for c in v.chars() {
         match c {
             '"' => out.push_str("\\\""),
@@ -122,6 +128,14 @@ impl MappedFile {
     /// In-memory bytes without a file.
     pub fn from_bytes(bytes: Vec<u8>) -> MappedFile {
         MappedFile { bytes, file: None }
+    }
+
+    /// Writes `data` at `at` in memory only (clipped to the size); the caller writes the file.
+    fn write_mem(&mut self, at: usize, data: &[u8]) {
+        let end = (at + data.len()).min(self.bytes.len());
+        if at < end {
+            self.bytes[at..end].copy_from_slice(&data[..end - at]);
+        }
     }
 
     /// Writes `data` at `at` (clipped to the file size), like Go's `copy` into the mapping.
@@ -174,6 +188,11 @@ pub struct ActiveQueryTracker {
     state: Mutex<TrackerState>,
     free: Condvar,
     max_concurrent: usize,
+    /// The file (a clone of the handle in `state`), written outside the lock: a slot belongs to one query
+    /// between its insert and its delete, so positioned writes to it need no lock. One write per insert and
+    /// per delete, each of the whole slot.
+    out: Option<File>,
+    closed: std::sync::atomic::AtomicBool,
 }
 
 struct TrackerState {
@@ -188,6 +207,8 @@ impl ActiveQueryTracker {
             state: Mutex::new(TrackerState { file: MappedFile::from_bytes(bytes), free_indices: VecDeque::new() }),
             free: Condvar::new(),
             max_concurrent,
+            out: None,
+            closed: std::sync::atomic::AtomicBool::new(false),
         };
         t.generate_indices(max_concurrent);
         t
@@ -209,10 +230,17 @@ impl ActiveQueryTracker {
             Err(e) => return Err(Error::msg(format!("create mmap-ed active query log: {}", e))),
         };
         file.write(0, b"[");
+        let out = match file.file.as_ref().map(|f| f.try_clone()) {
+            Some(Ok(f)) => Some(f),
+            Some(Err(e)) => return Err(Error::msg(format!("create mmap-ed active query log: {}", e))),
+            None => None,
+        };
         let t = ActiveQueryTracker {
             state: Mutex::new(TrackerState { file, free_indices: VecDeque::new() }),
             free: Condvar::new(),
             max_concurrent,
+            out,
+            closed: std::sync::atomic::AtomicBool::new(false),
         };
         t.generate_indices(max_concurrent);
         Ok(t)
@@ -222,6 +250,19 @@ impl ActiveQueryTracker {
         let mut st = self.state.lock().unwrap();
         for i in 0..max_concurrent {
             st.free_indices.push_back(1 + i * ENTRY_SIZE);
+        }
+    }
+
+    /// Writes `data` at `at` (clipped to the file size) to the file, if any and not closed.
+    fn write_file(&self, at: usize, data: &[u8]) {
+        let Some(f) = &self.out else { return };
+        if self.closed.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+        let len = 1 + self.max_concurrent * ENTRY_SIZE;
+        let end = (at + data.len()).min(len);
+        if at < end {
+            let _ = f.write_at(&data[..end - at], at as u64);
         }
     }
 
@@ -237,12 +278,19 @@ impl QueryTracker for ActiveQueryTracker {
     }
 
     fn insert(&self, ctx: &Context, query: &str) -> Result<usize, Error> {
+        let entry = new_json_entry(query.as_bytes());
         let mut st = self.state.lock().unwrap();
         loop {
             if let Some(i) = st.free_indices.pop_front() {
-                let entry = new_json_entry(query.as_bytes());
-                st.file.write(i, &entry);
-                st.file.write(i + ENTRY_SIZE - 1, b",");
+                st.file.write_mem(i, &entry);
+                st.file.write_mem(i + ENTRY_SIZE - 1, b",");
+                drop(st);
+                // The same bytes as the two writes above (the rest of a free slot is zero).
+                let mut slot = [0u8; ENTRY_SIZE];
+                let n = entry.len().min(ENTRY_SIZE);
+                slot[..n].copy_from_slice(&entry[..n]);
+                slot[ENTRY_SIZE - 1] = b',';
+                self.write_file(i, &slot);
                 return Ok(i);
             }
             if let Some(e) = ctx.err() {
@@ -254,14 +302,17 @@ impl QueryTracker for ActiveQueryTracker {
     }
 
     fn delete(&self, insert_index: usize) {
+        // Clear the slot in the file before it can be given out again.
+        self.write_file(insert_index, &[0u8; ENTRY_SIZE]);
         let mut st = self.state.lock().unwrap();
-        st.file.write(insert_index, &[0u8; ENTRY_SIZE]);
+        st.file.write_mem(insert_index, &[0u8; ENTRY_SIZE]);
         st.free_indices.push_back(insert_index);
         drop(st);
         self.free.notify_one();
     }
 
     fn close(&self) -> Result<(), Error> {
+        self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
         let mut st = self.state.lock().unwrap();
         if let Err(e) = st.file.close() {
             return Err(Error::msg(format!("close ActiveQueryTracker.closer: {}", e)));
