@@ -341,6 +341,12 @@ impl Block {
         self.inner.lock().pending_readers
     }
 
+    /// Replaces the in-memory tombstones of the block (Go tests set `block.tombstones` directly).
+    #[doc(hidden)]
+    pub fn set_tombstones(&self, t: Arc<dyn tombstones::Reader>) {
+        self.inner.lock().tombstones = t;
+    }
+
     /// Go `setCompactionFailed`.
     pub fn set_compaction_failed(&self) -> Result<(), Error> {
         let mut s = self.inner.lock();
