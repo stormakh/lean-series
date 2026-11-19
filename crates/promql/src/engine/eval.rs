@@ -19,7 +19,7 @@ use storage::{
 use util::stats::{QuerySamples, QueryTiming, SubqueryConsumer};
 
 use super::*;
-use super::fasthash::{FxMap, HashKeyMap};
+use super::fasthash::{self, FxMap, HashKeyMap};
 use super::guard::{GuardFailure, MatrixIter, guard_error};
 use crate::functions::{self, FunctionCall};
 use crate::histogram_stats_iterator::HistogramStatsIterator;
@@ -789,6 +789,9 @@ impl<'a> Evaluator<'a> {
             return Ok((Value::Matrix(m), ws));
         }
 
+        if let Some(r) = self.fused_float_aggregation(e, inner, &sorted_grouping)? {
+            return Ok(r);
+        }
         let mut warnings = Annotations::new();
         let original_num_samples = self.current_samples;
         let (fp, ws) = aggregate::FParams::new(self, e.param.as_ref())?;
@@ -800,6 +803,154 @@ impl<'a> Evaluator<'a> {
         self.current_samples = original_num_samples + matrix_total_samples(&result) as i64;
         self.update_peak();
         Ok((Value::Matrix(result), warnings))
+    }
+
+    /// sum, avg, count, group, min and max directly over a vector selector of float series: each series is read
+    /// and folded into per-step group states, without materializing the input matrix. The arithmetic and its
+    /// order per step are those of `aggregation` (series in input order), and the sample accounting is the same
+    /// as evaluating the selector first. Returns `None` (having changed nothing) when this does not apply, for
+    /// example when a series has histograms.
+    fn fused_float_aggregation(
+        &mut self,
+        e: &AggregateExpr,
+        inner: &Expr,
+        sorted_grouping: &[String],
+    ) -> EvalResult<Option<(Value, Annotations)>> {
+        use crate::parser::{AVG, COUNT, GROUP, MAX, MIN, SUM};
+        if self.budget.is_some() || !matches!(e.op, SUM | AVG | COUNT | GROUP | MAX | MIN) {
+            return Ok(None);
+        }
+        let Expr::VectorSelector(vs) = inner else { return Ok(None) };
+        if vs.smoothed {
+            return Ok(None);
+        }
+        let saved_stats = self.samples_stats.clone();
+        let original_num_samples = self.current_samples;
+        let (series, ws) = self.check_and_expand_series_set(vs)?;
+        let offset = self.state.vs_offset(vs);
+        let num_steps = self.num_steps_total();
+
+        #[derive(Clone, Copy, Default)]
+        struct St {
+            seen: bool,
+            v: f64,
+            mean: f64,
+            c: f64,
+            count: f64,
+            inc_mean: bool,
+        }
+        let mut enh = self.new_enh();
+        let mut buf = Vec::new();
+        let mut group_of: fasthash::HashKeyMap<usize> = Default::default();
+        let mut groups: Vec<(Labels, Vec<St>)> = Vec::new();
+        let op = e.op;
+        for s in series.iter() {
+            self.check_ctx("expression evaluation")?;
+            let Some(ss) = self.eval_series_floats(s, offset, false, None, num_steps)? else {
+                // A histogram: use the general path from the start.
+                self.samples_stats = saved_stats;
+                self.current_samples = original_num_samples;
+                return Ok(None);
+            };
+            if ss.floats.is_empty() {
+                continue;
+            }
+            let key = generate_grouping_key(&ss.metric, sorted_grouping, e.without, &mut buf);
+            let gi = match group_of.get(&key) {
+                Some(&g) => g,
+                None => {
+                    let l = generate_grouping_labels(&mut enh, &ss.metric, e.without, sorted_grouping);
+                    groups.push((l, vec![St::default(); num_steps]));
+                    group_of.insert(key, groups.len() - 1);
+                    groups.len() - 1
+                }
+            };
+            let states = &mut groups[gi].1;
+            for p in &ss.floats {
+                let step = ((p.t - self.start_timestamp) / self.interval) as usize;
+                let g = &mut states[step];
+                let f = p.f;
+                if !g.seen {
+                    *g = St { seen: true, v: if op == GROUP { 1.0 } else { f }, mean: f, c: 0.0, count: 1.0, inc_mean: false };
+                    continue;
+                }
+                match op {
+                    SUM => {
+                        let (v, c) = model::histogram::kahansum::inc(f, g.v, g.c);
+                        g.v = v;
+                        g.c = c;
+                    }
+                    AVG => {
+                        g.count += 1.0;
+                        let mut done = false;
+                        if !g.inc_mean {
+                            let (nv, nc) = model::histogram::kahansum::inc(f, g.v, g.c);
+                            if !nv.is_infinite() {
+                                g.v = nv;
+                                g.c = nc;
+                                done = true;
+                            } else {
+                                g.inc_mean = true;
+                                g.mean = g.v / (g.count - 1.0);
+                                g.c /= g.count - 1.0;
+                            }
+                        }
+                        if !done {
+                            let q = (g.count - 1.0) / g.count;
+                            let (m, c) = model::histogram::kahansum::inc(f / g.count, q * g.mean, q * g.c);
+                            g.mean = m;
+                            g.c = c;
+                        }
+                    }
+                    COUNT => g.count += 1.0,
+                    MAX => {
+                        if g.v < f || g.v.is_nan() {
+                            g.v = f;
+                        }
+                    }
+                    MIN => {
+                        if g.v > f || g.v.is_nan() {
+                            g.v = f;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            // The input points are no longer in memory (Go keeps the input matrix until the aggregation ends;
+            // the peak and the limit checks above already counted them).
+        }
+        self.update_peak();
+        let mut result: Matrix = Vec::with_capacity(groups.len());
+        for (l, states) in groups {
+            let mut out = Series::new(l);
+            for (step, g) in states.iter().enumerate() {
+                if !g.seen {
+                    continue;
+                }
+                let v = match op {
+                    SUM => g.v + g.c,
+                    AVG => {
+                        if g.inc_mean {
+                            g.mean + g.c
+                        } else {
+                            g.v / g.count + g.c / g.count
+                        }
+                    }
+                    COUNT => g.count,
+                    _ => g.v,
+                };
+                if out.floats.capacity() == 0 {
+                    out.floats.reserve_exact(num_steps.min(MAX_POINTS_SLICE_SIZE));
+                }
+                out.floats.push(FPoint { t: self.start_timestamp + step as i64 * self.interval, f: v });
+            }
+            if !out.floats.is_empty() {
+                result.push(out);
+            }
+        }
+        self.current_samples = original_num_samples + matrix_total_samples(&result) as i64;
+        self.update_peak();
+        Ok(Some((Value::Matrix(result), ws)))
     }
 
     fn eval_binary(&mut self, e: &parser::BinaryExpr) -> EvalResult<(Value, Annotations)> {
