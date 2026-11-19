@@ -112,6 +112,9 @@ pub fn new_read_handler(
         &[],
         &[],
     );
+    // Metrics without labels exist from the start (Go), so make their only child now.
+    queries.get();
+    gate_wait_duration.get();
     if let Some(r) = reg {
         r.register(queries.clone()).expect("register prometheus_remote_read_handler_queries");
         r.register(gate_wait_duration.clone())
