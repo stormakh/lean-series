@@ -3,7 +3,8 @@
 use crate::util::{http_date, now_unix};
 use crate::{Body, Request, Response, compressible, reason};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -88,8 +89,18 @@ impl Server {
             Err(_) => 0,
         }
     }
+    /// The bound address.
+    pub fn local_addr(&self) -> Option<SocketAddr> {
+        self.listener.local_addr().ok()
+    }
     /// Accepts connections forever.
     pub fn run(self, svc: Arc<dyn Service>) {
+        self.run_until(svc, Arc::new(AtomicBool::new(false)))
+    }
+    /// Accepts connections until `stop` is set. The accept loop checks `stop` after each accepted connection, so
+    /// whoever sets it must then connect once to `local_addr` to wake the loop. Connections already accepted keep
+    /// running until they close or time out; the listener closes when this returns.
+    pub fn run_until(self, svc: Arc<dyn Service>, stop: Arc<AtomicBool>) {
         let slots = Arc::new(Slots { used: Mutex::new(0), cv: Condvar::new() });
         let cfg = Arc::new(self.cfg);
         loop {
@@ -112,10 +123,16 @@ impl Server {
                 Ok((s, _)) => s,
                 Err(_) => {
                     drop(guard);
+                    if stop.load(Ordering::SeqCst) {
+                        return;
+                    }
                     std::thread::sleep(Duration::from_millis(10));
                     continue;
                 }
             };
+            if stop.load(Ordering::SeqCst) {
+                return;
+            }
             let svc = svc.clone();
             let cfg2 = cfg.clone();
             let spawned = std::thread::Builder::new().stack_size(cfg.stack_size).spawn(move || {
