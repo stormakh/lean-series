@@ -857,9 +857,255 @@ impl<'a> PostingsWithIndexHeap<'a> {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
+// Packed postings lists.
+
+/// A packed list keeps a seek point after every this many values.
+const SKIP_EVERY: u32 = 64;
+
+/// A postings list of [`MemPostings`]: sorted series references kept as varint deltas (one or two bytes per
+/// reference for the dense references of a head, instead of eight), with a seek point every `SKIP_EVERY` values.
+/// Values added while a `MemPostings` is unordered go to a plain tail in insertion order, which `ensure_order`
+/// sorts and packs.
+#[derive(Clone, Debug, Default)]
+pub struct PostingsList {
+    /// Varint deltas; the first value is a delta from 0.
+    data: Vec<u8>,
+    /// Number of packed values.
+    len: u32,
+    /// The last packed value.
+    last: SeriesRef,
+    /// Seek points and the unordered tail, allocated when needed.
+    ext: Option<Box<ListExt>>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct ListExt {
+    /// After every `SKIP_EVERY` packed values: the last of them and the offset of the next delta.
+    skip: Vec<(SeriesRef, u32)>,
+    /// Values after the packed ones, in insertion order.
+    tail: Vec<SeriesRef>,
+}
+
+#[inline]
+fn put_uvarint(b: &mut Vec<u8>, mut x: u64) {
+    while x >= 0x80 {
+        b.push(x as u8 | 0x80);
+        x >>= 7;
+    }
+    b.push(x as u8);
+}
+
+#[inline(always)]
+fn get_uvarint(b: &[u8], off: &mut usize) -> u64 {
+    let mut x = 0u64;
+    let mut s = 0;
+    loop {
+        let c = b[*off];
+        *off += 1;
+        x |= ((c & 0x7f) as u64) << s;
+        if c < 0x80 {
+            return x;
+        }
+        s += 7;
+    }
+}
+
+impl PostingsList {
+    /// A list of the values of `v` in this order (packed when sorted).
+    pub fn from_vec(v: Vec<SeriesRef>) -> PostingsList {
+        let mut l = PostingsList::default();
+        if v.is_sorted() {
+            l.data.reserve(v.len());
+            for x in v {
+                l.push_sorted(x);
+            }
+            l.data.shrink_to_fit();
+        } else {
+            l.ext_mut().tail = v;
+        }
+        l
+    }
+
+    fn ext_mut(&mut self) -> &mut ListExt {
+        self.ext.get_or_insert_with(Default::default)
+    }
+
+    fn tail(&self) -> &[SeriesRef] {
+        self.ext.as_ref().map_or(&[], |e| &e.tail)
+    }
+
+    /// The number of values.
+    pub fn len(&self) -> usize {
+        self.len as usize + self.tail().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Appends `v`, which is not smaller than the last packed value; the tail must be empty.
+    #[inline]
+    fn push_sorted(&mut self, v: SeriesRef) {
+        put_uvarint(&mut self.data, v - self.last);
+        self.len += 1;
+        self.last = v;
+        if self.len.is_multiple_of(SKIP_EVERY) {
+            let off = self.data.len() as u32;
+            self.ext_mut().skip.push((v, off));
+        }
+    }
+
+    /// Adds `id` to a sorted list (Go `addFor` in order: the list stays sorted, equal values are kept).
+    fn add_ordered(&mut self, id: SeriesRef) {
+        if self.tail().is_empty() && (self.len == 0 || id >= self.last) {
+            self.push_sorted(id);
+            return;
+        }
+        // There is no guarantee that no higher ID was inserted before. The invariant is that the first n-1 items
+        // in the list are already sorted.
+        let mut list = self.to_vec();
+        list.push(id);
+        let mut i = list.len() - 1;
+        while i >= 1 {
+            if list[i] >= list[i - 1] {
+                break;
+            }
+            list.swap(i, i - 1);
+            i -= 1;
+        }
+        *self = PostingsList::from_vec(list);
+    }
+
+    /// Adds `id` at the end, unsorted.
+    fn add_unordered(&mut self, id: SeriesRef) {
+        self.ext_mut().tail.push(id);
+    }
+
+    /// Sorts and packs the tail.
+    fn sort(&mut self) {
+        if self.tail().is_empty() {
+            return;
+        }
+        let mut v = self.to_vec();
+        v.sort_unstable();
+        *self = PostingsList::from_vec(v);
+    }
+
+    /// The values in order.
+    pub fn iter(&self) -> impl Iterator<Item = SeriesRef> + '_ {
+        let mut off = 0;
+        let mut prev = 0;
+        (0..self.len)
+            .map(move |_| {
+                prev += get_uvarint(&self.data, &mut off);
+                prev
+            })
+            .chain(self.tail().iter().copied())
+    }
+
+    /// The values as a vector.
+    pub fn to_vec(&self) -> Vec<SeriesRef> {
+        let mut v = Vec::with_capacity(self.len());
+        v.extend(self.iter());
+        v
+    }
+}
+
+/// Postings over a shared [`PostingsList`] (the same results as [`ListPostings`] over its values).
+pub struct PackedPostings {
+    list: Arc<PostingsList>,
+    /// Packed values consumed, the offset of the next delta, and the last packed value consumed.
+    idx: u32,
+    off: usize,
+    prev: SeriesRef,
+    /// Tail values consumed.
+    tail_i: usize,
+    cur: SeriesRef,
+}
+
+impl PackedPostings {
+    pub fn new(list: Arc<PostingsList>) -> PackedPostings {
+        PackedPostings { list, idx: 0, off: 0, prev: 0, tail_i: 0, cur: 0 }
+    }
+}
+
+impl Postings for PackedPostings {
+    #[inline]
+    fn at(&self) -> SeriesRef {
+        self.cur
+    }
+
+    #[inline]
+    fn next(&mut self) -> bool {
+        let l = &*self.list;
+        if self.idx < l.len {
+            self.prev += get_uvarint(&l.data, &mut self.off);
+            self.idx += 1;
+            self.cur = self.prev;
+            return true;
+        }
+        if let Some(&v) = l.tail().get(self.tail_i) {
+            self.tail_i += 1;
+            self.cur = v;
+            return true;
+        }
+        self.cur = 0;
+        false
+    }
+
+    fn seek(&mut self, x: SeriesRef) -> bool {
+        // If the current value satisfies, then return.
+        if self.cur >= x {
+            return true;
+        }
+        let l = &*self.list;
+        if self.idx < l.len {
+            // Jump to the last seek point before `x` that is ahead of the current position.
+            if let Some(e) = &l.ext {
+                let j = e.skip.partition_point(|&(v, _)| v < x);
+                if j > 0 && j as u32 * SKIP_EVERY > self.idx {
+                    let (v, off) = e.skip[j - 1];
+                    self.idx = j as u32 * SKIP_EVERY;
+                    self.off = off as usize;
+                    self.prev = v;
+                }
+            }
+            while self.idx < l.len {
+                self.prev += get_uvarint(&l.data, &mut self.off);
+                self.idx += 1;
+                if self.prev >= x {
+                    self.cur = self.prev;
+                    return true;
+                }
+            }
+        }
+        let tail = &l.tail()[self.tail_i..];
+        if tail.is_empty() {
+            return false;
+        }
+        // Check the next item in the list, otherwise binary search between current position and end.
+        let mut i = 0;
+        if tail[0] < x {
+            i = tail.partition_point(|&v| v < x);
+            if i >= tail.len() {
+                self.tail_i = l.tail().len();
+                return false;
+            }
+        }
+        self.cur = tail[i];
+        self.tail_i += i + 1;
+        true
+    }
+
+    fn err(&self) -> Option<Error> {
+        None
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
 // MemPostings.
 
-type List = Arc<Vec<SeriesRef>>;
+type List = Arc<PostingsList>;
 
 #[derive(Default)]
 struct MemInner {
@@ -1075,7 +1321,7 @@ impl MemPostings {
             number_of_concurrent_processes as usize
         };
 
-        let mut batches: Vec<Vec<&mut Vec<SeriesRef>>> = Vec::new();
+        let mut batches: Vec<Vec<&mut PostingsList>> = Vec::new();
         let mut next_job = Vec::with_capacity(ENSURE_ORDER_BATCH_SIZE);
         for e in g.m.values_mut() {
             for l in e.values_mut() {
@@ -1097,7 +1343,7 @@ impl MemPostings {
         if workers <= 1 {
             for job in batches {
                 for l in job {
-                    l.sort_unstable();
+                    l.sort();
                 }
             }
         } else {
@@ -1109,7 +1355,7 @@ impl MemPostings {
                             let job = work.lock().unwrap_or_else(|e| e.into_inner()).pop();
                             let Some(job) = job else { break };
                             for l in job {
-                                l.sort_unstable();
+                                l.sort();
                             }
                         }
                     });
@@ -1135,20 +1381,15 @@ impl MemPostings {
             let Some((name_key, nm)) = g.m.get_key_value(name) else {
                 return;
             };
-            let orig: &[SeriesRef] = match nm.get(value) {
-                Some(l) => l,
-                None => &[],
+            let repl: Vec<SeriesRef> = match nm.get(value) {
+                Some(l) => l.iter().filter(|id| !deleted.contains(id)).collect(),
+                None => Vec::new(),
             };
-            let repl: Vec<SeriesRef> = orig
-                .iter()
-                .copied()
-                .filter(|id| !deleted.contains(id))
-                .collect();
             let name_key = name_key.clone();
             let nm = g.m.get_mut(name).unwrap();
             if !repl.is_empty() {
                 if let Some(l) = nm.get_mut(value) {
-                    *l = Arc::new(repl);
+                    *l = Arc::new(PostingsList::from_vec(repl));
                 }
             } else {
                 nm.remove(value);
@@ -1216,12 +1457,12 @@ impl MemPostings {
     /// Go `Iter`: calls `f` for each postings list. It aborts if `f` returns an error and returns it.
     pub fn iter<E>(
         &self,
-        mut f: impl FnMut(&str, &str, ListPostings) -> Result<(), E>,
+        mut f: impl FnMut(&str, &str, PackedPostings) -> Result<(), E>,
     ) -> Result<(), E> {
         let g = self.read();
         for (n, e) in &g.m {
             for (v, p) in e {
-                f(n, v, ListPostings::from_shared(p.clone()))?;
+                f(n, v, PackedPostings::new(p.clone()))?;
             }
         }
         Ok(())
@@ -1276,7 +1517,7 @@ impl MemPostings {
                 for v in vals {
                     // Some of the values may have been garbage-collected in the meantime; skip them.
                     if let Some(refs) = e.get(v) {
-                        its.push(ListPostings::from_shared(refs.clone()));
+                        its.push(PackedPostings::new(refs.clone()));
                     }
                 }
             }
@@ -1297,7 +1538,7 @@ impl MemPostings {
             if let Some(m) = g.m.get(name) {
                 for v in values {
                     if let Some(lp) = m.get(v.as_ref()) {
-                        res.push(ListPostings::from_shared(lp.clone()));
+                        res.push(PackedPostings::new(lp.clone()));
                     }
                 }
             }
@@ -1318,7 +1559,7 @@ impl MemPostings {
                 its.reserve(e.len());
                 for refs in e.values() {
                     if !refs.is_empty() {
-                        its.push(ListPostings::from_shared(refs.clone()));
+                        its.push(PackedPostings::new(refs.clone()));
                     }
                 }
             }
@@ -1333,7 +1574,7 @@ impl MemPostings {
     pub fn test_set_list(&self, name: &str, value: &str, list: Vec<SeriesRef>) {
         let mut g = self.write();
         let nm = g.m.entry(Arc::from(name)).or_default();
-        nm.insert(Arc::from(value), Arc::new(list));
+        nm.insert(Arc::from(value), Arc::new(PostingsList::from_vec(list)));
     }
 
     /// The list of `name=value` (Go `p.m[name][value]`).
@@ -1383,21 +1624,12 @@ impl MemInner {
             }
         }
         let list = Arc::make_mut(nm.get_mut(value).unwrap());
-        list.push(id);
-
-        if !self.ordered {
-            return;
-        }
-        // There is no guarantee that no higher ID was inserted before as they may be generated independently
-        // before adding them to postings. We repair order violations on insert. The invariant is that the first
-        // n-1 items in the list are already sorted.
-        let mut i = list.len() - 1;
-        while i >= 1 {
-            if list[i] >= list[i - 1] {
-                break;
-            }
-            list.swap(i, i - 1);
-            i -= 1;
+        if self.ordered {
+            // There is no guarantee that no higher ID was inserted before as they may be generated
+            // independently before adding them to postings; the list repairs order violations on insert.
+            list.add_ordered(id);
+        } else {
+            list.add_unordered(id);
         }
     }
 }
