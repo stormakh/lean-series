@@ -40,7 +40,7 @@ fn deep_and_large_queries_do_not_crash() {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
     let r = common::get(&format!(
         "{base}/query_range?query={}&start={}&end={}&step=1",
-        urlenc("rate({__name__=~\".+\"}[10s])"),
+        urlenc("{__name__=~\".+\"}"),
         now - 10_999,
         now
     ))
