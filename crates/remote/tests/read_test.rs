@@ -14,6 +14,82 @@ use remote::read::{new_sample_and_chunk_queryable_client, new_series_set_filter,
 use remote::storage::{RemoteQueryable, Storage};
 use storage::{chained_series_merge, new_merge_querier, AppendV2Options, Context, Queryable};
 
+fn read_test_dir(name: &str) -> std::path::PathBuf {
+    let d = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../bench/tmp/w3-remote/qm")
+        .join(format!("read-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+#[test]
+fn test_storage_cost_sampling_queryable_config_reload() {
+    use storage::CostSamplingQueryable;
+    let s = Arc::new(remote::write::new_storage(
+        None,
+        Some(discovery::metrics::Registry::new()),
+        None,
+        &read_test_dir("cost"),
+        std::time::Duration::from_secs(60),
+        None,
+        false,
+        None,
+    ));
+    let empty = config::Config { global_config: config::default_global_config(), ..Default::default() };
+    let mut configured = config::Config { global_config: config::default_global_config(), ..Default::default() };
+    let mut reader = config::default_remote_read_config();
+    reader.url = yaml::Url::parse("http://example.invalid").unwrap();
+    configured.remote_read_configs = vec![reader];
+    for cfg in [&empty, &configured, &empty] {
+        s.apply_config(cfg).unwrap();
+        let (source, supported) = s.cost_sampling_queryable();
+        assert!(source.is_none());
+        assert_eq!(cfg.remote_read_configs.is_empty(), supported);
+    }
+    let s2 = s.clone();
+    let wg = std::thread::spawn(move || {
+        for _ in 0..50 {
+            let _ = s2.cost_sampling_queryable();
+        }
+    });
+    for _ in 0..10 {
+        s.apply_config(&configured).unwrap();
+        s.apply_config(&empty).unwrap();
+    }
+    wg.join().unwrap();
+    assert!(storage::Storage::close(&*s).is_none());
+}
+
+#[test]
+fn test_no_duplicate_read_configs() {
+    let dir = read_test_dir("nodup");
+    let rr = |name: &str, host: &str| config::RemoteReadConfig {
+        name: name.to_string(),
+        url: yaml::Url::parse(&format!("http://{host}")).unwrap(),
+        ..Default::default()
+    };
+    let cfg1 = rr("write-1", "localhost1");
+    let cfg2 = rr("write-2", "localhost2");
+    let cfg3 = rr("", "localhost3");
+
+    for (cfgs, want_err) in [
+        // Duplicates but with different names, we should not get an error.
+        (vec![cfg1.clone(), cfg2.clone()], false),
+        // Duplicates but one with no name, we should not get an error.
+        (vec![cfg1.clone(), cfg3.clone()], false),
+        // Duplicates both with no name, we should get an error.
+        (vec![cfg3.clone(), cfg3.clone()], true),
+    ] {
+        let s = remote::write::new_storage(None, None, None, &dir, std::time::Duration::from_secs(60), None, false, None);
+        let conf = config::Config { global_config: config::default_global_config(), remote_read_configs: cfgs, ..Default::default() };
+        let err = s.apply_config(&conf);
+        // Go `prometheus.Unregister(s.rws.highestTimestamp)`: no registry here, nothing to unregister.
+        assert_eq!(want_err, err.is_err());
+        assert!(storage::Storage::close(&s).is_none());
+    }
+}
+
 fn m(t: MatchType, n: &str, v: &str) -> Matcher {
     Matcher::must_new(t, n, v)
 }
