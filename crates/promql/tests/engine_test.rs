@@ -2205,3 +2205,157 @@ fn test_type_and_unit_metadata_labels_in_functions_and_matching() {
     }
 }
 
+
+#[test]
+fn test_rate_annotations() {
+    let mut failures = Vec::new();
+    for (name, data, expr, type_and_unit, want_warnings, want_infos) in rate_annotation_cases() {
+        let store = promqltest::loaded_storage(&format!("load 1m\n{}", data.trim())).unwrap();
+        let engine = Engine::new(EngineOpts {
+            max_samples: promqltest::DEFAULT_MAX_SAMPLES_PER_QUERY,
+            timeout: Duration::from_secs(6000),
+            no_step_subquery_interval_fn: Some(Arc::new(|_| 60_000)),
+            enable_at_modifier: true,
+            enable_negative_offset: true,
+            enable_delayed_name_removal: true,
+            enable_type_and_unit_labels: type_and_unit,
+            ..Default::default()
+        });
+        let ctx = Context::background();
+        let mut q = engine.new_instant_query(&ctx, Arc::new(store), None, expr, 60_000).unwrap();
+        let res = q.exec(&ctx);
+        if let Some(e) = res.err {
+            failures.push(format!("{}: {}", name, e));
+            continue;
+        }
+        let (warnings, infos) = res.warnings.as_strings(expr, 0, 0);
+        if warnings != want_warnings || infos != want_infos {
+            failures.push(format!("{}:\n  warnings {:?} want {:?}\n  infos {:?} want {:?}", name, warnings, want_warnings, infos, want_infos));
+        }
+    }
+    assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.join("\n"));
+}
+
+#[test]
+fn test_histogram_copy_from_iterator_regression() {
+    use model::histogram::{CounterResetHint, FloatHistogram, Span};
+    let store = promqltest::loaded_storage(
+        "load 1m\nhistogram {{sum:4 count:4 buckets:[2 2]}} {{sum:6 count:6 buckets:[3 3]}} {{sum:1 count:1 buckets:[1]}}\n",
+    )
+    .unwrap();
+    let engine = promqltest::new_test_engine(false, Duration::ZERO, promqltest::DEFAULT_MAX_SAMPLES_PER_QUERY);
+    let verify = |q: &mut promql::Query, expected: Vec<FloatHistogram>| {
+        let res = q.exec(&Context::background());
+        assert!(res.err.is_none(), "{:?}", res.err);
+        let Some(Value::Matrix(m)) = res.value else { panic!("not a matrix") };
+        assert_eq!(1, m.len());
+        let series = &m[0];
+        assert!(series.floats.is_empty());
+        assert_eq!(expected.len(), series.histograms.len());
+        for (i, e) in expected.iter().enumerate() {
+            let mut h = (*series.histograms[i].h).clone();
+            h.counter_reset_hint = CounterResetHint::UnknownCounterReset; // Don't care.
+            assert_eq!(e, &h);
+        }
+    };
+    let ctx = Context::background();
+    let mut q = engine.new_range_query(&ctx, Arc::new(store.clone()), None, "increase(histogram[90s])", 0, 60_000, 60_000).unwrap();
+    verify(
+        &mut q,
+        vec![FloatHistogram {
+            count: 3.0,
+            sum: 3.0,
+            positive_spans: vec![Span::new(0, 2)],
+            positive_buckets: vec![1.5, 1.5],
+            ..Default::default()
+        }],
+    );
+    let mut q = engine.new_instant_query(&ctx, Arc::new(store.clone()), None, "histogram[61s]", 120_000).unwrap();
+    verify(
+        &mut q,
+        vec![
+            FloatHistogram {
+                count: 6.0,
+                sum: 6.0,
+                positive_spans: vec![Span::new(0, 2)],
+                positive_buckets: vec![3.0, 3.0],
+                ..Default::default()
+            },
+            FloatHistogram {
+                count: 1.0,
+                sum: 1.0,
+                positive_spans: vec![Span::new(0, 1)],
+                positive_buckets: vec![1.0],
+                ..Default::default()
+            },
+        ],
+    );
+}
+
+fn rate_annotation_cases() -> Vec<(&'static str, &'static str, &'static str, bool, Vec<&'static str>, Vec<&'static str>)> {
+    vec![
+        ("info annotation when two samples are selected", r#"
+				series 1 2
+			"#, "rate(series[1m1s])", false, vec![], vec![r#"PromQL info: metric might not be a counter, name does not end in _total/_sum/_count/_bucket: "series" (1:6)"#]),
+        ("no info annotations when no samples", r#"
+				series
+			"#, "rate(series[1m1s])", false, vec![], vec![]),
+        ("no info annotations when selecting one sample", r#"
+				series 1 2
+			"#, "rate(series[10s])", false, vec![], vec![]),
+        ("no info annotations when no samples due to mixed data types", r#"
+				series{label="a"} 1 {{schema:1 sum:15 count:10 buckets:[1 2 3]}}
+			"#, "rate(series[1m1s])", false, vec![r#"PromQL warning: encountered a mix of histograms and floats for metric name "series" (1:6)"#], vec![]),
+        ("no info annotations when selecting two native histograms", r#"
+				series{label="a"} {{schema:1 sum:10 count:5 buckets:[1 2 3]}} {{schema:1 sum:15 count:10 buckets:[1 2 3]}}
+			"#, "rate(series[1m1s])", false, vec![], vec![]),
+        ("info annotation when rate() over series without _total suffix", r#"
+				series{label="a"} 1 2 3
+			"#, "rate(series[1m1s])", false, vec![], vec![r#"PromQL info: metric might not be a counter, name does not end in _total/_sum/_count/_bucket: "series" (1:6)"#]),
+        ("info annotation when increase() over series without _total suffix", r#"
+				series{label="a"} 1 2 3
+			"#, "increase(series[1m1s])", false, vec![], vec![r#"PromQL info: metric might not be a counter, name does not end in _total/_sum/_count/_bucket: "series" (1:10)"#]),
+        ("info annotation when rate() over series without __type__=counter label", r#"
+				series{label="a"} 1 2 3
+			"#, "rate(series[1m1s])", true, vec![], vec![r#"PromQL info: metric might not be a counter, __type__ label is not set to "counter" or "histogram", got "": "series" (1:6)"#]),
+        ("info annotation when increase() over series without __type__=counter label", r#"
+				series{label="a"} 1 2 3
+			"#, "increase(series[1m1s])", true, vec![], vec![r#"PromQL info: metric might not be a counter, __type__ label is not set to "counter" or "histogram", got "": "series" (1:10)"#]),
+        ("no info annotation when rate() over series with __type__=counter label", r#"
+				series{label="a", __type__="counter"} 1 2 3
+			"#, "rate(series[1m1s])", true, vec![], vec![]),
+        ("no info annotation when rate() over series with __type__=histogram label", r#"
+				series{label="a", __type__="histogram"} 1 2 3
+			"#, "rate(series[1m1s])", true, vec![], vec![]),
+        ("no info annotation when increase() over series with __type__=counter label", r#"
+				series{label="a", __type__="counter"} 1 2 3
+			"#, "increase(series[1m1s])", true, vec![], vec![]),
+        ("no info annotation when increase() over series with __type__=histogram label", r#"
+				series{label="a", __type__="histogram"} 1 2 3
+			"#, "increase(series[1m1s])", true, vec![], vec![]),
+        ("no info annotation when rate() over series with _total suffix", r#"
+				series_total{label="a"} 1 2 3
+			"#, "rate(series_total[1m1s])", false, vec![], vec![]),
+        ("no info annotation when rate() over series with _sum suffix", r#"
+				series_sum{label="a"} 1 2 3
+			"#, "rate(series_sum[1m1s])", false, vec![], vec![]),
+        ("no info annotation when rate() over series with _count suffix", r#"
+				series_count{label="a"} 1 2 3
+			"#, "rate(series_count[1m1s])", false, vec![], vec![]),
+        ("no info annotation when rate() over series with _bucket suffix", r#"
+				series_bucket{label="a"} 1 2 3
+			"#, "rate(series_bucket[1m1s])", false, vec![], vec![]),
+        ("no info annotation when increase() over series with _total suffix", r#"
+				series_total{label="a"} 1 2 3
+			"#, "increase(series_total[1m1s])", false, vec![], vec![]),
+        ("no info annotation when increase() over series with _sum suffix", r#"
+				series_sum{label="a"} 1 2 3
+			"#, "increase(series_sum[1m1s])", false, vec![], vec![]),
+        ("no info annotation when increase() over series with _count suffix", r#"
+				series_count{label="a"} 1 2 3
+			"#, "increase(series_count[1m1s])", false, vec![], vec![]),
+        ("no info annotation when increase() over series with _bucket suffix", r#"
+				series_bucket{label="a"} 1 2 3
+			"#, "increase(series_bucket[1m1s])", false, vec![], vec![]),
+    ]
+}
