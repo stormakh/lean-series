@@ -19,9 +19,12 @@ config = { path = "../config" }
 discovery = { path = "../discovery" }
 yaml = { path = "../yaml" }
 util = { path = "../util" }
+rules = { path = "../rules" }
+notifier = { path = "../notifier" }
 regex = "1.13"
 flate2 = "=1.1.10"
 
 [dev-dependencies]
 net = { path = "../net" }
 textparse = { path = "../textparse" }
+remote = { path = "../remote" }

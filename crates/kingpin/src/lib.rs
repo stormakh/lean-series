@@ -1,4 +1,6 @@
-//! A port of the parts of `github.com/alecthomas/kingpin/v2` (v2.4.0) that promtool uses: the application
+//! A port of the parts of `github.com/alecthomas/kingpin/v2` (v2.4.0) that promtool and prometheus use
+//! (copied from the promtool crate; the server adds the `Bytes`, `Float`, `ModelDuration` and `Custom` kinds,
+//! the record of user-set flags and the error stages of `Application.Parse`): the application
 //! model, the tokenizer and parser, value validation with kingpin's error texts, the default usage template
 //! and `util/documentcli` (`write-documentation`).
 //!
@@ -9,10 +11,12 @@
 use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 
+pub mod doctext;
+
 use crate::doctext::to_text;
 
 /// The value type of a flag or argument (the kingpin parser chosen with `.String()`, `.Bool()`, ...).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum Kind {
     Bool,
     String,
@@ -27,12 +31,35 @@ pub enum Kind {
     Url,
     /// `OpenFile(os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)`.
     OpenFile,
+    /// `BytesVar` (`units.Base2Bytes`).
+    Bytes,
+    /// `FloatVar`.
+    Float,
+    /// `SetValue(&model.Duration)`.
+    ModelDuration,
+    /// A custom `kingpin.Value` (`SetValue`): validates a new value given the values set before; `true` when the
+    /// value is cumulative (`IsCumulative`).
+    Custom(Validator, bool),
 }
+
+impl PartialEq for Kind {
+    /// Same kind (custom values compare by cumulativeness only: function pointers have no stable identity).
+    fn eq(&self, o: &Kind) -> bool {
+        match (self, o) {
+            (Kind::Enum(a), Kind::Enum(b)) => a == b,
+            (Kind::Custom(_, a), Kind::Custom(_, b)) => a == b,
+            _ => std::mem::discriminant(self) == std::mem::discriminant(o),
+        }
+    }
+}
+
+/// The `Set` of a custom value: the values set before and the new one.
+pub type Validator = fn(&[String], &str) -> Result<(), String>;
 
 impl Kind {
     /// kingpin `repeatableFlag.IsCumulative()` / `remainderArg.IsCumulative()`.
     fn cumulative(&self) -> bool {
-        matches!(self, Kind::Strings | Kind::StringMap | Kind::ExistingFiles)
+        matches!(self, Kind::Strings | Kind::StringMap | Kind::ExistingFiles | Kind::Custom(_, true))
     }
     /// documentcli checks for an accumulator (a struct with a `slice` field): `Strings()`, `ExistingFiles()`.
     fn is_accumulator(&self) -> bool {
@@ -96,7 +123,7 @@ impl Flag {
         if !self.default.is_empty() {
             let ellipsis = if self.default.len() > 1 { "..." } else { "" };
             if self.kind == Kind::String {
-                return format!("{}{}", promql::parser::quote::go_quote(&self.default[0]), ellipsis);
+                return format!("{}{}", yaml::go_quote(&self.default[0]), ellipsis);
             }
             return format!("{}{}", self.default[0], ellipsis);
         }
@@ -217,6 +244,8 @@ pub struct App {
 #[derive(Debug, Default)]
 pub struct Parsed {
     pub command: String,
+    /// The flags the user gave, in order, each once (what kingpin `PreAction`s see).
+    pub user_flags: Vec<String>,
     values: HashMap<String, Vec<String>>,
     maps: HashMap<String, BTreeMap<String, String>>,
 }
@@ -254,6 +283,31 @@ impl Parsed {
     pub fn map(&self, name: &str) -> BTreeMap<String, String> {
         self.maps.get(name).cloned().unwrap_or_default()
     }
+    /// Go `float64` flag value.
+    pub fn float(&self, name: &str) -> f64 {
+        parse_go_float(&self.str(name)).unwrap_or(0.0)
+    }
+    /// Bytes of a `BytesVar` flag (0 when unset).
+    pub fn bytes(&self, name: &str) -> i64 {
+        let s = self.str(name);
+        if s.is_empty() { 0 } else { yaml::types::parse_base2_bytes(&s).map(|b| b.0).unwrap_or(0) }
+    }
+    /// Nanoseconds of a `model.Duration` flag (0 when unset).
+    pub fn model_duration(&self, name: &str) -> i64 {
+        let s = self.str(name);
+        if s.is_empty() { 0 } else { yaml::types::parse_duration(&s).map(|d| d.0).unwrap_or(0) }
+    }
+}
+
+/// What `App::try_parse` decided (Go `Application.Parse` and its error stages).
+pub enum GoParse {
+    Run(Parsed),
+    /// Help or version was printed; exit with this code.
+    Exit(i32),
+    /// The command line does not parse (unknown flag, missing argument): Go's `parseContext` error.
+    ContextErr(String),
+    /// A value does not parse or a flag is repeated or missing: Go's `setValues`/`validateRequired` error.
+    ValueErr(String),
 }
 
 /// What `App::parse` decided.
@@ -480,7 +534,12 @@ impl App {
             Flag::new("version", "Show application version.", Kind::Bool),
         ];
         all.extend(flags);
-        let mut c = vec![Cmd::new("help", "Show help.").arg(Arg::new("command", "Show help on command.", Kind::Strings))];
+        // kingpin adds the `help` command only to applications with commands.
+        let mut c = if cmds.is_empty() {
+            Vec::new()
+        } else {
+            vec![Cmd::new("help", "Show help.").arg(Arg::new("command", "Show help on command.", Kind::Strings))]
+        };
         c.extend(cmds);
         for cmd in c.iter_mut() {
             cmd.set_full("");
@@ -510,7 +569,7 @@ impl App {
                                 None => {
                                     return Err(format!(
                                         "expected command but got {}",
-                                        promql::parser::quote::go_quote(&name)
+                                        yaml::go_quote(&name)
                                     ));
                                 }
                             };
@@ -545,6 +604,19 @@ impl App {
 
     /// Go `app.Parse(os.Args[1:])` followed by `kingpin.MustParse`.
     pub fn parse(&self, args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Outcome {
+        match self.try_parse(args, out) {
+            GoParse::Run(p) => Outcome::Run(p),
+            GoParse::Exit(c) => Outcome::Exit(c),
+            GoParse::ContextErr(e) | GoParse::ValueErr(e) => {
+                self.errorf(err, &format!("{e}, try --help"));
+                Outcome::Exit(1)
+            }
+        }
+    }
+
+    /// Go `app.Parse(args)`: help and version are printed to `out` (and give `Exit`); errors are returned with
+    /// the stage that produced them.
+    pub fn try_parse(&self, args: &[String], out: &mut dyn Write) -> GoParse {
         let (ctx, parse_err) = self.parse_context(false, args);
         let mut parsed = Parsed::default();
 
@@ -556,8 +628,7 @@ impl App {
                 if !ctx.elements.iter().any(|e| matches!(e, Elem::Flag(g, _) if g.name == f.name)) {
                     for d in f.default.iter() {
                         if let Err(e) = set_value(&mut parsed, f.name, &f.kind, d) {
-                            self.errorf(err, &format!("{e}, try --help"));
-                            return Outcome::Exit(1);
+                            return GoParse::ValueErr(e);
                         }
                     }
                 }
@@ -566,8 +637,7 @@ impl App {
                 if !ctx.elements.iter().any(|e| matches!(e, Elem::Arg(g, _) if g.name == a.name)) {
                     for d in a.default.iter() {
                         if let Err(e) = set_value(&mut parsed, a.name, &a.kind, d) {
-                            self.errorf(err, &format!("{e}, try --help"));
-                            return Outcome::Exit(1);
+                            return GoParse::ValueErr(e);
                         }
                     }
                 }
@@ -613,41 +683,37 @@ impl App {
             match e {
                 Elem::Flag(f, _) if f.name == "version" => {
                     let _ = writeln!(out, "{}", self.version);
-                    return Outcome::Exit(0);
+                    return GoParse::Exit(0);
                 }
                 Elem::Flag(f, _) if f.name.starts_with("help-") || f.name.starts_with("completion-") => {
-                    self.errorf(err, &format!("--{} is not supported by this port", f.name));
-                    return Outcome::Exit(1);
+                    return GoParse::ContextErr(format!("--{} is not supported by this port", f.name));
                 }
                 Elem::Cmd(c) if c.name == "help" && std::ptr::eq(*c, &self.cmds[0]) => {
                     let command = parsed.strings("command");
                     let (hctx, herr) = self.parse_context(true, &command);
                     if let Err(e) = herr {
-                        self.errorf(err, &e);
-                        return Outcome::Exit(1);
+                        return GoParse::ContextErr(e);
                     }
                     let _ = out.write_all(self.usage(&hctx).as_bytes());
-                    return Outcome::Exit(0);
+                    return GoParse::Exit(0);
                 }
                 _ => {}
             }
         }
 
         if let Err(e) = parse_err {
-            self.errorf(err, &format!("{e}, try --help"));
-            return Outcome::Exit(1);
+            return GoParse::ContextErr(e);
         }
 
         // maybeHelp.
         if ctx.elements.iter().any(|e| matches!(e, Elem::Flag(f, _) if f.name == "help")) {
             let (hctx, _) = self.parse_context(true, &ctx.raw);
             let _ = out.write_all(self.usage(&hctx).as_bytes());
-            return Outcome::Exit(0);
+            return GoParse::Exit(0);
         }
 
         if let Err(e) = set_values_err {
-            self.errorf(err, &format!("{e}, try --help"));
-            return Outcome::Exit(1);
+            return GoParse::ValueErr(e);
         }
 
         // validateRequired.
@@ -661,27 +727,40 @@ impl App {
             }
         }
         if !missing.is_empty() {
-            self.errorf(err, &format!("required flag(s) {} not provided, try --help", missing.join(", ")));
-            return Outcome::Exit(1);
+            return GoParse::ValueErr(format!("required flag(s) {} not provided", missing.join(", ")));
         }
         for a in ctx.arguments.iter() {
             if a.required
                 && a.default.is_empty()
                 && !ctx.elements.iter().any(|e| matches!(e, Elem::Arg(g, _) if g.name == a.name))
             {
-                self.errorf(err, &format!("required argument '{}' not provided, try --help", a.name));
-                return Outcome::Exit(1);
+                return GoParse::ValueErr(format!("required argument '{}' not provided", a.name));
             }
         }
 
         let command = selected.join(" ");
-        if command.is_empty() {
+        if command.is_empty() && !self.cmds.is_empty() {
             // ErrCommandNotSpecified: usage, exit 0.
             let _ = out.write_all(self.usage(&ctx).as_bytes());
-            return Outcome::Exit(0);
+            return GoParse::Exit(0);
         }
         parsed.command = command;
-        Outcome::Run(parsed)
+        for e in ctx.elements.iter() {
+            if let Elem::Flag(f, _) = e {
+                if !parsed.user_flags.iter().any(|n| n == f.name) {
+                    parsed.user_flags.push(f.name.to_string());
+                }
+            }
+        }
+        GoParse::Run(parsed)
+    }
+
+    /// Go `app.Usage(args)`: the usage for the context of `args` (Err: the context error, which Go reports with
+    /// `FatalIfError`).
+    pub fn usage_for(&self, args: &[String]) -> Result<String, String> {
+        let (ctx, e) = self.parse_context(true, args);
+        e?;
+        Ok(self.usage(&ctx))
     }
 
     fn width() -> i64 {
@@ -1009,7 +1088,7 @@ fn set_value(p: &mut Parsed, name: &str, kind: &Kind, v: &str) -> Result<(), Str
         }
         Kind::ExistingFile | Kind::ExistingFiles => match std::fs::metadata(v) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(format!("path '{v}' does not exist")),
-            Err(e) => return Err(format!("stat {v}: {}", crate::io_err_text(&e))),
+            Err(e) => return Err(format!("stat {v}: {}", net::types::go_io_error(&e))),
             Ok(m) if m.is_dir() => {
                 let base = std::path::Path::new(v).file_name().map(|s| s.to_string_lossy().to_string());
                 return Err(format!("'{}' is a directory", base.unwrap_or_else(|| v.to_string())));
@@ -1019,6 +1098,19 @@ fn set_value(p: &mut Parsed, name: &str, kind: &Kind, v: &str) -> Result<(), Str
         Kind::Url => {
             yaml::url::parse(v).map_err(|e| format!("invalid URL: {e}"))?;
         }
+        Kind::Bytes => {
+            yaml::types::parse_base2_bytes(v)?;
+        }
+        Kind::Float => {
+            parse_go_float(v).map_err(|_| format!("strconv.ParseFloat: parsing {}: invalid syntax", go_q(v)))?;
+        }
+        Kind::ModelDuration => {
+            yaml::types::parse_duration(v)?;
+        }
+        Kind::Custom(f, _) => {
+            let prev = p.values.get(name).cloned().unwrap_or_default();
+            f(&prev, v)?;
+        }
         Kind::OpenFile => {
             use std::os::unix::fs::OpenOptionsExt;
             std::fs::OpenOptions::new()
@@ -1027,7 +1119,7 @@ fn set_value(p: &mut Parsed, name: &str, kind: &Kind, v: &str) -> Result<(), Str
                 .truncate(true)
                 .mode(0o644)
                 .open(v)
-                .map_err(|e| format!("open {v}: {}", crate::io_err_text(&e)))?;
+                .map_err(|e| format!("open {v}: {}", net::types::go_io_error(&e)))?;
         }
     }
     p.values.entry(name.to_string()).or_default().push(v.to_string());
@@ -1035,7 +1127,7 @@ fn set_value(p: &mut Parsed, name: &str, kind: &Kind, v: &str) -> Result<(), Str
 }
 
 fn go_q(s: &str) -> String {
-    promql::parser::quote::go_quote(s)
+    yaml::go_quote(s)
 }
 
 /// Go `strconv.ParseBool`.

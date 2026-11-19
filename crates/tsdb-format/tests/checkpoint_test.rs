@@ -1198,7 +1198,7 @@ fn test_delete_temp_checkpoints() {
             fs::create_dir_all(dir.join(f)).unwrap();
         }
 
-        delete_temp_checkpoints(&dir).unwrap();
+        delete_temp_checkpoints(&tsdb_format::record::Logger::nop(), &dir).unwrap();
 
         assert_eq!(expected_directories, read_dir_names(&dir, true), "{name}");
     }

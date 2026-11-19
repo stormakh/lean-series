@@ -68,7 +68,7 @@ pub fn checkpoint<A: ActiveSeries, D: DeletedSeries>(
         Err(e) => return Err(e.wrap("can't find last checkpoint")),
     }
 
-    wlog::delete_temp_checkpoints(w.dir()).map_err(|e| e.wrap("failed to cleanup temporary checkpoints"))?;
+    wlog::delete_temp_checkpoints(logger, w.dir()).map_err(|e| e.wrap("failed to cleanup temporary checkpoints"))?;
 
     let cp_dir = wlog::checkpoint_dir(w.dir(), at_index);
     let mut tmp = cp_dir.clone().into_os_string();

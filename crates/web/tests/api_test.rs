@@ -1927,12 +1927,19 @@ fn test_endpoints() {
 
     let now = Time::now();
 
+    let ng = Arc::new(test_engine());
+
     // local
-    let algr = RulesRetrieverMock::new();
+    let mut algr = RulesRetrieverMock::new();
+    algr.create_alerting_rules();
+    algr.create_rule_groups();
+    let g = algr.rule_groups.clone();
+    g[0].eval(&Context::background(), rules::Time::now());
+
     let tr = Arc::new(setup_test_target_retriever());
     let api = Api::new(ApiOptions {
         queryable: Some(s.db.clone()),
-        query_engine: Some(Arc::new(test_engine())),
+        query_engine: Some(ng.clone()),
         exemplar_queryable: Some(s.db.clone()),
         target_retriever: Some(tr.clone()),
         alertmanager_retriever: Some(Arc::new(TestAlertmanagerRetriever)),
@@ -1944,8 +1951,146 @@ fn test_endpoints() {
     });
     test_endpoints_run(&api, &tr, true, now);
 
-    // adapted: the "remote" subtest (the same cases against a remote read storage that forwards to a test server)
-    // waits for the remote crate (storage/remote), which is not on master.
+    // Run all the API tests against an API that is wired to forward queries via
+    // the remote read client to a test server, which in turn sends them to the
+    // data from the test storage.
+    // remote
+    {
+        let server = setup_remote(s.db.clone());
+
+        let u = yaml::Url::parse(&server.url).unwrap();
+
+        let db_dir = temp_dir("remote");
+
+        let remote = Arc::new(remote::write::new_storage(
+            None,
+            None,
+            Some(Arc::new(|| Ok(0))),
+            &db_dir,
+            Duration::from_secs(1),
+            None,
+            false,
+            None,
+        ));
+
+        let cfg = config::Config {
+            remote_read_configs: vec![config::RemoteReadConfig {
+                url: u,
+                remote_timeout: yaml::Duration::from_secs(1),
+                read_recent: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        remote.apply_config(&cfg).unwrap();
+
+        let mut algr = RulesRetrieverMock::new();
+        algr.create_alerting_rules();
+        algr.create_rule_groups();
+        let g = algr.rule_groups.clone();
+        g[0].eval(&Context::background(), rules::Time::now());
+
+        let tr = Arc::new(setup_test_target_retriever());
+        let api = Api::new(ApiOptions {
+            queryable: Some(remote.clone()),
+            query_engine: Some(ng.clone()),
+            exemplar_queryable: Some(s.db.clone()),
+            target_retriever: Some(tr.clone()),
+            alertmanager_retriever: Some(Arc::new(TestAlertmanagerRetriever)),
+            flags: sample_flag_map(),
+            now: Some(Arc::new(move || now)),
+            config: Some(Arc::new(sample_config)),
+            rules_retriever: Some(Arc::new(algr)),
+            ..base_opts()
+        });
+        test_endpoints_run(&api, &tr, false, now);
+
+        let _ = storage::Storage::close(&*remote);
+        server.close();
+        let _ = std::fs::remove_dir_all(&db_dir);
+    }
+}
+
+/// Go `httptest.Server` for `setupRemote`: closed with [`RemoteTestServer::close`].
+struct RemoteTestServer {
+    url: String,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    port: u16,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl RemoteTestServer {
+    /// Go `server.Close()`.
+    fn close(mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        // Wake the accept loop (see `http::server::Server::run_until`).
+        let _ = std::net::TcpStream::connect(("127.0.0.1", self.port));
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+struct RemoteReadService(Arc<tsdb::db::DB>);
+
+/// Go `http.Error`.
+fn http_error(msg: &str, code: u16) -> http::Response {
+    http::Response::text(code, "text/plain; charset=utf-8", format!("{msg}\n")).with_header("X-Content-Type-Options", "nosniff")
+}
+
+impl http::server::Service for RemoteReadService {
+    fn handle(&self, r: http::Request) -> http::Response {
+        let s = &self.0;
+        let req = match remote::codec::decode_read_request(&r) {
+            Ok(req) => req,
+            Err(e) => return http_error(&e.to_string(), 400),
+        };
+        let mut resp = remote::prompb::ReadResponse { results: Vec::with_capacity(req.queries.len()) };
+        for query in &req.queries {
+            let matchers = match remote::codec::from_label_matchers(&query.matchers) {
+                Ok(m) => m,
+                Err(e) => return http_error(&e.to_string(), 400),
+            };
+
+            let hints = query.hints.as_ref().map(|h| storage::SelectHints {
+                start: h.start_ms,
+                end: h.end_ms,
+                step: h.step_ms,
+                func: h.func.clone(),
+                ..Default::default()
+            });
+
+            let mut querier = match s.querier(query.start_timestamp_ms, query.end_timestamp_ms) {
+                Ok(q) => q,
+                Err(e) => return http_error(&e.to_string(), 500),
+            };
+
+            let mut set = querier.select(&Context::background(), false, hints.as_ref(), &matchers);
+            let (res, _, err) = remote::codec::to_query_result(&mut *set, 1_000_000);
+            drop(set);
+            querier.close();
+            if let Some(e) = err {
+                return http_error(&e.to_string(), 500);
+            }
+            resp.results.push(res);
+        }
+
+        http::Response::text(200, "application/x-protobuf", remote::codec::encode_read_response(&resp))
+            .with_header("Content-Encoding", "snappy")
+    }
+}
+
+/// Go `setupRemote`.
+fn setup_remote(s: Arc<tsdb::db::DB>) -> RemoteTestServer {
+    // Like Go's httptest.NewServer: 127.0.0.1 with a port the kernel picks.
+    // The handler reads the TSDB on the connection thread: give it a full stack (Go stacks grow).
+    let cfg = http::server::ServerConfig { stack_size: 8 << 20, ..Default::default() };
+    let srv = http::server::Server::bind("127.0.0.1:0", cfg).expect("bind");
+    let port = srv.local_port();
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop2 = stop.clone();
+    let handle = std::thread::spawn(move || srv.run_until(Arc::new(RemoteReadService(s)), stop2));
+    RemoteTestServer { url: format!("http://127.0.0.1:{port}"), stop, port, handle: Some(handle) }
 }
 
 fn sample_flag_map() -> std::collections::BTreeMap<String, String> {

@@ -16,6 +16,7 @@ use super::{
 };
 use crate::encoding::crc32c;
 use crate::fileutil;
+use crate::record::Logger;
 
 /// Go `page`: an in-memory buffer used to batch disk writes.
 /// Records bigger than the page size are split and flushed separately.
@@ -53,7 +54,7 @@ impl Page {
 
 /// Go `wlMetrics`, as plain atomics. Names are the upstream metric names after the prefix
 /// `prometheus_tsdb_wal_` (or `prometheus_tsdb_out_of_order_wbl_` for a directory named `wbl`).
-// TODO(metrics): register with the metrics registry once it exists.
+/// The server exposes them (with `WL::size` as `storage_size_bytes`) in its TSDB collector.
 #[derive(Debug, Default)]
 pub struct WlMetrics {
     /// The metric name prefix.
@@ -114,6 +115,7 @@ struct Core {
     /// Go `actorc`: background fsync and close of previous segments.
     pending: Vec<JoinHandle<()>>,
     metrics: Arc<WlMetrics>,
+    logger: Logger,
 }
 
 struct State {
@@ -137,6 +139,7 @@ pub struct WL {
     state: Mutex<State>,
     metrics: Arc<WlMetrics>,
     write_notified: Mutex<Option<Arc<dyn WriteNotified>>>,
+    logger: Logger,
 }
 
 fn segment_err() -> Error {
@@ -168,6 +171,7 @@ impl WL {
             compress,
             pending: Vec::new(),
             metrics: metrics.clone(),
+            logger: Logger::nop(),
         };
 
         let (_, last) = segments(&dir).map_err(|e| e.wrap("get segment range"))?;
@@ -188,6 +192,7 @@ impl WL {
             }),
             metrics,
             write_notified: Mutex::new(None),
+            logger: Logger::nop(),
         })
     }
 
@@ -205,6 +210,7 @@ impl WL {
             compress: Type::None,
             pending: Vec::new(),
             metrics: metrics.clone(),
+            logger: Logger::nop(),
         };
         Ok(WL {
             dir,
@@ -215,7 +221,20 @@ impl WL {
             }),
             metrics,
             write_notified: Mutex::new(None),
+            logger: Logger::nop(),
         })
+    }
+
+    /// Sets the logger (Go passes it to `NewSize` and `Open`; the default discards everything).
+    pub fn with_logger(mut self, logger: Logger) -> WL {
+        self.state.get_mut().unwrap_or_else(|e| e.into_inner()).core.logger = logger.clone();
+        self.logger = logger;
+        self
+    }
+
+    /// The logger of the write log.
+    pub fn logger(&self) -> &Logger {
+        &self.logger
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -281,14 +300,20 @@ impl WL {
         if cerr.segment < 0 {
             return Err(Error::msg("corruption error does not specify position"));
         }
-        // TODO(log): logger.Warn("Starting corruption repair", "segment", cerr.Segment, "offset", cerr.Offset)
+        self.logger.warn(
+            "Starting corruption repair",
+            &[("segment", &cerr.segment), ("offset", &cerr.offset)],
+        );
 
         let mut st = self.lock();
         let State { core, c_enc } = &mut *st;
 
         // All segments behind the corruption can no longer be used.
         let segs = list_segments(&self.dir).map_err(|e| e.wrap("list segments"))?;
-        // TODO(log): logger.Warn("Deleting all segments newer than corrupted segment", "segment", cerr.Segment)
+        self.logger.warn(
+            "Deleting all segments newer than corrupted segment",
+            &[("segment", &cerr.segment)],
+        );
 
         for s in &segs {
             if core
@@ -314,7 +339,8 @@ impl WL {
         // Regardless of the corruption offset, no record reaches into the previous segment.
         // So we can safely repair the WAL by removing the segment and re-inserting all
         // its records up to the corruption.
-        // TODO(log): logger.Warn("Rewrite corrupted segment", "segment", cerr.Segment)
+        self.logger
+            .warn("Rewrite corrupted segment", &[("segment", &cerr.segment)]);
 
         let fn_ = segment_name(&self.dir, cerr.segment);
         let mut tmpfn = fn_.clone().into_os_string();
@@ -457,10 +483,12 @@ impl WL {
         }
 
         if let Some(mut seg) = core.segment.take() {
-            if let Err(_e) = fsync(&core.metrics, &mut seg) {
-                // TODO(log): logger.Error("sync previous segment", "err", err)
+            if let Err(e) = fsync(&core.metrics, &mut seg) {
+                self.logger.error("sync previous segment", &[("err", &e)]);
             }
-            let _ = seg.close();
+            if let Err(e) = seg.close() {
+                self.logger.error("close previous segment", &[("err", &e)]);
+            }
         }
         core.closed = true;
         Ok(())
@@ -515,11 +543,14 @@ impl Core {
         // Don't block further writes by fsyncing the last segment.
         if let Some(mut prev) = prev {
             let metrics = self.metrics.clone();
+            let logger = self.logger.clone();
             let f = move || {
-                if let Err(_e) = fsync(&metrics, &mut prev) {
-                    // TODO(log): logger.Error("sync previous segment", "err", err)
+                if let Err(e) = fsync(&metrics, &mut prev) {
+                    logger.error("sync previous segment", &[("err", &e)]);
                 }
-                let _ = prev.close();
+                if let Err(e) = prev.close() {
+                    logger.error("close previous segment", &[("err", &e)]);
+                }
             };
             if async_close {
                 self.pending.retain(|h| !h.is_finished());

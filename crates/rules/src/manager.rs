@@ -194,6 +194,10 @@ impl RuleConcurrencyController for SequentialRuleEvalController {
     fn done(&self, _ctx: &Context) {}
 }
 
+/// The stack size of a rule group's evaluation thread (deep rule expressions recurse in the parser and the
+/// engine; virtual memory only until touched).
+pub const GROUP_STACK_SIZE: usize = 256 << 20;
+
 /// Go `ManagerOptions`.
 #[derive(Clone)]
 pub struct ManagerOptions {
@@ -400,7 +404,9 @@ impl Manager {
             let ctx = self.opts.context.clone();
             let started = Signal::new();
             ready.push(started.clone());
-            handles.push(std::thread::spawn(move || {
+            // Rule queries recurse like API queries: the group thread gets the server's query stack size (only the
+            // touched pages use memory).
+            let spawned = std::thread::Builder::new().name("rule-group".into()).stack_size(GROUP_STACK_SIZE).spawn(move || {
                 if let Some(o) = oldg {
                     o.stop();
                     newg.copy_state(&o);
@@ -409,7 +415,8 @@ impl Manager {
                 // Wait with starting evaluation until the manager runs, to not query a bootstrapping storage.
                 block.wait();
                 newg.run(&ctx);
-            }));
+            });
+            handles.push(spawned.expect("spawn rule group thread"));
         }
 
         // Stop the remaining old groups.

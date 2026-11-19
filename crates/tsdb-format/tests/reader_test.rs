@@ -95,7 +95,7 @@ fn reader_constructors() -> Vec<(&'static str, Constructor)> {
     vec![
         ("Reader", |r| Box::new(Reader::new(r))),
         ("LiveReader", |r| {
-            let mut lr = LiveReader::new(Some(LiveReaderMetrics::new()), r);
+            let mut lr = LiveReader::new(tsdb_format::record::Logger::nop(), Some(LiveReaderMetrics::new()), r);
             lr.set_eof_non_err(true);
             Box::new(lr)
         }),
@@ -291,7 +291,7 @@ fn test_reader_live() {
 
         // Read from a second FD on the same file.
         let read_fd = fs::File::open(&path).unwrap();
-        let mut reader = LiveReader::new(Some(LiveReaderMetrics::new()), read_fd);
+        let mut reader = LiveReader::new(tsdb_format::record::Logger::nop(), Some(LiveReaderMetrics::new()), read_fd);
         for exp in &case.exp {
             while !reader.next() {
                 assert!(
@@ -425,7 +425,7 @@ fn test_reader_fuzz_live() {
 
         let seg = open_read_segment(&segment_name(&dir, m)).unwrap();
 
-        let mut r = LiveReader::new(None, seg);
+        let mut r = LiveReader::new(tsdb_format::record::Logger::nop(), None, seg);
 
         let read_segment = |r: &mut LiveReader<tsdb_format::wlog::Segment>| {
             while r.next() {
@@ -483,7 +483,7 @@ fn test_reader_fuzz_live() {
                 );
 
                 let seg = open_read_segment(&segment_name(&dir, seg_i + 1)).unwrap();
-                r = LiveReader::new(None, seg);
+                r = LiveReader::new(tsdb_format::record::Logger::nop(), None, seg);
                 continue;
             }
             read_segment(&mut r);
@@ -526,7 +526,7 @@ fn test_live_reader_corrupt_short_file() {
 
     let seg = open_read_segment(&segment_name(&dir, m)).unwrap();
 
-    let mut r = LiveReader::new(None, seg);
+    let mut r = LiveReader::new(tsdb_format::record::Logger::nop(), None, seg);
     assert!(!r.next(), "expected no records");
     assert!(
         matches!(r.err(), Some(Error::Eof)),
@@ -568,7 +568,7 @@ fn test_live_reader_corrupt_record_too_long_and_short() {
 
     let seg = open_read_segment(&segment_name(&dir, m)).unwrap();
 
-    let mut r = LiveReader::new(Some(LiveReaderMetrics::new()), seg);
+    let mut r = LiveReader::new(tsdb_format::record::Logger::nop(), Some(LiveReaderMetrics::new()), seg);
     assert!(!r.next(), "expected no records");
     assert_eq!(
         r.err().map(|e| e.to_string()).as_deref(),

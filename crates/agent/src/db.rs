@@ -256,7 +256,8 @@ pub fn open(
     let dir = dir.join("wal");
 
     let w = WL::new_size(&dir, opts.wal_segment_size as usize, opts.wal_compression)
-        .map_err(|e| werr("creating WAL", e))?;
+        .map_err(|e| werr("creating WAL", e))?
+        .with_logger(l.clone());
 
     let inner = Arc::new(DbInner::new(l, opts, rs, w));
 

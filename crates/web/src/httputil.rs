@@ -94,3 +94,20 @@ pub fn compress(resp: &mut Response, req: &Request) {
     resp.set_header("Content-Encoding", enc);
     resp.body = Body::Bytes(out);
 }
+
+/// Go `httputil.ContextFromRequest`: a child of `ctx` with the "httpRequest" query origin (client IP, method and
+/// path) that the query logger writes.
+pub fn context_from_request(ctx: &storage::Context, client_ip: &str, method: &str, path: &str) -> storage::Context {
+    use promql::LogValue;
+    promql::OriginContext::attach(
+        ctx,
+        vec![(
+            "httpRequest".to_string(),
+            LogValue::Map(vec![
+                ("clientIP".to_string(), LogValue::Str(client_ip.to_string())),
+                ("method".to_string(), LogValue::Str(method.to_string())),
+                ("path".to_string(), LogValue::Str(path.to_string())),
+            ]),
+        )],
+    )
+}

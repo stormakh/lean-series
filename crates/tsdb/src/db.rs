@@ -635,7 +635,7 @@ pub fn open_with_ranges(
         // Remove tmp dirs.
         remove_tmp_dirs(&l, tmp_dir, is_tmp_dir).map_err(|e| Error::wrap("remove tmp dirs", e))?;
         // Remove any temporary checkpoints that might have been interrupted during creation.
-        wlog::delete_temp_checkpoints(tmp_dir)
+        wlog::delete_temp_checkpoints(&l, tmp_dir)
             .map_err(|e| Error::wrap("delete temp checkpoints", Error::other(e)))?;
     }
 
@@ -705,7 +705,7 @@ pub fn open_with_ranges(
             segment_size = opts.wal_segment_size as usize;
         }
         let w = match WL::new_size(&wal_dir, segment_size, opts.wal_compression) {
-            Ok(w) => Arc::new(w),
+            Ok(w) => Arc::new(w.with_logger(l.clone())),
             Err(e) => return Err(release(locker, Error::other(e))),
         };
         wal = Some(w);
@@ -720,7 +720,7 @@ pub fn open_with_ranges(
         };
         if opts.out_of_order_time_window > 0 || wbl_size > 0 {
             match WL::new_size(&wbl_dir, segment_size, opts.wal_compression) {
-                Ok(w) => wbl = Some(Arc::new(w)),
+                Ok(w) => wbl = Some(Arc::new(w.with_logger(l.clone()))),
                 Err(e) => {
                     let _ = wal.as_ref().map(|w| w.close());
                     return Err(release(locker, Error::other(e)));
@@ -1169,7 +1169,7 @@ impl DB {
                 }
                 let compress = rlock(&self.opts).wal_compression;
                 let w = WL::new_size(self.dir.join(wlog::WBL_DIR_NAME), segment_size, compress).map_err(Error::other)?;
-                Some(Arc::new(w))
+                Some(Arc::new(w.with_logger(self.logger.clone())))
             }
             None => None,
         };

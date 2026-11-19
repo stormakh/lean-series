@@ -214,6 +214,25 @@ pub enum LogValue {
     Int(i64),
     Float(f64),
     Bool(bool),
+    /// A nested map (Go `map[string]string` or `map[string]any`); written with sorted keys like Go's JSON encoder.
+    Map(Vec<(String, LogValue)>),
+}
+
+/// The origin data of a query, attached to a context with [`OriginContext::attach`] (Go `NewOriginContext`).
+/// The engine logs every entry as a top-level attribute of the query log line.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct OriginContext(pub Vec<(String, LogValue)>);
+
+impl OriginContext {
+    /// Go `NewOriginContext(ctx, data)`: a child of `ctx` that carries `data`.
+    pub fn attach(ctx: &Context, data: Vec<(String, LogValue)>) -> Context {
+        ctx.with_value(OriginContext(data))
+    }
+
+    /// The origin data of `ctx`, if any.
+    pub fn from_context(ctx: &Context) -> Option<&OriginContext> {
+        ctx.value::<OriginContext>()
+    }
 }
 
 /// One logged query (the attributes of Go's "promql query logged" record).
@@ -269,6 +288,72 @@ pub struct EngineMetrics {
     pub query_samples_read: AtomicU64,
     /// Rejections by the query-cost guardrails: max_series, max_samples_read, max_duration.
     pub query_rejected_total: Mutex<HashMap<&'static str, u64>>,
+    /// `prometheus_engine_query_duration_seconds` and `..._histogram_seconds` by slice, in the order of
+    /// [`QUERY_DURATION_SLICES`] (Go observes both with the same value).
+    pub query_duration: [ObserverHistogram; 4],
+    /// `prometheus_engine_query_series_touched` (only observed with the query-cost feature).
+    pub query_series_touched: ObserverHistogram,
+    /// `prometheus_engine_query_samples_read` (only observed with the query-cost feature).
+    pub query_samples_read_histogram: ObserverHistogram,
+}
+
+/// The `slice` label values of the query duration metrics.
+pub const QUERY_DURATION_SLICES: [&str; 4] = ["queue_time", "prepare_time", "inner_eval", "result_sort"];
+/// Buckets of `prometheus_engine_query_duration_histogram_seconds`.
+pub const QUERY_DURATION_BUCKETS: [f64; 4] = [0.01, 0.1, 1.0, 10.0];
+/// Buckets of `prometheus_engine_query_series_touched` (Go `ExponentialBuckets(1, 4, 12)`).
+pub const QUERY_SERIES_TOUCHED_BUCKETS: [f64; 12] =
+    [1.0, 4.0, 16.0, 64.0, 256.0, 1024.0, 4096.0, 16384.0, 65536.0, 262144.0, 1048576.0, 4194304.0];
+/// Buckets of `prometheus_engine_query_samples_read` (Go `ExponentialBuckets(100, 4, 12)`).
+pub const QUERY_SAMPLES_READ_BUCKETS: [f64; 12] = [
+    100.0, 400.0, 1600.0, 6400.0, 25600.0, 102400.0, 409600.0, 1638400.0, 6553600.0, 26214400.0, 104857600.0,
+    419430400.0,
+];
+
+/// Observations as atomics (count, sum and per-bucket counts for up to 12 upper bounds); the bounds are given
+/// by the caller, so the struct stays lock-free and allocation-free.
+#[derive(Debug, Default)]
+pub struct ObserverHistogram {
+    count: AtomicU64,
+    sum_bits: AtomicU64,
+    buckets: [AtomicU64; 12],
+}
+
+impl ObserverHistogram {
+    pub fn observe(&self, bounds: &[f64], v: f64) {
+        if let Some(i) = bounds.iter().position(|b| v <= *b) {
+            self.buckets[i].fetch_add(1, Ordering::Relaxed);
+        }
+        self.count.fetch_add(1, Ordering::Relaxed);
+        let _ = self.sum_bits.try_update(Ordering::Relaxed, Ordering::Relaxed, |b| {
+            Some((f64::from_bits(b) + v).to_bits())
+        });
+    }
+    pub fn count(&self) -> u64 {
+        self.count.load(Ordering::Relaxed)
+    }
+    pub fn sum(&self) -> f64 {
+        f64::from_bits(self.sum_bits.load(Ordering::Relaxed))
+    }
+    /// Cumulative counts per upper bound (without +Inf).
+    pub fn cumulative(&self, bounds: &[f64]) -> Vec<(f64, u64)> {
+        let mut acc = 0;
+        bounds
+            .iter()
+            .zip(self.buckets.iter())
+            .map(|(b, c)| {
+                acc += c.load(Ordering::Relaxed);
+                (*b, acc)
+            })
+            .collect()
+    }
+}
+
+impl EngineMetrics {
+    /// Go `SpanTimer.Finish` with the slice observers: `slice` indexes [`QUERY_DURATION_SLICES`].
+    pub(crate) fn observe_duration(&self, slice: usize, d: Duration) {
+        self.query_duration[slice].observe(&QUERY_DURATION_BUCKETS, d.as_secs_f64());
+    }
 }
 
 struct EngineInner {
@@ -350,6 +435,11 @@ impl Engine {
     /// The counters of the engine.
     pub fn metrics(&self) -> &EngineMetrics {
         &self.inner.metrics
+    }
+
+    /// Whether the query-cost feature is on (its metrics exist only then).
+    pub fn query_cost_enabled(&self) -> bool {
+        self.inner.enable_query_cost
     }
 
     /// The parser of the engine.
@@ -816,7 +906,11 @@ impl Query {
                     params,
                     error: err.clone(),
                     stats: stats::new_query_stats(&self.stats()),
-                    origin: self.origin.clone(),
+                    origin: if self.origin.is_empty() {
+                        OriginContext::from_context(parent_ctx).map(|o| o.0.clone()).unwrap_or_default()
+                    } else {
+                        self.origin.clone()
+                    },
                 };
                 l.log(&entry);
             }
@@ -826,6 +920,10 @@ impl Query {
         ng.metrics.query_samples.fetch_add(self.sample_stats.total_samples.max(0) as u64, Ordering::Relaxed);
         ng.metrics.query_samples_read.fetch_add(self.sample_stats.samples_read.max(0) as u64, Ordering::Relaxed);
         if ng.enable_query_cost {
+            let sr = self.sample_stats.samples_read.max(0) as f64;
+            ng.metrics.query_samples_read_histogram.observe(&QUERY_SAMPLES_READ_BUCKETS, sr);
+            let ts = self.sample_stats.total_series.max(0) as f64;
+            ng.metrics.query_series_touched.observe(&QUERY_SERIES_TOUCHED_BUCKETS, ts);
             if let Some(e) = &err {
                 engine.observe_query_rejection(e, cost_cause);
             }
@@ -881,7 +979,8 @@ impl Engine {
         }
         timers.start(QueryTiming::ExecQueueTime);
         let r = self.queue_active(ctx, q);
-        timers.finish(QueryTiming::ExecQueueTime);
+        let d = timers.finish(QueryTiming::ExecQueueTime);
+        self.inner.metrics.observe_duration(0, d);
         r
     }
 }

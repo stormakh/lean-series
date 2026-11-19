@@ -110,6 +110,11 @@ pub struct ConsoleRequest<'a> {
     /// The `*.lib` files of the console libraries path.
     pub library_files: Vec<PathBuf>,
     pub now_ms: i64,
+    /// The client IP without the port, the method and the full decoded request path (route prefix included):
+    /// the "httpRequest" query origin (Go `httputil.ContextFromRequest`).
+    pub client_ip: String,
+    pub method: String,
+    pub request_path: String,
 }
 
 /// Expands a console template (the server wires the template engine here).
@@ -189,6 +194,10 @@ pub struct Options {
     pub logger: Logger,
     /// Overrides the clock in milliseconds (tests; Go sets `h.now`).
     pub now: Option<Arc<dyn Fn() -> i64 + Send + Sync>>,
+    /// Stack size of the connection threads (0: 4 MiB). Queries run on these threads.
+    pub stack_size: usize,
+    /// Called when the last connection of a listener closes (for example to give memory back to the OS).
+    pub on_idle: Option<fn()>,
 }
 
 impl Default for Options {
@@ -247,6 +256,8 @@ impl Default for Options {
             console_expander: None,
             logger: Logger::nop(),
             now: None,
+            stack_size: 0,
+            on_idle: None,
         }
     }
 }
@@ -1084,6 +1095,9 @@ impl Handler {
             external_labels,
             library_files,
             now_ms: (self.now)(),
+            client_ip: req.remote_ip.clone(),
+            method: req.method.clone(),
+            request_path: http::util::path_decode(&req.path),
         };
         match exp(&cr) {
             Ok(html) => text_html(html),
@@ -1198,7 +1212,8 @@ impl Handler {
             gzip: false,
             // Queries and federation recurse deeper than the server's 64 KiB default (Go stacks grow). Only the
             // touched pages of a stack use memory.
-            stack_size: 4 << 20,
+            stack_size: if self.options.stack_size == 0 { 4 << 20 } else { self.options.stack_size },
+            on_idle: self.options.on_idle,
             ..Default::default()
         };
         http::Server::bind(&addr, cfg).map_err(|e| format!("listen tcp {}: {}", address, e))

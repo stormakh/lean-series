@@ -30,6 +30,7 @@ net = { path = "../net" }
 json = { path = "../json" }
 yaml = { path = "../yaml" }
 util = { path = "../util" }
+kingpin = { path = "../kingpin" }
 regex = "1.13"
 # gzip of the `debug` tarball (same pin as the http crate).
 flate2 = "=1.1.10"

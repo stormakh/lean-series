@@ -392,6 +392,7 @@ fn test_watcher_tail() {
             let watcher = Watcher::new(
                 Some(WatcherMetrics::new()),
                 None,
+                tsdb_format::record::Logger::nop(),
                 "test",
                 wt.clone(),
                 &dir,
@@ -586,6 +587,7 @@ fn test_read_to_end_no_checkpoint() {
             let watcher = Watcher::new(
                 Some(WatcherMetrics::new()),
                 None,
+                tsdb_format::record::Logger::nop(),
                 "",
                 wt.clone(),
                 &dir,
@@ -660,6 +662,7 @@ fn test_read_to_end_with_checkpoint() {
             let watcher = Watcher::new(
                 Some(WatcherMetrics::new()),
                 None,
+                tsdb_format::record::Logger::nop(),
                 "",
                 wt.clone(),
                 &dir,
@@ -725,6 +728,7 @@ fn test_read_checkpoint() {
             let watcher = Watcher::new(
                 Some(WatcherMetrics::new()),
                 None,
+                tsdb_format::record::Logger::nop(),
                 "",
                 wt.clone(),
                 &dir,
@@ -790,6 +794,7 @@ fn test_read_checkpoint_multiple_segments() {
             let watcher = Watcher::new(
                 Some(WatcherMetrics::new()),
                 None,
+                tsdb_format::record::Logger::nop(),
                 "",
                 wt.clone(),
                 &dir,
@@ -854,6 +859,7 @@ fn test_checkpoint_series_reset() {
         let watcher = Watcher::new(
             Some(WatcherMetrics::new()),
             None,
+            tsdb_format::record::Logger::nop(),
             "",
             wt.clone(),
             &subdir,
@@ -936,6 +942,7 @@ fn test_run_startup_time() {
             let watcher = Watcher::new(
                 Some(WatcherMetrics::new()),
                 None,
+                tsdb_format::record::Logger::nop(),
                 "",
                 wt.clone(),
                 &dir,
@@ -1003,6 +1010,7 @@ fn test_run_avoid_notify_when_behind() {
             let watcher = Watcher::new(
                 Some(WatcherMetrics::new()),
                 None,
+                tsdb_format::record::Logger::nop(),
                 "",
                 wt.clone(),
                 &dir,
