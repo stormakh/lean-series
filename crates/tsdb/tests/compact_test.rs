@@ -1,5 +1,4 @@
-//! Port of `tsdb/compact_test.go`. Tests that need the head or the DB run their body with `--cfg head` and are
-//! ignored until those are merged.
+//! Port of `tsdb/compact_test.go`.
 
 #![allow(clippy::needless_update, clippy::type_complexity, clippy::unnecessary_to_owned, clippy::cloned_ref_to_slice_refs)]
 
@@ -1303,24 +1302,429 @@ fn test_compaction_from_head() {
     }
 }
 
-// The following tests drive the DB (db.go, ported separately): auto compaction switches, cancelling compactions on
-// close, failed reloads after compaction, head compaction with histograms and delayed compaction. They are ported
-// when the DB is merged; their Go bodies are in upstream/tsdb/compact_test.go.
+fn compactor_ran(db: &tsdb::db::DB) -> f64 {
+    db.leveled_compactor.as_ref().unwrap().metrics().ran.get()
+}
+
+fn block_range(db: &tsdb::db::DB) -> i64 {
+    db.leveled_compactor.as_ref().unwrap().ranges()[0]
+}
 
 #[test]
-fn test_disable_auto_compactions() {}
+fn test_disable_auto_compactions() {
+    let db = new_test_db(vec![]);
+    let block_range = block_range(&db);
+    let label = model::labels::from_strings(&["foo", "bar"]);
+
+    // Trigger a compaction to check that it was skipped and no new blocks were created when compaction is disabled.
+    db.disable_compactions();
+    let mut app = db.appender(&bg());
+    for i in 0..3i64 {
+        app.append(0, &label, i * block_range, 0.0).unwrap();
+        app.append(0, &label, i * block_range + 1000, 0.0).unwrap();
+    }
+    assert!(app.commit().is_none());
+
+    db.trigger_compaction();
+    for _ in 0..10 {
+        if db.metrics.compactions_skipped.get() > 0.0 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(db.metrics.compactions_skipped.get() > 0.0, "No compaction was skipped after the set timeout.");
+    assert!(db.mtx.read().unwrap().blocks.is_empty());
+
+    // Enable the compaction, trigger it and check that the block is persisted.
+    db.enable_compactions();
+    db.trigger_compaction();
+    for _ in 0..100 {
+        if !db.blocks().is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(!db.blocks().is_empty(), "No block was persisted after the set timeout.");
+}
+
+/// A compactor of closures (Go `mockCompactorFn`).
+struct MockCompactorFn {
+    plan_fn: Box<dyn Fn() -> Result<Vec<PathBuf>, Error> + Send + Sync>,
+    compact_fn: Box<dyn Fn() -> Result<Vec<Ulid>, Error> + Send + Sync>,
+    write_fn: Box<dyn Fn() -> Result<Vec<Ulid>, Error> + Send + Sync>,
+}
+
+impl Compactor for MockCompactorFn {
+    fn plan(&self, _: &std::path::Path) -> Result<Vec<PathBuf>, Error> {
+        (self.plan_fn)()
+    }
+    fn write(
+        &self,
+        _: &std::path::Path,
+        _: &dyn BlockReader,
+        _: i64,
+        _: i64,
+        _: Option<&BlockMeta>,
+    ) -> Result<Vec<Ulid>, Error> {
+        (self.write_fn)()
+    }
+    fn compact(&self, _: &std::path::Path, _: &[PathBuf], _: &[tsdb::block::Block]) -> Result<Vec<Ulid>, Error> {
+        (self.compact_fn)()
+    }
+}
+
+// TestCancelCompactions ensures that when the db is closed any running compaction is cancelled to unblock closing
+// the db.
+#[test]
+fn test_cancel_compactions() {
+    use std::sync::mpsc;
+    let (started_tx, started_rx) = mpsc::channel::<()>();
+    let (canceled_tx, canceled_rx) = mpsc::channel::<()>();
+    let chans = Arc::new((Mutex::new(Some(started_tx)), Mutex::new(Some(canceled_tx))));
+
+    let mut opts = tsdb::db::default_options();
+    opts.new_compactor_func = Some(Arc::new(move |ctx: &Context, _, _: &[i64], _, _: &tsdb::db::Options| {
+        let ctx = ctx.clone();
+        let chans = chans.clone();
+        let c: Arc<dyn Compactor> = Arc::new(MockCompactorFn {
+            plan_fn: Box::new(|| Ok(paths(&["block-a", "block-b"]))),
+            compact_fn: Box::new(move || {
+                drop(chans.0.lock().unwrap().take()); // close(compactionStarted)
+                while !ctx.is_done() {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                drop(chans.1.lock().unwrap().take()); // close(compactionCanceled)
+                Err(ctx.err().unwrap())
+            }),
+            // writeFn is unused: this test never reaches the head, OOO, or stale-series compaction paths that would
+            // call Write.
+            write_fn: Box::new(|| Ok(Vec::new())),
+        });
+        Ok(c)
+    }));
+    let db = new_test_db(vec![with_opts(opts)]);
+
+    db.trigger_compaction();
+    let _ = started_rx.recv();
+
+    db.close().unwrap();
+    let _ = canceled_rx.recv();
+
+    // Wrapped context.Canceled must not be counted as a real compaction failure (verifies errors.Is at every
+    // level of the chain).
+    assert_eq!(0.0, db.metrics.compactions_failed.get());
+}
+
+// TestDeleteCompactionBlockAfterFailedReload ensures that a failed reloadBlocks immediately after a compaction
+// deletes the resulting block to avoid creating blocks with the same time range.
+#[test]
+fn test_delete_compaction_block_after_failed_reload() {
+    let head_compaction = |db: &tsdb::db::DB| -> usize {
+        let range_to_trigger_compaction = block_range(db) / 2 * 3 - 1;
+        let default_label = model::labels::from_strings(&["foo", "bar"]);
+        // Add some data to the head that is enough to trigger a compaction.
+        let mut app = db.appender(&bg());
+        app.append(0, &default_label, 1, 0.0).unwrap();
+        app.append(0, &default_label, 2, 0.0).unwrap();
+        app.append(0, &default_label, 3 + range_to_trigger_compaction, 0.0).unwrap();
+        assert!(app.commit().is_none());
+        0
+    };
+    let block_compaction = |db: &tsdb::db::DB| -> usize {
+        let blocks = [(0i64, 100i64), (100, 150), (150, 200)];
+        for (mint, maxt) in blocks {
+            create_block(db.dir(), &gen_series(1, 1, mint, maxt));
+        }
+        db.reload().unwrap();
+        assert_eq!(blocks.len(), db.blocks().len(), "unexpected block count after a reloadBlocks");
+        blocks.len()
+    };
+    let tests: Vec<(&str, &dyn Fn(&tsdb::db::DB) -> usize)> =
+        vec![("Test Head Compaction", &head_compaction), ("Test Block Compaction", &block_compaction)];
+    for (title, boot_strap) in tests {
+        let db = new_test_db(vec![with_rngs(&[1, 100])]);
+        db.disable_compactions();
+
+        let exp_blocks = boot_strap(&db);
+
+        // Create a block that will trigger the reloadBlocks to fail.
+        let block_path = create_block(db.dir(), &gen_series(1, 1, 200, 300));
+        let last_block_index = block_path.join(tsdb::INDEX_FILENAME);
+        let act_blocks = tsdb::db::block_dirs(db.dir()).unwrap();
+        assert_eq!(exp_blocks, act_blocks.len() - 1, "{title}"); // -1 to exclude the corrupted block.
+        std::fs::remove_file(&last_block_index).unwrap(); // Corrupt the block by removing the index file.
+
+        assert_eq!(0.0, db.metrics.reloads_failed.get(), "initial 'failed db reloadBlocks' count metrics mismatch");
+        assert_eq!(0.0, compactor_ran(&db), "initial `compactions` count metric mismatch");
+        assert_eq!(0.0, db.metrics.compactions_failed.get(), "initial `compactions failed` count metric mismatch");
+
+        // Do the compaction and check the metrics. Compaction should succeed, but the reloadBlocks should fail and
+        // the new block created from the compaction should be deleted.
+        assert!(db.compact(&bg()).is_err());
+        assert_eq!(1.0, db.metrics.reloads_failed.get(), "'failed db reloadBlocks' count metrics mismatch");
+        assert_eq!(1.0, compactor_ran(&db), "`compaction` count metric mismatch");
+        assert_eq!(1.0, db.metrics.compactions_failed.get(), "`compactions failed` count metric mismatch");
+
+        let act_blocks = tsdb::db::block_dirs(db.dir()).unwrap();
+        // -1 to exclude the corrupted block.
+        assert_eq!(exp_blocks, act_blocks.len() - 1, "block count should be the same as before the compaction");
+    }
+}
 
 #[test]
-fn test_cancel_compactions() {}
+fn test_head_compaction_with_histograms() {
+    use model::histogram::{CounterResetHint, Histogram, Span};
+    use std::collections::BTreeMap;
+    for float_test in [true, false] {
+        let head = new_test_head("hcwh", DEFAULT_BLOCK_DURATION, tsdb_format::wlog::compression::Type::None, false);
+        head.init(0).unwrap();
+
+        let minute = |m: i64| m * 60 * 1000;
+        let append_histogram = |lbls: &Labels, from: i64, to: i64, h: &Histogram, exp: &mut Vec<Sample>| {
+            let mut app = head.appender(&bg());
+            for ts_minute in from..=to {
+                let hint = if ts_minute == from {
+                    CounterResetHint::UnknownCounterReset
+                } else {
+                    CounterResetHint::NotCounterReset
+                };
+                if float_test {
+                    let r = app.append_histogram(0, lbls, minute(ts_minute), None, Some(&h.to_float()));
+                    let mut efh = h.to_float();
+                    efh.counter_reset_hint = hint;
+                    exp.push(Sample::float_histogram(0, minute(ts_minute), efh));
+                    r.unwrap();
+                } else {
+                    let r = app.append_histogram(0, lbls, minute(ts_minute), Some(h), None);
+                    let mut eh = h.copy();
+                    eh.counter_reset_hint = hint;
+                    exp.push(Sample::histogram(0, minute(ts_minute), eh));
+                    r.unwrap();
+                }
+            }
+            assert!(app.commit().is_none());
+        };
+        let append_float = |lbls: &Labels, from: i64, to: i64, exp: &mut Vec<Sample>| {
+            let mut app = head.appender(&bg());
+            for ts_minute in from..=to {
+                app.append(0, lbls, minute(ts_minute), ts_minute as f64).unwrap();
+                exp.push(Sample::float(0, minute(ts_minute), ts_minute as f64));
+            }
+            assert!(app.commit().is_none());
+        };
+
+        let series1 = model::labels::from_strings(&["foo", "bar1"]);
+        let series2 = model::labels::from_strings(&["foo", "bar2"]);
+        let series3 = model::labels::from_strings(&["foo", "bar3"]);
+        let series4 = model::labels::from_strings(&["foo", "bar4"]);
+        let (mut exp1, mut exp2, mut exp3, mut exp4) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let h = Histogram {
+            count: 15,
+            zero_count: 4,
+            zero_threshold: 0.001,
+            sum: 35.5,
+            schema: 1,
+            positive_spans: vec![Span { offset: 0, length: 2 }, Span { offset: 2, length: 2 }],
+            positive_buckets: vec![1, 1, -1, 0],
+            negative_spans: vec![Span { offset: 0, length: 1 }, Span { offset: 1, length: 2 }],
+            negative_buckets: vec![1, 2, -1],
+            ..Histogram::default()
+        };
+
+        // Series with only histograms.
+        append_histogram(&series1, 100, 105, &h, &mut exp1);
+
+        // Series starting with float and then getting histograms.
+        append_float(&series2, 100, 102, &mut exp2);
+        append_histogram(&series2, 103, 105, &h.copy(), &mut exp2);
+        append_float(&series2, 106, 107, &mut exp2);
+        append_histogram(&series2, 108, 109, &h.copy(), &mut exp2);
+
+        // Series starting with histogram and then getting float.
+        append_histogram(&series3, 101, 103, &h.copy(), &mut exp3);
+        append_float(&series3, 104, 106, &mut exp3);
+        append_histogram(&series3, 107, 108, &h.copy(), &mut exp3);
+        append_float(&series3, 109, 110, &mut exp3);
+
+        // A float only series.
+        append_float(&series4, 100, 102, &mut exp4);
+
+        // Compaction.
+        let mint = head.min_time();
+        let maxt = head.max_time() + 1; // Block intervals are half-open: [b.MinTime, b.MaxTime).
+        let compactor =
+            new_leveled_compactor(&bg(), None, vec![DEFAULT_BLOCK_DURATION], Some(Arc::new(chunkenc::new_pool())), None)
+                .unwrap();
+        let ids = compactor.write(&head.opts.chunk_dir_root, &**head, mint, maxt, None).unwrap();
+        assert_eq!(1, ids.len());
+
+        // Open the block and query it and check the histograms.
+        let block =
+            tsdb::block::open_block(None, &head.opts.chunk_dir_root.join(ids[0].to_string()), None, None).unwrap();
+        let q = tsdb::querier::new_block_querier(&block, block.min_time(), block.max_time()).unwrap();
+        let act_hists =
+            query(q, &[model::matcher::Matcher::must_new(model::matcher::MatchType::Regexp, "foo", "bar.*")]);
+        let mut exp = BTreeMap::new();
+        exp.insert(series1.to_string(), exp1);
+        exp.insert(series2.to_string(), exp2);
+        exp.insert(series3.to_string(), exp3);
+        exp.insert(series4.to_string(), exp4);
+        assert_eq!(exp, act_hists);
+        block.close().unwrap();
+    }
+}
 
 #[test]
-fn test_delete_compaction_block_after_failed_reload() {}
+fn test_delayed_compaction() {
+    let delay = std::time::Duration::from_secs(5);
+    let label = model::labels::from_strings(&["foo", "bar"]);
+    let append_samples = |db: &tsdb::db::DB, timestamps: &[i64]| {
+        let mut app = db.appender(&bg());
+        for &ts in timestamps {
+            app.append(0, &label, ts, 0.0).unwrap();
+        }
+        assert!(app.commit().is_none());
+    };
 
-#[test]
-fn test_head_compaction_with_histograms() {}
+    // Delay not enabled.
+    {
+        let db = new_test_db(vec![with_rngs(&[10])]);
+        let compact_and_check = || {
+            let start = std::time::Instant::now();
+            let _ = db.compact(&bg());
+            assert!(!db.head().compactable());
+            assert!(start.elapsed() < delay);
+        };
+        db.disable_compactions();
+        append_samples(&db, &[0, 11, 21]);
+        compact_and_check();
+        assert_eq!(1.0, compactor_ran(&db));
 
-#[test]
-fn test_delayed_compaction() {}
+        db.disable_compactions();
+        append_samples(&db, &[31, 41]);
+        compact_and_check();
+        assert_eq!(3.0, compactor_ran(&db));
+    }
 
+    // Delay enabled.
+    // adapted: Go runs this part in a synctest bubble (fake time). Here the DB clock is moved forward with
+    // `test_time_offset_ms`, and `trigger_compaction_and_wait` waits until the background thread processed the
+    // trigger (Go `db.compactc <- struct{}{}` and `synctest.Wait()`).
+    {
+        let mut opts = tsdb::db::zero_options();
+        opts.compaction_delay = delay;
+        let db = new_test_db(vec![with_opts(opts), with_rngs(&[10])]);
+        let get_delay_start = || db.cmtx.lock().unwrap().time_when_compaction_delay_started;
+        let trigger_auto_compaction = || assert!(db.trigger_compaction_and_wait());
+        let sleep = |d: std::time::Duration| {
+            db.test_time_offset_ms.fetch_add(d.as_millis() as i64, std::sync::atomic::Ordering::SeqCst);
+        };
+
+        // First compaction: expect 1 block.
+        db.disable_compactions();
+        append_samples(&db, &[0, 11, 21]);
+        db.enable_compactions();
+
+        // First trigger starts the delay period; no compaction yet.
+        trigger_auto_compaction();
+        assert!(get_delay_start().is_some());
+        assert_eq!(0.0, compactor_ran(&db));
+
+        // Compaction doesn't run before the delay expires.
+        sleep(delay / 2);
+        trigger_auto_compaction();
+        assert_eq!(0.0, compactor_ran(&db));
+
+        // Compaction runs once the delay expires.
+        sleep(delay / 2);
+        trigger_auto_compaction();
+        // One compaction was run and one block was produced.
+        assert_eq!(1.0, compactor_ran(&db));
+        // The compaction delay doesn't block or wait on the trigger; 3 triggers were processed above without
+        // blocking.
+        assert!(db.metrics.compactions_triggered.get() - db.metrics.compactions_skipped.get() >= 3.0);
+        // The delay doesn't change the head blocks alignment.
+        assert_eq!(block_range(&db) + 1, db.head().min_time());
+
+        // Second compaction: expect 2 more blocks. This ensures that the logic for compaction delay doesn't only
+        // work for the first compaction, but also takes into account the future compactions. This also ensures
+        // that no delay happens between consecutive compactions.
+        db.disable_compactions();
+        append_samples(&db, &[31, 41]);
+        db.enable_compactions();
+
+        trigger_auto_compaction();
+        assert_eq!(1.0, compactor_ran(&db));
+
+        sleep(delay / 2);
+        trigger_auto_compaction();
+        assert_eq!(1.0, compactor_ran(&db));
+
+        sleep(delay / 2);
+        trigger_auto_compaction();
+        assert_eq!(3.0, compactor_ran(&db));
+
+        // This test covers a special case. If auto compaction is in a delay period and a manual compaction is
+        // triggered, auto compaction should stop waiting for the delay if the head is no longer compactable. Of
+        // course, if the head is still compactable after the manual compaction, auto compaction will continue
+        // waiting for the same delay.
+        db.disable_compactions();
+        append_samples(&db, &[51]);
+        assert!(db.head().compactable());
+
+        db.enable_compactions();
+        // Trigger an auto compaction.
+        trigger_auto_compaction();
+        // That made auto compaction start waiting for the delay.
+        assert!(get_delay_start().is_some());
+
+        // Trigger a manual compaction.
+        db.compact_head(&tsdb::head::RangeHead::new(db.head().clone(), 0, 50)).unwrap();
+        assert_eq!(4.0, compactor_ran(&db));
+
+        // Re-trigger an auto compaction.
+        trigger_auto_compaction();
+        // That made auto compaction stop waiting for the delay.
+        assert!(get_delay_start().is_none());
+    }
+}
+
+// TestDelayedCompactionDoesNotBlockUnrelatedOps makes sure that when delayed compaction is enabled, operations
+// that don't directly derive from the Head compaction are not delayed, here we consider disk blocks compaction.
 #[test]
-fn test_delayed_compaction_does_not_block_unrelated_ops() {}
+fn test_delayed_compaction_does_not_block_unrelated_ops() {
+    for (name, when_compactable) in [("Head is compactable", true), ("Head is not compactable", false)] {
+        let tmpdir = TempDir::new();
+        // Some blocks that need compaction are present.
+        create_block(tmpdir.path(), &gen_series(1, 1, 0, 100));
+        create_block(tmpdir.path(), &gen_series(1, 1, 100, 200));
+        create_block(tmpdir.path(), &gen_series(1, 1, 200, 300));
+
+        let mut options = tsdb::db::default_options();
+        // This will make the test timeout if compaction really waits for it.
+        options.compaction_delay = std::time::Duration::from_secs(3600);
+        let db = tsdb::db::open_with_ranges(tmpdir.path(), Some(tsdb::Logger::nop()), options, vec![10, 200], None)
+            .unwrap();
+
+        db.disable_compactions();
+        assert_eq!(3, db.blocks().len(), "{name}");
+
+        if when_compactable {
+            let label = model::labels::from_strings(&["foo", "bar"]);
+            let mut app = db.appender(&bg());
+            app.append(0, &label, 301, 0.0).unwrap();
+            app.append(0, &label, 317, 0.0).unwrap();
+            assert!(app.commit().is_none());
+            // The Head is compactable and will still be at the end.
+            assert!(db.head().compactable());
+        }
+
+        // The blocks were compacted.
+        let _ = db.compact(&bg());
+        assert_eq!(2, db.blocks().len(), "{name}");
+        if when_compactable {
+            assert!(db.head().compactable());
+        }
+        db.close().unwrap();
+    }
+}
