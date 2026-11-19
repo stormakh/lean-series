@@ -8,9 +8,11 @@ const qs = fs.readFileSync(file, 'utf8').split('\n').filter((l) => l && !l.start
 const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
 const enc = (b) => b.split('&').map((kv) => { const i = kv.indexOf('='); return kv.slice(0, i + 1) + encodeURIComponent(kv.slice(i + 1)); }).join('&');
 function post(path, body) {
+  const get = /\/label\/[^/]+\/values$/.test(path);
+  if (get) { path = path + '?' + body; body = ''; }
   return new Promise((ok, bad) => {
     const t = performance.now();
-    const req = http.request({ host: u.hostname, port: u.port, method: 'POST', path, agent, headers: { 'content-type': 'application/x-www-form-urlencoded', 'content-length': Buffer.byteLength(body) } }, (res) => {
+    const req = http.request({ host: u.hostname, port: u.port, method: get ? 'GET' : 'POST', path, agent, headers: { 'content-type': 'application/x-www-form-urlencoded', 'content-length': Buffer.byteLength(body) } }, (res) => {
       let n = 0; res.on('data', (c) => (n += c.length)); res.on('end', () => ok({ status: res.statusCode, ms: performance.now() - t, bytes: n }));
     });
     req.on('error', bad); req.end(body);

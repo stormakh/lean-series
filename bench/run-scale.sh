@@ -20,8 +20,8 @@ while [ "$(date +%s)" -lt $end ]; do sample scrape; sleep 10; done
 sample before_q; c0=$(awk -F, 'END{print $5}' "$O/samples.csv")
 node "$R/bench/scaleq.mjs" "$R/bench/scale-queries.txt" http://localhost:9390 "$Q" "$O/queries.json"
 sample after_q; c1=$(awk -F, 'END{print $5}' "$O/samples.csv")
-series=$(curl -s 'localhost:9390/api/v1/query?query=prometheus_tsdb_head_series' | grep -o '"value":\[[^]]*\]' | grep -o '"[0-9.]*"$' | tr -d '"')
-samples=$(curl -s 'localhost:9390/api/v1/query?query=prometheus_tsdb_head_samples_appended_total' | grep -o '"[0-9.e+]*"\]' | head -1 | tr -d '"]')
+q1() { curl -s "localhost:9390/api/v1/query?query=$1" | python3 -c "import json,sys;print(sum(float(r['value'][1]) for r in json.load(sys.stdin)['data']['result']))"; }
+series=$(q1 prometheus_tsdb_head_series); samples=$(q1 'sum(prometheus_tsdb_head_samples_appended_total)')
 t0=$(date +%s%N); kill -TERM $pp; while kill -0 $pp 2>/dev/null; do sleep 0.05; done; stop_ms=$(( ($(date +%s%N)-t0)/1000000 ))
 read pp ms2 < <("$R/bench/prom.sh" "$B" "$D/data" 9390 "$R/bench/scale.yml")
 sleep 30; sample restarted

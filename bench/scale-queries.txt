@@ -1,10 +1,10 @@
-# Heavy query set for workload "scale". One request per line: <path> <form body>. NOW is replaced with the time.
+# GET for /api/v1/label/*/values (POST is not allowed there). Heavy query set for workload "scale". One request per line: <path> <form body>. NOW is replaced with the time.
 /api/v1/query query=count({__name__=~".+"})&time=NOW
-/api/v1/query_range query=sum by (series_id) (rate({__name__=~"avalanche_counter_metric_mmmmm_0_1.*"}[5m]))&start=NOW-3600&end=NOW&step=60
+/api/v1/query_range query=sum by (series_id) (rate(avalanche_counter_metric_mmmmm_0_1[5m]))&start=NOW-3600&end=NOW&step=60
 /api/v1/query_range query=histogram_quantile(0.99, sum by (le) (rate(avalanche_histogram_metric_mmmmm_0_0_bucket[5m])))&start=NOW-3600&end=NOW&step=60
 /api/v1/query query=topk(10, avalanche_gauge_metric_mmmmm_0_0)&time=NOW
 /api/v1/query query=avg_over_time(avalanche_gauge_metric_mmmmm_0_1[30m])&time=NOW
-/api/v1/query query=sum(rate({__name__=~"avalanche_counter.*", instance="localhost:9001"}[5m]))&time=NOW
+/api/v1/query query=count by (instance) ({__name__=~"avalanche_counter_metric_mmmmm_0_.*"})&time=NOW
 /api/v1/labels start=NOW-3600&end=NOW
 /api/v1/label/__name__/values start=NOW-3600&end=NOW
 /api/v1/series match[]=avalanche_gauge_metric_mmmmm_0_2&start=NOW-3600&end=NOW
