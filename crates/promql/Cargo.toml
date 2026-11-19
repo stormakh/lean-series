@@ -10,6 +10,8 @@ chunkenc = { path = "../chunkenc" }
 storage = { path = "../storage" }
 util = { path = "../util" }
 json = { path = "../json" }
+# promqltest runs on the real TSDB (Go util/teststorage.New).
+tsdb = { path = "../tsdb" }
 
 [dev-dependencies]
 # Remote read client for estimate_resource_test (a dev-dependency cycle is fine for integration tests).

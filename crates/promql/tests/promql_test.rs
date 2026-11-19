@@ -7,7 +7,7 @@ use std::time::Duration;
 use model::labels::{Labels, from_strings};
 use promql::promqltest::{self, TestStorage};
 use promql::{Engine, EngineOpts};
-use storage::{AppendV2Options, AppenderTransaction, AppenderV2, Context};
+use storage::{AppendV2Options, Context};
 
 fn new_test_engine() -> Engine {
     promqltest::new_test_engine(false, Duration::ZERO, promqltest::DEFAULT_MAX_SAMPLES_PER_QUERY)

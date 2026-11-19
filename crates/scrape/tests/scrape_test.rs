@@ -8,3 +8,5 @@ mod part2;
 mod part3;
 #[path = "scrape_test/part4.rs"]
 mod part4;
+#[path = "scrape_test/part5.rs"]
+mod part5;
