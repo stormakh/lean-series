@@ -21,4 +21,5 @@ crypto = { path = "../crypto" }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 util = { path = "../util" }
 tsdb = { path = "../tsdb" }
+chunkenc = { path = "../chunkenc" }
 http = { path = "../http" }

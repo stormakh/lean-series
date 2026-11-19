@@ -1,8 +1,6 @@
 //! scrape_test.go part 4 (Go lines 6500 to the end).
 //!
-//! Not written here because they query the real TSDB (`teststorage.New` + `Querier`):
-//! TestConvertClassicHistogramsToNHCB, TestTypeUnitReLabel, TestNativeHistogramMaxSchemaSet,
-//! TestNewScrapeLoopHonorLabelsWiring.
+//! The tests of this range that query the real TSDB (`teststorage.New`) are in part5.rs.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -261,7 +259,7 @@ fn test_scrape_loop_run_creates_stale_markers_on_failed_scrape_for_timestamped_m
 #[test]
 fn test_scrape_loop_compression() {
     foreach_appendable(|v2| {
-        let s = Arc::new(tsdb::teststorage::new_default());
+        let s = tsdb::teststorage::new_shared_default();
         let metrics_text = make_test_gauges(10);
 
         struct Tc {

@@ -397,6 +397,7 @@ dependencies = [
 name = "scrape"
 version = "0.1.0"
 dependencies = [
+ "chunkenc",
  "config",
  "crypto",
  "discovery",
@@ -408,6 +409,7 @@ dependencies = [
  "rustls",
  "storage",
  "textparse",
+ "tsdb",
  "util",
  "yaml",
  "zstd",

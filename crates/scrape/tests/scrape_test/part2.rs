@@ -329,7 +329,7 @@ impl AppenderV2 for BucketLimitAppenderV2 {
 fn test_scrape_loop_append_start_time_synthesis_ooo_state_mutation() {
     let ts = SystemTime::now();
 
-    let s = Arc::new(tsdb::teststorage::new_default());
+    let s = tsdb::teststorage::new_shared_default();
     // Simulate OOO error for "test_metric" on the second scrape.
     let return_ooo = Arc::new(AtomicBool::new(false));
     let r = return_ooo.clone();
@@ -398,7 +398,7 @@ fn test_scrape_loop_append_start_time_synthesis_summary() {
         assert_eq!(st, s.st);
     };
 
-    let s = Arc::new(tsdb::teststorage::new_default());
+    let s = tsdb::teststorage::new_shared_default();
     let app_test = Appendable::new().then(s.clone());
     let (sl, _) = new_test_scrape_loop(|sl| {
         with_appendable(sl, &app_test, true);
@@ -463,7 +463,7 @@ fn test_scrape_loop_append_start_time_synthesis_histograms() {
     // ClassicToNative.
     {
         let ts = SystemTime::now();
-        let s = Arc::new(tsdb::teststorage::new_default());
+        let s = tsdb::teststorage::new_shared_default();
         let app_test = Appendable::new().then(s.clone());
         let (sl, _) = new_test_scrape_loop(|sl| {
             with_appendable(sl, &app_test, true);
@@ -579,7 +579,7 @@ test_hist_count 2
     {
         let ts = SystemTime::now();
         let pb = "application/vnd.google.protobuf;proto=io.prometheus.client.MetricFamily;encoding=delimited";
-        let s = Arc::new(tsdb::teststorage::new_default());
+        let s = tsdb::teststorage::new_shared_default();
         let app_test = Appendable::new().then(s.clone());
         let (sl, _) = new_test_scrape_loop(|sl| {
             with_appendable(sl, &app_test, true);
@@ -931,7 +931,7 @@ fn test_scrape_loop_series_ref_change() {
 #[test]
 fn test_scrape_loop_cache() {
     foreach_appendable(|v2| {
-        let s = Arc::new(tsdb::teststorage::new_default());
+        let s = tsdb::teststorage::new_shared_default();
         let app_test = Appendable::new().then(s.clone());
         let ctx = scrape::Ctx::background().child();
         let (sl, scraper) = new_test_scrape_loop(|sl| {
@@ -1006,7 +1006,7 @@ fn test_scrape_loop_cache() {
 #[test]
 fn test_scrape_loop_cache_memory_exhaustion_protection() {
     foreach_appendable(|v2| {
-        let s = Arc::new(tsdb::teststorage::new_default());
+        let s = tsdb::teststorage::new_shared_default();
         let app_test = Appendable::new().then(s.clone());
         let ctx = scrape::Ctx::background().child();
         let (sl, scraper) = new_test_scrape_loop(|sl| {

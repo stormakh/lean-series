@@ -1,8 +1,6 @@
 //! scrape_test.go part 3 (Go lines 4500-6499).
 //!
-//! Tests that need the real TSDB (teststorage.New queried after the scrape) are not written here:
-//! TestScrapeLoopDiscardDuplicateLabels, TestScrapeLoopDiscardUnnamedMetrics, TestScrapeAddFast,
-//! TestScrapeReportSingleAppender, TestScrapeReportLimit, TestScrapeUTF8, TestLeQuantileReLabel.
+//! The tests of this range that query the real TSDB (`teststorage.New`) are in part5.rs.
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -1136,7 +1134,7 @@ fn test_target_scraper_zstd_feature_flag() {
 #[test]
 fn test_scrape_loop_respect_timestamps() {
     foreach_appendable(|app_v2| {
-        let s = Arc::new(tsdb::teststorage::new_default());
+        let s = tsdb::teststorage::new_shared_default();
         let app_test = Appendable::new().then(s.clone());
         let (sl, _) = new_test_scrape_loop(|sl| with_appendable(sl, &app_test, app_v2));
 
@@ -1154,8 +1152,8 @@ fn test_scrape_loop_respect_timestamps() {
 #[test]
 fn test_scrape_loop_discard_timestamps() {
     foreach_appendable(|app_v2| {
-        // adapted: as in test_scrape_loop_respect_timestamps, the unread TSDB behind the mock is left out.
-        let app_test = Appendable::new();
+        let s = tsdb::teststorage::new_shared_default();
+        let app_test = Appendable::new().then(s.clone());
         let (sl, _) = new_test_scrape_loop(|sl| {
             with_appendable(sl, &app_test, app_v2);
             sl.honor_timestamps = false;
