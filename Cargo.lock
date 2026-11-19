@@ -536,6 +536,7 @@ dependencies = [
  "http",
  "json",
  "model",
+ "net",
  "promql",
  "regex",
  "scrape",
