@@ -38,7 +38,6 @@
 - `codec_test` `TestValidateLabelsAndMetricName`: 3 of 9 rows ("label name with \xff", "label value is an invalid
   UTF-8 value", "metric name has invalid utf8") cannot be built: Rust strings are always valid UTF-8, and the prompb
   decoder replaces invalid bytes with U+FFFD. The other 6 rows are ported.
-- `codec_test` `TestDecodeOTLPWriteRequestGzipSizeLimit`: belongs to the OTLP port (`DecodeOTLPWriteRequest`).
 - `read_handler_test` `TestStreamReadEndpoint` "write errors": checks the handler against a failing
   `http.ResponseWriter` (zero and partial writes). The Rust handler builds the body in memory and writes nothing
   itself. "storage errors" runs each case once by calling the handler directly (no HTTP/2, TLS or otelhttp); a
