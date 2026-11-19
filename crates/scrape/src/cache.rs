@@ -28,7 +28,9 @@ pub struct CacheEntry {
     /// The series text, when it is not the plain form of `lset` given by `mask`; empty otherwise.
     key: Box<[u8]>,
     /// When `key` is empty, the labels of `lset` (bit i for the i-th label) that the text lists: the text is
-    /// `name{n1="v1",n2="v2"}` of them in the order of `lset`, or the name alone when no bit is set.
+    /// `name{n1="v1",n2="v2"}` of them in the order of `lset`, or the name alone when no bit is set. Bit 32 + i
+    /// is set when the text lists the value of label i without the ".0" that the parser added to it (classic
+    /// histogram `le` and summary `quantile` values are kept in OpenMetrics float form: `le="1"` gives "1.0").
     mask: u64,
     /// Hash and length of the series text.
     hash: u64,
@@ -67,12 +69,12 @@ impl CacheEntry {
         }
         let mut b = self.lset.get(METRIC_NAME_LABEL).as_bytes().to_vec();
         let mut sep = b'{';
-        for (i, (n, v)) in self.lset.iter().enumerate() {
-            if i < 64 && self.mask & (1 << i) != 0 {
+        for (i, (n, v)) in self.lset.iter_bytes().enumerate().take(MAX_MASK_LABELS) {
+            if self.mask & (1 << i) != 0 {
                 b.push(sep);
-                b.extend_from_slice(n.as_bytes());
+                b.extend_from_slice(n);
                 b.extend_from_slice(b"=\"");
-                b.extend_from_slice(v.as_bytes());
+                b.extend_from_slice(if self.mask & (1 << (32 + i)) != 0 { &v[..v.len() - 2] } else { v });
                 b.push(b'"');
                 sep = b',';
             }
@@ -84,9 +86,14 @@ impl CacheEntry {
     }
 }
 
-/// Strips `<sep>name="value"` from the front of `rest`, if it is there and ends a label.
+/// The most labels a label set may have for its text to be kept as a mask.
+const MAX_MASK_LABELS: usize = 32;
+
+/// Strips `<sep>name="value"` from the front of `rest`, if it is there and ends a label; with `trim` the text
+/// has `value` without its trailing ".0".
 #[inline]
-fn strip_label<'a>(rest: &'a [u8], sep: u8, n: &[u8], v: &[u8]) -> Option<&'a [u8]> {
+fn strip_label<'a>(rest: &'a [u8], sep: u8, n: &[u8], v: &[u8], trim: bool) -> Option<&'a [u8]> {
+    let v = if trim { v.strip_suffix(b".0")? } else { v };
     let r = rest.strip_prefix(&[sep])?.strip_prefix(n)?.strip_prefix(b"=\"")?.strip_prefix(v)?.strip_prefix(b"\"")?;
     matches!(r.first(), Some(b',' | b'}')).then_some(r)
 }
@@ -105,9 +112,9 @@ fn mask_matches(lset: &Labels, mask: u64, met: &[u8]) -> bool {
         return rest.is_empty();
     }
     let mut sep = b'{';
-    for (i, (n, v)) in lset.iter_bytes().enumerate() {
-        if i < 64 && mask & (1 << i) != 0 {
-            match strip_label(rest, sep, n, v) {
+    for (i, (n, v)) in lset.iter_bytes().enumerate().take(MAX_MASK_LABELS) {
+        if mask & (1 << i) != 0 {
+            match strip_label(rest, sep, n, v, mask & (1 << (32 + i)) != 0) {
                 Some(r) => rest = r,
                 None => return false,
             }
@@ -121,7 +128,7 @@ fn mask_matches(lset: &Labels, mask: u64, met: &[u8]) -> bool {
 /// `lset`, then none or some of its other labels in braces, in the same order and without escapes.
 fn text_mask(lset: &Labels, met: &[u8]) -> Option<u64> {
     let name = lset.get(METRIC_NAME_LABEL);
-    if name.is_empty() || lset.len() > 64 || met.len() > u32::MAX as usize {
+    if name.is_empty() || lset.len() > MAX_MASK_LABELS || met.len() > u32::MAX as usize {
         return None;
     }
     let mut rest = met.strip_prefix(name.as_bytes())?;
@@ -134,9 +141,13 @@ fn text_mask(lset: &Labels, met: &[u8]) -> Option<u64> {
         if n == METRIC_NAME_LABEL.as_bytes() {
             continue;
         }
-        if let Some(r) = strip_label(rest, sep, n, v) {
+        if let Some(r) = strip_label(rest, sep, n, v, false) {
             rest = r;
             mask |= 1 << i;
+            sep = b',';
+        } else if let Some(r) = strip_label(rest, sep, n, v, true) {
+            rest = r;
+            mask |= 1 << i | 1 << (32 + i);
             sep = b',';
         }
     }
