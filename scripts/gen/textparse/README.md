@@ -1,0 +1,3 @@
+Rerun from this directory, with the Go env of `tools/goenv.sh` (offline: `GOFLAGS=-mod=mod GOPROXY=off`) and `upstream` at the repository root:
+`go run .` rewrites `tests-data/textparse/{protobufparse_test,nhcbparse_test,decoder_test}/` (binary inputs from the Go test sources),
+`go run ./rustexp ../../../upstream/model/textparse/protobufparse_test.go ../../../crates/textparse/tests/common/protobufparse_tables.rs TestProtobufParse TestProtobufParseWithNHCB TestProtobufParseMixedNativeAndClassicHistograms TestProtobufParseMixedClassicAndNativeHistogramsReverseOrder` rewrites the expected tables.

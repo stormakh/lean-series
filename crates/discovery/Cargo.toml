@@ -1,0 +1,18 @@
+[package]
+name = "discovery"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+yaml = { path = "../yaml" }
+json = { path = "../json" }
+model = { path = "../model" }
+net = { path = "../net" }
+crypto = { path = "../crypto" }
+# RSA signing: GCE service account JWT, OCI HTTP signature, STACKIT RS512 JWT (already in the tree via rustls/net)
+ring = "0.17"
+
+[dev-dependencies]
+http = { path = "../http" }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }

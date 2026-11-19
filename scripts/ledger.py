@@ -46,7 +46,7 @@ def file_of(pkg, test):
         for f in sorted(os.listdir(d)) if os.path.isdir(d) else []:
             if f.endswith('_test.go'):
                 for line in open(os.path.join(d, f), encoding='utf-8', errors='replace'):
-                    g = re.match(r'func (Test\w+)\(', line)
+                    g = re.match(r'func ((?:Test|Fuzz)\w+)\(', line)
                     if g:
                         m.setdefault(g.group(1), f[:-3])
         _files[d] = m
