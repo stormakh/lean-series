@@ -6,6 +6,12 @@ license.workspace = true
 
 [dependencies]
 model = { path = "../model" }
+chunkenc = { path = "../chunkenc" }
+storage = { path = "../storage" }
+util = { path = "../util" }
+json = { path = "../json" }
 
 [dev-dependencies]
-json = { path = "../json" }
+[[test]]
+name = "promqltest"
+harness = false

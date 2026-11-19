@@ -103,7 +103,10 @@ impl Expr {
                 n.expr.write_to(out);
                 out.push(')');
             }
-            Expr::StringLiteral(n) => model::unicode::append_quote(out, &n.val),
+            Expr::StringLiteral(n) => match &n.invalid_utf8 {
+                Some(b) => out.push_str(&super::quote::go_quote_bytes(b)),
+                None => model::unicode::append_quote(out, &n.val),
+            },
             Expr::Unary(n) => {
                 write_op(out, n.op);
                 n.expr.write_to(out);

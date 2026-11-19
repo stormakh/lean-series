@@ -282,8 +282,11 @@ checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 name = "promql"
 version = "0.1.0"
 dependencies = [
+ "chunkenc",
  "json",
  "model",
+ "storage",
+ "util",
 ]
 
 [[package]]
@@ -494,7 +497,9 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 name = "util"
 version = "0.1.0"
 dependencies = [
+ "json",
  "model",
+ "regex",
  "storage",
 ]
 

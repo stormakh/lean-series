@@ -1,0 +1,1795 @@
+[
+ {
+  "expected": {
+   "$t": "NumberLiteral",
+   "Duration": false,
+   "PosRange": {
+    "$t": "PositionRange",
+    "End": 8,
+    "Start": 0
+   },
+   "Val": "123.4567"
+  },
+  "input": "123.4567",
+  "outputTest": false
+ },
+ {
+  "expected": {
+   "$t": "StringLiteral",
+   "PosRange": {
+    "$t": "PositionRange",
+    "End": 5,
+    "Start": 0
+   },
+   "Val": "foo"
+  },
+  "input": "\"foo\"",
+  "outputTest": false
+ },
+ {
+  "expected": {
+   "$t": "BinaryExpr",
+   "LHS": {
+    "$t": "VectorSelector",
+    "Anchored": false,
+    "BypassEmptyMatcherCheck": false,
+    "LabelMatchers": [
+     {
+      "Name": "__name__",
+      "Type": 0,
+      "Value": "foo"
+     }
+    ],
+    "Name": "foo",
+    "Offset": 0,
+    "OriginalOffset": 0,
+    "OriginalOffsetExpr": null,
+    "PosRange": {
+     "$t": "PositionRange",
+     "End": 3,
+     "Start": 0
+    },
+    "SkipHistogramBuckets": false,
+    "Smoothed": false,
+    "StartOrEnd": 0,
+    "Timestamp": null,
+    "unquotedUTF8Names": false
+   },
+   "Op": 57397,
+   "RHS": {
+    "$t": "VectorSelector",
+    "Anchored": false,
+    "BypassEmptyMatcherCheck": false,
+    "LabelMatchers": [
+     {
+      "Name": "__name__",
+      "Type": 0,
+      "Value": "bar"
+     }
+    ],
+    "Name": "bar",
+    "Offset": 0,
+    "OriginalOffset": 0,
+    "OriginalOffsetExpr": null,
+    "PosRange": {
+     "$t": "PositionRange",
+     "End": 9,
+     "Start": 6
+    },
+    "SkipHistogramBuckets": false,
+    "Smoothed": false,
+    "StartOrEnd": 0,
+    "Timestamp": null,
+    "unquotedUTF8Names": false
+   },
+   "ReturnBool": false,
+   "VectorMatching": {
+    "$t": "VectorMatching",
+    "Card": 0,
+    "FillValues": {
+     "$t": "VectorMatchFillValues",
+     "LHS": null,
+     "RHS": null
+    },
+    "Include": [],
+    "MatchingLabels": [],
+    "On": false
+   },
+   "unquotedUTF8Names": false
+  },
+  "input": "foo * bar",
+  "outputTest": false
+ },
+ {
+  "expected": {
+   "$t": "BinaryExpr",
+   "LHS": {
+    "$t": "VectorSelector",
+    "Anchored": false,
+    "BypassEmptyMatcherCheck": false,
+    "LabelMatchers": [
+     {
+      "Name": "__name__",
+      "Type": 0,
+      "Value": "foo"
+     }
+    ],
+    "Name": "foo",
+    "Offset": 0,
+    "OriginalOffset": 0,
+    "OriginalOffsetExpr": null,
+    "PosRange": {
+     "$t": "PositionRange",
+     "End": 3,
+     "Start": 0
+    },
+    "SkipHistogramBuckets": false,
+    "Smoothed": false,
+    "StartOrEnd": 0,
+    "Timestamp": null,
+    "unquotedUTF8Names": false
+   },
+   "Op": 57397,
+   "RHS": {
+    "$t": "StepInvariantExpr",
+    "Expr": {
+     "$t": "VectorSelector",
+     "Anchored": false,
+     "BypassEmptyMatcherCheck": false,
+     "LabelMatchers": [
+      {
+       "Name": "__name__",
+       "Type": 0,
+       "Value": "bar"
+      }
+     ],
+     "Name": "bar",
+     "Offset": 0,
+     "OriginalOffset": 0,
+     "OriginalOffsetExpr": null,
+     "PosRange": {
+      "$t": "PositionRange",
+      "End": 14,
+      "Start": 6
+     },
+     "SkipHistogramBuckets": false,
+     "Smoothed": false,
+     "StartOrEnd": 0,
+     "Timestamp": 10000,
+     "unquotedUTF8Names": false
+    }
+   },
+   "ReturnBool": false,
+   "VectorMatching": {
+    "$t": "VectorMatching",
+    "Card": 0,
+    "FillValues": {
+     "$t": "VectorMatchFillValues",
+     "LHS": null,
+     "RHS": null
+    },
+    "Include": [],
+    "MatchingLabels": [],
+    "On": false
+   },
+   "unquotedUTF8Names": false
+  },
+  "input": "foo * bar @ 10",
+  "outputTest": false
+ },
+ {
+  "expected": {
+   "$t": "StepInvariantExpr",
+   "Expr": {
+    "$t": "BinaryExpr",
+    "LHS": {
+     "$t": "VectorSelector",
+     "Anchored": false,
+     "BypassEmptyMatcherCheck": false,
+     "LabelMatchers": [
+      {
+       "Name": "__name__",
+       "Type": 0,
+       "Value": "foo"
+      }
+     ],
+     "Name": "foo",
+     "Offset": 0,
+     "OriginalOffset": 0,
+     "OriginalOffsetExpr": null,
+     "PosRange": {
+      "$t": "PositionRange",
+      "End": 8,
+      "Start": 0
+     },
+     "SkipHistogramBuckets": false,
+     "Smoothed": false,
+     "StartOrEnd": 0,
+     "Timestamp": 20000,
+     "unquotedUTF8Names": false
+    },
+    "Op": 57397,
+    "RHS": {
+     "$t": "VectorSelector",
+     "Anchored": false,
+     "BypassEmptyMatcherCheck": false,
+     "LabelMatchers": [
+      {
+       "Name": "__name__",
+       "Type": 0,
+       "Value": "bar"
+      }
+     ],
+     "Name": "bar",
+     "Offset": 0,
+     "OriginalOffset": 0,
+     "OriginalOffsetExpr": null,
+     "PosRange": {
+      "$t": "PositionRange",
+      "End": 19,
+      "Start": 11
+     },
+     "SkipHistogramBuckets": false,
+     "Smoothed": false,
+     "StartOrEnd": 0,
+     "Timestamp": 10000,
+     "unquotedUTF8Names": false
+    },
+    "ReturnBool": false,
+    "VectorMatching": {
+     "$t": "VectorMatching",
+     "Card": 0,
+     "FillValues": {
+      "$t": "VectorMatchFillValues",
+      "LHS": null,
+      "RHS": null
+     },
+     "Include": [],
+     "MatchingLabels": [],
+     "On": false
+    },
+    "unquotedUTF8Names": false
+   }
+  },
+  "input": "foo @ 20 * bar @ 10",
+  "outputTest": false
+ },
+ {
+  "expected": {
+   "$t": "MatrixSelector",
+   "EndPos": 8,
+   "Range": 5000000000,
+   "RangeExpr": null,
+   "VectorSelector": {
+    "$t": "VectorSelector",
+    "Anchored": false,
+    "BypassEmptyMatcherCheck": false,
+    "LabelMatchers": [
+     {
+      "Name": "__name__",
+      "Type": 0,
+      "Value": "test"
+     }
+    ],
+    "Name": "test",
+    "Offset": 0,
+    "OriginalOffset": 0,
+    "OriginalOffsetExpr": null,
+    "PosRange": {
+     "$t": "PositionRange",
+     "End": 4,
+     "Start": 0
+    },
+    "SkipHistogramBuckets": false,
+    "Smoothed": false,
+    "StartOrEnd": 0,
+    "Timestamp": null,
+    "unquotedUTF8Names": false
+   }
+  },
+  "input": "test[5s]",
+  "outputTest": false
+ },
+ {
+  "expected": {
+   "$t": "MatrixSelector",
+   "EndPos": 28,
+   "Range": 157680000000000000,
+   "RangeExpr": null,
+   "VectorSelector": {
+    "$t": "VectorSelector",
+    "Anchored": false,
+    "BypassEmptyMatcherCheck": false,
+    "LabelMatchers": [
+     {
+      "Name": "a",
+      "Type": 0,
+      "Value": "b"
+     },
+     {
+      "Name": "__name__",
+      "Type": 0,
+      "Value": "test"
+     }
+    ],
+    "Name": "test",
+    "Offset": 0,
+    "OriginalOffset": 0,
+    "OriginalOffsetExpr": null,
+    "PosRange": {
+     "$t": "PositionRange",
+     "End": 11,
+     "Start": 0
+    },
+    "SkipHistogramBuckets": false,
+    "Smoothed": false,
+    "StartOrEnd": 0,
+    "Timestamp": 1603774699000,
+    "unquotedUTF8Names": false
+   }
+  },
+  "input": "test{a=\"b\"}[5y] @ 1603774699",
+  "outputTest": false
+ },
+ {
+  "expected": {
+   "$t": "AggregateExpr",
+   "Expr": {
+    "$t": "VectorSelector",
+    "Anchored": false,
+    "BypassEmptyMatcherCheck": false,
+    "LabelMatchers": [
+     {
+      "Name": "__name__",
+      "Type": 0,
+      "Value": "some_metric"
+     }
+    ],
+    "Name": "some_metric",
+    "Offset": 0,
+    "OriginalOffset": 0,
+    "OriginalOffsetExpr": null,
+    "PosRange": {
+     "$t": "PositionRange",
+     "End": 24,
+     "Start": 13
+    },
+    "SkipHistogramBuckets": false,
+    "Smoothed": false,
+    "StartOrEnd": 0,
+    "Timestamp": null,
+    "unquotedUTF8Names": false
+   },
+   "Grouping": [
+    "foo"
+   ],
+   "Op": 57416,
+   "Param": null,
+   "PosRange": {
+    "$t": "PositionRange",
+    "End": 25,
+    "Start": 0
+   },
+   "Without": false,
+   "unquotedUTF8Names": false
+  },
+  "input": "sum by (foo)(some_metric)",
+  "outputTest": false
+ },
+ {
+  "expected": {
+   "$t": "StepInvariantExpr",
+   "Expr": {
+    "$t": "AggregateExpr",
+    "Expr": {
+     "$t": "VectorSelector",
+     "Anchored": false,
+     "BypassEmptyMatcherCheck": false,
+     "LabelMatchers": [
+      {
+       "Name": "__name__",
+       "Type": 0,
+       "Value": "some_metric"
+      }
+     ],
+     "Name": "some_metric",
+     "Offset": 0,
+     "OriginalOffset": 0,
+     "OriginalOffsetExpr": null,
+     "PosRange": {
+      "$t": "PositionRange",
+      "End": 29,
+      "Start": 13
+     },
+     "SkipHistogramBuckets": false,
+     "Smoothed": false,
+     "StartOrEnd": 0,
+     "Timestamp": 10000,
+     "unquotedUTF8Names": false
+    },
+    "Grouping": [
+     "foo"
+    ],
+    "Op": 57416,
+    "Param": null,
+    "PosRange": {
+     "$t": "PositionRange",
+     "End": 30,
+     "Start": 0
+    },
+    "Without": false,
+    "unquotedUTF8Names": false
+   }
+  },
+  "input": "sum by (foo)(some_metric @ 10)",
+  "outputTest": false
+ },
+ {
+  "expected": {
+   "$t": "StepInvariantExpr",
+   "Expr": {
+    "$t": "BinaryExpr",
+    "LHS": {
+     "$t": "AggregateExpr",
+     "Expr": {
+      "$t": "VectorSelector",
+      "Anchored": false,
+      "BypassEmptyMatcherCheck": false,
+      "LabelMatchers": [
+       {
+        "Name": "__name__",
+        "Type": 0,
+        "Value": "some_metric1"
+       }
+      ],
+      "Name": "some_metric1",
+      "Offset": 0,
+      "OriginalOffset": 0,
+      "OriginalOffsetExpr": null,
+      "PosRange": {
+       "$t": "PositionRange",
+       "End": 21,
+       "Start": 4
+      },
+      "SkipHistogramBuckets": false,
+      "Smoothed": false,
+      "StartOrEnd": 0,
+      "Timestamp": 10000,
+      "unquotedUTF8Names": false
+     },
+     "Grouping": [],
+     "Op": 57416,
+     "Param": null,
+     "PosRange": {
+      "$t": "PositionRange",
+      "End": 22,
+      "Start": 0
+     },
+     "Without": false,
+     "unquotedUTF8Names": false
+    },
+    "Op": 57383,
+    "RHS": {
+     "$t": "AggregateExpr",
+     "Expr": {
+      "$t": "VectorSelector",
+      "Anchored": false,
+      "BypassEmptyMatcherCheck": false,
+      "LabelMatchers": [
+       {
+        "Name": "__name__",
+        "Type": 0,
+        "Value": "some_metric2"
+       }
+      ],
+      "Name": "some_metric2",
+      "Offset": 0,
+      "OriginalOffset": 0,
+      "OriginalOffsetExpr": null,
+      "PosRange": {
+       "$t": "PositionRange",
+       "End": 46,
+       "Start": 29
+      },
+      "SkipHistogramBuckets": false,
+      "Smoothed": false,
+      "StartOrEnd": 0,
+      "Timestamp": 20000,
+      "unquotedUTF8Names": false
+     },
+     "Grouping": [],
+     "Op": 57416,
+     "Param": null,
+     "PosRange": {
+      "$t": "PositionRange",
+      "End": 47,
+      "Start": 25
+     },
+     "Without": false,
+     "unquotedUTF8Names": false
+    },
+    "ReturnBool": false,
+    "VectorMatching": {
+     "$t": "VectorMatching",
+     "Card": 0,
+     "FillValues": {
+      "$t": "VectorMatchFillValues",
+      "LHS": null,
+      "RHS": null
+     },
+     "Include": [],
+     "MatchingLabels": [],
+     "On": false
+    },
+    "unquotedUTF8Names": false
+   }
+  },
+  "input": "sum(some_metric1 @ 10) + sum(some_metric2 @ 20)",
+  "outputTest": false
+ },
+ {
+  "expected": {
+   "$t": "BinaryExpr",
+   "LHS": {
+    "$t": "VectorSelector",
+    "Anchored": false,
+    "BypassEmptyMatcherCheck": false,
+    "LabelMatchers": [
+     {
+      "Name": "__name__",
+      "Type": 0,
+      "Value": "some_metric"
+     }
+    ],
+    "Name": "some_metric",
+    "Offset": 0,
+    "OriginalOffset": 0,
+    "OriginalOffsetExpr": null,
+    "PosRange": {
+     "$t": "PositionRange",
+     "End": 11,
+     "Start": 0
+    },
+    "SkipHistogramBuckets": false,
+    "Smoothed": false,
+    "StartOrEnd": 0,
+    "Timestamp": null,
+    "unquotedUTF8Names": false
+   },
+   "Op": 57391,
+   "RHS": {
+    "$t": "StepInvariantExpr",
+    "Expr": {
+     "$t": "AggregateExpr",
+     "Expr": {
+      "$t": "Call",
+      "Args": [
+       {
+        "$t": "MatrixSelector",
+        "EndPos": 49,
+        "Range": 60000000000,
+        "RangeExpr": null,
+        "VectorSelector": {
+         "$t": "VectorSelector",
+         "Anchored": false,
+         "BypassEmptyMatcherCheck": false,
+         "LabelMatchers": [
+          {
+           "Name": "__name__",
+           "Type": 0,
+           "Value": "some_metric"
+          }
+         ],
+         "Name": "some_metric",
+         "Offset": 0,
+         "OriginalOffset": 0,
+         "OriginalOffsetExpr": null,
+         "PosRange": {
+          "$t": "PositionRange",
+          "End": 40,
+          "Start": 29
+         },
+         "SkipHistogramBuckets": false,
+         "Smoothed": false,
+         "StartOrEnd": 0,
+         "Timestamp": 20000,
+         "unquotedUTF8Names": false
+        }
+       }
+      ],
+      "Func": {
+       "$t": "Function",
+       "ArgTypes": [
+        "matrix"
+       ],
+       "Experimental": false,
+       "Name": "rate",
+       "ReturnType": "vector",
+       "Variadic": 0
+      },
+      "PosRange": {
+       "$t": "PositionRange",
+       "End": 50,
+       "Start": 24
+      }
+     },
+     "Grouping": [],
+     "Op": 57417,
+     "Param": {
+      "$t": "NumberLiteral",
+      "Duration": false,
+      "PosRange": {
+       "$t": "PositionRange",
+       "End": 22,
+       "Start": 21
+      },
+      "Val": "5"
+     },
+     "PosRange": {
+      "$t": "PositionRange",
+      "End": 51,
+      "Start": 16
+     },
+     "Without": false,
+     "unquotedUTF8Names": false
+    }
+   },
+   "ReturnBool": false,
+   "VectorMatching": {
+    "$t": "VectorMatching",
+    "Card": 3,
+    "FillValues": {
+     "$t": "VectorMatchFillValues",
+     "LHS": null,
+     "RHS": null
+    },
+    "Include": [],
+    "MatchingLabels": [],
+    "On": false
+   },
+   "unquotedUTF8Names": false
+  },
+  "input": "some_metric and topk(5, rate(some_metric[1m] @ 20))",
+  "outputTest": false
+ },
+ {
+  "expected": {
+   "$t": "Call",
+   "Args": [],
+   "Func": {
+    "$t": "Function",
+    "ArgTypes": [],
+    "Experimental": false,
+    "Name": "time",
+    "ReturnType": "scalar",
+    "Variadic": 0
+   },
+   "PosRange": {
+    "$t": "PositionRange",
+    "End": 6,
+    "Start": 0
+   }
+  },
+  "input": "time()",
+  "outputTest": false
+ },
+ {
+  "expected": {
+   "$t": "SubqueryExpr",
+   "EndPos": 22,
+   "Expr": {
+    "$t": "VectorSelector",
+    "Anchored": false,
+    "BypassEmptyMatcherCheck": false,
+    "LabelMatchers": [
+     {
+      "Name": "bar",
+      "Type": 0,
+      "Value": "baz"
+     },
+     {
+      "Name": "__name__",
+      "Type": 0,
+      "Value": "foo"
+     }
+    ],
+    "Name": "foo",
+    "Offset": 0,
+    "OriginalOffset": 0,
+    "OriginalOffsetExpr": null,
+    "PosRange": {
+     "$t": "PositionRange",
+     "End": 14,
+     "Start": 0
+    },
+    "SkipHistogramBuckets": false,
+    "Smoothed": false,
+    "StartOrEnd": 0,
+    "Timestamp": null,
+    "unquotedUTF8Names": false
+   },
+   "Offset": 0,
+   "OriginalOffset": 0,
+   "OriginalOffsetExpr": null,
+   "Range": 600000000000,
+   "RangeExpr": null,
+   "StartOrEnd": 0,
+   "Step": 6000000000,
+   "StepExpr": null,
+   "Timestamp": null
+  },
+  "input": "foo{bar=\"baz\"}[10m:6s]",
+  "outputTest": false
+ },
+ {
+  "expected": {
+   "$t": "SubqueryExpr",
+   "EndPos": 27,
+   "Expr": {
+    "$t": "VectorSelector",
+    "Anchored": false,
+    "BypassEmptyMatcherCheck": false,
+    "LabelMatchers": [
+     {
+      "Name": "bar",
+      "Type": 0,
+      "Value": "baz"
+     },
+     {
+      "Name": "__name__",
+      "Type": 0,
+      "Value": "foo"
+     }
+    ],
+    "Name": "foo",
+    "Offset": 0,
+    "OriginalOffset": 0,
+    "OriginalOffsetExpr": null,
+    "PosRange": {
+     "$t": "PositionRange",
+     "End": 14,
+     "Start": 0
+    },
+    "SkipHistogramBuckets": false,
+    "Smoothed": false,
+    "StartOrEnd": 0,
+    "Timestamp": null,
+    "unquotedUTF8Names": false
+   },
+   "Offset": 0,
+   "OriginalOffset": 0,
+   "OriginalOffsetExpr": null,
+   "Range": 600000000000,
+   "RangeExpr": null,
+   "StartOrEnd": 0,
+   "Step": 6000000000,
+   "StepExpr": null,
+   "Timestamp": 10000
+  },
+  "input": "foo{bar=\"baz\"}[10m:6s] @ 10",
+  "outputTest": false
+ },
+ {
+  "expected": {
+   "$t": "SubqueryExpr",
+   "EndPos": 37,
+   "Expr": {
+    "$t": "StepInvariantExpr",
+    "Expr": {
+     "$t": "AggregateExpr",
+     "Expr": {
+      "$t": "VectorSelector",
+      "Anchored": false,
+      "BypassEmptyMatcherCheck": false,
+      "LabelMatchers": [
+       {
+        "Name": "bar",
+        "Type": 0,
+        "Value": "baz"
+       },
+       {
+        "Name": "__name__",
+        "Type": 0,
+        "Value": "foo"
+       }
+      ],
+      "Name": "foo",
+      "Offset": 0,
+      "OriginalOffset": 0,
+      "OriginalOffsetExpr": null,
+      "PosRange": {
+       "$t": "PositionRange",
+       "End": 23,
+       "Start": 4
+      },
+      "SkipHistogramBuckets": false,
+      "Smoothed": false,
+      "StartOrEnd": 0,
+      "Timestamp": 20000,
+      "unquotedUTF8Names": false
+     },
+     "Grouping": [],
+     "Op": 57416,
+     "Param": null,
+     "PosRange": {
+      "$t": "PositionRange",
+      "End": 24,
+      "Start": 0
+     },
+     "Without": false,
+     "unquotedUTF8Names": false
+    }
+   },
+   "Offset": 0,
+   "OriginalOffset": 0,
+   "OriginalOffsetExpr": null,
+   "Range": 600000000000,
+   "RangeExpr": null,
+   "StartOrEnd": 0,
+   "Step": 6000000000,
+   "StepExpr": null,
+   "Timestamp": 10000
+  },
+  "input": "sum(foo{bar=\"baz\"} @ 20)[10m:6s] @ 10",
+  "outputTest": false
+ },
+ {
+  "expected": {
+   "$t": "SubqueryExpr",
+   "EndPos": 64,
+   "Expr": {
+    "$t": "StepInvariantExpr",
+    "Expr": {
+     "$t": "Call",
+     "Args": [
+      {
+       "$t": "SubqueryExpr",
+       "EndPos": 56,
+       "Expr": {
+        "$t": "Call",
+        "Args": [
+         {
+          "$t": "MatrixSelector",
+          "EndPos": 37,
+          "Range": 2000000000,
+          "RangeExpr": null,
+          "VectorSelector": {
+           "$t": "VectorSelector",
+           "Anchored": false,
+           "BypassEmptyMatcherCheck": false,
+           "LabelMatchers": [
+            {
+             "Name": "bar",
+             "Type": 0,
+             "Value": "baz"
+            },
+            {
+             "Name": "__name__",
+             "Type": 0,
+             "Value": "foo"
+            }
+           ],
+           "Name": "foo",
+           "Offset": 0,
+           "OriginalOffset": 0,
+           "OriginalOffsetExpr": null,
+           "PosRange": {
+            "$t": "PositionRange",
+            "End": 33,
+            "Start": 19
+           },
+           "SkipHistogramBuckets": false,
+           "Smoothed": false,
+           "StartOrEnd": 0,
+           "Timestamp": null,
+           "unquotedUTF8Names": false
+          }
+         }
+        ],
+        "Func": {
+         "$t": "Function",
+         "ArgTypes": [
+          "matrix"
+         ],
+         "Experimental": false,
+         "Name": "rate",
+         "ReturnType": "vector",
+         "Variadic": 0
+        },
+        "PosRange": {
+         "$t": "PositionRange",
+         "End": 38,
+         "Start": 14
+        }
+       },
+       "Offset": 0,
+       "OriginalOffset": 0,
+       "OriginalOffsetExpr": null,
+       "Range": 300000000000,
+       "RangeExpr": null,
+       "StartOrEnd": 0,
+       "Step": 0,
+       "StepExpr": null,
+       "Timestamp": 1603775091000
+      }
+     ],
+     "Func": {
+      "$t": "Function",
+      "ArgTypes": [
+       "matrix"
+      ],
+      "Experimental": false,
+      "Name": "min_over_time",
+      "ReturnType": "vector",
+      "Variadic": 0
+     },
+     "PosRange": {
+      "$t": "PositionRange",
+      "End": 57,
+      "Start": 0
+     }
+    }
+   },
+   "Offset": 0,
+   "OriginalOffset": 0,
+   "OriginalOffsetExpr": null,
+   "Range": 240000000000,
+   "RangeExpr": null,
+   "StartOrEnd": 0,
+   "Step": 3000000000,
+   "StepExpr": null,
+   "Timestamp": null
+  },
+  "input": "min_over_time(rate(foo{bar=\"baz\"}[2s])[5m:] @ 1603775091)[4m:3s]",
+  "outputTest": false
+ },
+ {
+  "expected": {
+   "$t": "SubqueryExpr",
+   "EndPos": 36,
+   "Expr": {
+    "$t": "StepInvariantExpr",
+    "Expr": {
+     "$t": "VectorSelector",
+     "Anchored": false,
+     "BypassEmptyMatcherCheck": false,
+     "LabelMatchers": [
+      {
+       "Name": "__name__",
+       "Type": 0,
+       "Value": "some_metric"
+      }
+     ],
+     "Name": "some_metric",
+     "Offset": 0,
+     "OriginalOffset": 60000000000,
+     "OriginalOffsetExpr": null,
+     "PosRange": {
+      "$t": "PositionRange",
+      "End": 27,
+      "Start": 0
+     },
+     "SkipHistogramBuckets": false,
+     "Smoothed": false,
+     "StartOrEnd": 0,
+     "Timestamp": 123000,
+     "unquotedUTF8Names": false
+    }
+   },
+   "Offset": 0,
+   "OriginalOffset": 0,
+   "OriginalOffsetExpr": null,
+   "Range": 600000000000,
+   "RangeExpr": null,
+   "StartOrEnd": 0,
+   "Step": 5000000000,
+   "StepExpr": null,
+   "Timestamp": null
+  },
+  "input": "some_metric @ 123 offset 1m [10m:5s]",
+  "outputTest": false
+ },
+ {
+  "expected": {
+   "$t": "SubqueryExpr",
+   "EndPos": 35,
+   "Expr": {
+    "$t": "VectorSelector",
+    "Anchored": false,
+    "BypassEmptyMatcherCheck": false,
+    "LabelMatchers": [
+     {
+      "Name": "__name__",
+      "Type": 0,
+      "Value": "some_metric"
+     }
+    ],
+    "Name": "some_metric",
+    "Offset": 0,
+    "OriginalOffset": 0,
+    "OriginalOffsetExpr": null,
+    "PosRange": {
+     "$t": "PositionRange",
+     "End": 11,
+     "Start": 0
+    },
+    "SkipHistogramBuckets": false,
+    "Smoothed": false,
+    "StartOrEnd": 0,
+    "Timestamp": null,
+    "unquotedUTF8Names": false
+   },
+   "Offset": 0,
+   "OriginalOffset": 60000000000,
+   "OriginalOffsetExpr": null,
+   "Range": 600000000000,
+   "RangeExpr": null,
+   "StartOrEnd": 0,
+   "Step": 5000000000,
+   "StepExpr": null,
+   "Timestamp": 123000
+  },
+  "input": "some_metric[10m:5s] offset 1m @ 123",
+  "outputTest": false
+ },
+ {
+  "expected": {
+   "$t": "SubqueryExpr",
+   "EndPos": 46,
+   "Expr": {
+    "$t": "ParenExpr",
+    "Expr": {
+     "$t": "BinaryExpr",
+     "LHS": {
+      "$t": "VectorSelector",
+      "Anchored": false,
+      "BypassEmptyMatcherCheck": false,
+      "LabelMatchers": [
+       {
+        "Name": "__name__",
+        "Type": 0,
+        "Value": "foo"
+       }
+      ],
+      "Name": "foo",
+      "Offset": 0,
+      "OriginalOffset": 0,
+      "OriginalOffsetExpr": null,
+      "PosRange": {
+       "$t": "PositionRange",
+       "End": 4,
+       "Start": 1
+      },
+      "SkipHistogramBuckets": false,
+      "Smoothed": false,
+      "StartOrEnd": 0,
+      "Timestamp": null,
+      "unquotedUTF8Names": false
+     },
+     "Op": 57383,
+     "RHS": {
+      "$t": "StepInvariantExpr",
+      "Expr": {
+       "$t": "VectorSelector",
+       "Anchored": false,
+       "BypassEmptyMatcherCheck": false,
+       "LabelMatchers": [
+        {
+         "Name": "nm",
+         "Type": 0,
+         "Value": "val"
+        },
+        {
+         "Name": "__name__",
+         "Type": 0,
+         "Value": "bar"
+        }
+       ],
+       "Name": "bar",
+       "Offset": 0,
+       "OriginalOffset": 0,
+       "OriginalOffsetExpr": null,
+       "PosRange": {
+        "$t": "PositionRange",
+        "End": 27,
+        "Start": 7
+       },
+       "SkipHistogramBuckets": false,
+       "Smoothed": false,
+       "StartOrEnd": 0,
+       "Timestamp": 1234000,
+       "unquotedUTF8Names": false
+      }
+     },
+     "ReturnBool": false,
+     "VectorMatching": {
+      "$t": "VectorMatching",
+      "Card": 0,
+      "FillValues": {
+       "$t": "VectorMatchFillValues",
+       "LHS": null,
+       "RHS": null
+      },
+      "Include": [],
+      "MatchingLabels": [],
+      "On": false
+     },
+     "unquotedUTF8Names": false
+    },
+    "PosRange": {
+     "$t": "PositionRange",
+     "End": 28,
+     "Start": 0
+    }
+   },
+   "Offset": 0,
+   "OriginalOffset": 0,
+   "OriginalOffsetExpr": null,
+   "Range": 300000000000,
+   "RangeExpr": null,
+   "StartOrEnd": 0,
+   "Step": 0,
+   "StepExpr": null,
+   "Timestamp": 1603775019000
+  },
+  "input": "(foo + bar{nm=\"val\"} @ 1234)[5m:] @ 1603775019",
+  "outputTest": false
+ },
+ {
+  "expected": {
+   "$t": "StepInvariantExpr",
+   "Expr": {
+    "$t": "Call",
+    "Args": [
+     {
+      "$t": "Call",
+      "Args": [
+       {
+        "$t": "VectorSelector",
+        "Anchored": false,
+        "BypassEmptyMatcherCheck": false,
+        "LabelMatchers": [
+         {
+          "Name": "__name__",
+          "Type": 0,
+          "Value": "metric"
+         }
+        ],
+        "Name": "metric",
+        "Offset": 0,
+        "OriginalOffset": 0,
+        "OriginalOffsetExpr": null,
+        "PosRange": {
+         "$t": "PositionRange",
+         "End": 19,
+         "Start": 8
+        },
+        "SkipHistogramBuckets": false,
+        "Smoothed": false,
+        "StartOrEnd": 0,
+        "Timestamp": 10000,
+        "unquotedUTF8Names": false
+       }
+      ],
+      "Func": {
+       "$t": "Function",
+       "ArgTypes": [
+        "vector"
+       ],
+       "Experimental": false,
+       "Name": "abs",
+       "ReturnType": "vector",
+       "Variadic": 0
+      },
+      "PosRange": {
+       "$t": "PositionRange",
+       "End": 20,
+       "Start": 4
+      }
+     }
+    ],
+    "Func": {
+     "$t": "Function",
+     "ArgTypes": [
+      "vector"
+     ],
+     "Experimental": false,
+     "Name": "abs",
+     "ReturnType": "vector",
+     "Variadic": 0
+    },
+    "PosRange": {
+     "$t": "PositionRange",
+     "End": 21,
+     "Start": 0
+    }
+   }
+  },
+  "input": "abs(abs(metric @ 10))",
+  "outputTest": false
+ },
+ {
+  "expected": {
+   "$t": "StepInvariantExpr",
+   "Expr": {
+    "$t": "AggregateExpr",
+    "Expr": {
+     "$t": "BinaryExpr",
+     "LHS": {
+      "$t": "AggregateExpr",
+      "Expr": {
+       "$t": "VectorSelector",
+       "Anchored": false,
+       "BypassEmptyMatcherCheck": false,
+       "LabelMatchers": [
+        {
+         "Name": "__name__",
+         "Type": 0,
+         "Value": "some_metric1"
+        }
+       ],
+       "Name": "some_metric1",
+       "Offset": 0,
+       "OriginalOffset": 0,
+       "OriginalOffsetExpr": null,
+       "PosRange": {
+        "$t": "PositionRange",
+        "End": 25,
+        "Start": 8
+       },
+       "SkipHistogramBuckets": false,
+       "Smoothed": false,
+       "StartOrEnd": 0,
+       "Timestamp": 10000,
+       "unquotedUTF8Names": false
+      },
+      "Grouping": [],
+      "Op": 57416,
+      "Param": null,
+      "PosRange": {
+       "$t": "PositionRange",
+       "End": 26,
+       "Start": 4
+      },
+      "Without": false,
+      "unquotedUTF8Names": false
+     },
+     "Op": 57383,
+     "RHS": {
+      "$t": "AggregateExpr",
+      "Expr": {
+       "$t": "VectorSelector",
+       "Anchored": false,
+       "BypassEmptyMatcherCheck": false,
+       "LabelMatchers": [
+        {
+         "Name": "__name__",
+         "Type": 0,
+         "Value": "some_metric2"
+        }
+       ],
+       "Name": "some_metric2",
+       "Offset": 0,
+       "OriginalOffset": 0,
+       "OriginalOffsetExpr": null,
+       "PosRange": {
+        "$t": "PositionRange",
+        "End": 50,
+        "Start": 33
+       },
+       "SkipHistogramBuckets": false,
+       "Smoothed": false,
+       "StartOrEnd": 0,
+       "Timestamp": 20000,
+       "unquotedUTF8Names": false
+      },
+      "Grouping": [],
+      "Op": 57416,
+      "Param": null,
+      "PosRange": {
+       "$t": "PositionRange",
+       "End": 51,
+       "Start": 29
+      },
+      "Without": false,
+      "unquotedUTF8Names": false
+     },
+     "ReturnBool": false,
+     "VectorMatching": {
+      "$t": "VectorMatching",
+      "Card": 0,
+      "FillValues": {
+       "$t": "VectorMatchFillValues",
+       "LHS": null,
+       "RHS": null
+      },
+      "Include": [],
+      "MatchingLabels": [],
+      "On": false
+     },
+     "unquotedUTF8Names": false
+    },
+    "Grouping": [],
+    "Op": 57416,
+    "Param": null,
+    "PosRange": {
+     "$t": "PositionRange",
+     "End": 52,
+     "Start": 0
+    },
+    "Without": false,
+    "unquotedUTF8Names": false
+   }
+  },
+  "input": "sum(sum(some_metric1 @ 10) + sum(some_metric2 @ 20))",
+  "outputTest": false
+ },
+ {
+  "expected": {
+   "$t": "StepInvariantExpr",
+   "Expr": {
+    "$t": "VectorSelector",
+    "Anchored": false,
+    "BypassEmptyMatcherCheck": false,
+    "LabelMatchers": [
+     {
+      "Name": "__name__",
+      "Type": 0,
+      "Value": "foo"
+     }
+    ],
+    "Name": "foo",
+    "Offset": 0,
+    "OriginalOffset": 0,
+    "OriginalOffsetExpr": null,
+    "PosRange": {
+     "$t": "PositionRange",
+     "End": 13,
+     "Start": 0
+    },
+    "SkipHistogramBuckets": false,
+    "Smoothed": false,
+    "StartOrEnd": 57437,
+    "Timestamp": 1000000,
+    "unquotedUTF8Names": false
+   }
+  },
+  "input": "foo @ start()",
+  "outputTest": false
+ },
+ {
+  "expected": {
+   "$t": "StepInvariantExpr",
+   "Expr": {
+    "$t": "VectorSelector",
+    "Anchored": false,
+    "BypassEmptyMatcherCheck": false,
+    "LabelMatchers": [
+     {
+      "Name": "__name__",
+      "Type": 0,
+      "Value": "foo"
+     }
+    ],
+    "Name": "foo",
+    "Offset": 0,
+    "OriginalOffset": 0,
+    "OriginalOffsetExpr": null,
+    "PosRange": {
+     "$t": "PositionRange",
+     "End": 11,
+     "Start": 0
+    },
+    "SkipHistogramBuckets": false,
+    "Smoothed": false,
+    "StartOrEnd": 57438,
+    "Timestamp": 9999000,
+    "unquotedUTF8Names": false
+   }
+  },
+  "input": "foo @ end()",
+  "outputTest": false
+ },
+ {
+  "expected": {
+   "$t": "StepInvariantExpr",
+   "Expr": {
+    "$t": "Call",
+    "Args": [
+     {
+      "$t": "MatrixSelector",
+      "EndPos": 32,
+      "Range": 157680000000000000,
+      "RangeExpr": null,
+      "VectorSelector": {
+       "$t": "VectorSelector",
+       "Anchored": false,
+       "BypassEmptyMatcherCheck": false,
+       "LabelMatchers": [
+        {
+         "Name": "__name__",
+         "Type": 0,
+         "Value": "test"
+        }
+       ],
+       "Name": "test",
+       "Offset": 0,
+       "OriginalOffset": 0,
+       "OriginalOffsetExpr": null,
+       "PosRange": {
+        "$t": "PositionRange",
+        "End": 18,
+        "Start": 14
+       },
+       "SkipHistogramBuckets": false,
+       "Smoothed": false,
+       "StartOrEnd": 57437,
+       "Timestamp": 1000000,
+       "unquotedUTF8Names": false
+      }
+     }
+    ],
+    "Func": {
+     "$t": "Function",
+     "ArgTypes": [
+      "matrix"
+     ],
+     "Experimental": false,
+     "Name": "sum_over_time",
+     "ReturnType": "vector",
+     "Variadic": 0
+    },
+    "PosRange": {
+     "$t": "PositionRange",
+     "End": 33,
+     "Start": 0
+    }
+   }
+  },
+  "input": "sum_over_time(test[5y] @ start())",
+  "outputTest": false
+ },
+ {
+  "expected": {
+   "$t": "MatrixSelector",
+   "EndPos": 16,
+   "Range": 157680000000000000,
+   "RangeExpr": null,
+   "VectorSelector": {
+    "$t": "VectorSelector",
+    "Anchored": false,
+    "BypassEmptyMatcherCheck": false,
+    "LabelMatchers": [
+     {
+      "Name": "__name__",
+      "Type": 0,
+      "Value": "test"
+     }
+    ],
+    "Name": "test",
+    "Offset": 0,
+    "OriginalOffset": 0,
+    "OriginalOffsetExpr": null,
+    "PosRange": {
+     "$t": "PositionRange",
+     "End": 4,
+     "Start": 0
+    },
+    "SkipHistogramBuckets": false,
+    "Smoothed": false,
+    "StartOrEnd": 57438,
+    "Timestamp": 9999000,
+    "unquotedUTF8Names": false
+   }
+  },
+  "input": "test[5y] @ end()",
+  "outputTest": false
+ },
+ {
+  "expected": {
+   "$t": "SubqueryExpr",
+   "EndPos": 29,
+   "Expr": {
+    "$t": "VectorSelector",
+    "Anchored": false,
+    "BypassEmptyMatcherCheck": false,
+    "LabelMatchers": [
+     {
+      "Name": "__name__",
+      "Type": 0,
+      "Value": "some_metric"
+     }
+    ],
+    "Name": "some_metric",
+    "Offset": 0,
+    "OriginalOffset": 0,
+    "OriginalOffsetExpr": null,
+    "PosRange": {
+     "$t": "PositionRange",
+     "End": 11,
+     "Start": 0
+    },
+    "SkipHistogramBuckets": false,
+    "Smoothed": false,
+    "StartOrEnd": 0,
+    "Timestamp": null,
+    "unquotedUTF8Names": false
+   },
+   "Offset": 0,
+   "OriginalOffset": 0,
+   "OriginalOffsetExpr": null,
+   "Range": 600000000000,
+   "RangeExpr": null,
+   "StartOrEnd": 57437,
+   "Step": 5000000000,
+   "StepExpr": null,
+   "Timestamp": 1000000
+  },
+  "input": "some_metric[10m:5s] @ start()",
+  "outputTest": false
+ },
+ {
+  "expected": {
+   "$t": "SubqueryExpr",
+   "EndPos": 27,
+   "Expr": {
+    "$t": "VectorSelector",
+    "Anchored": false,
+    "BypassEmptyMatcherCheck": false,
+    "LabelMatchers": [
+     {
+      "Name": "__name__",
+      "Type": 0,
+      "Value": "some_metric"
+     }
+    ],
+    "Name": "some_metric",
+    "Offset": 0,
+    "OriginalOffset": 0,
+    "OriginalOffsetExpr": null,
+    "PosRange": {
+     "$t": "PositionRange",
+     "End": 11,
+     "Start": 0
+    },
+    "SkipHistogramBuckets": false,
+    "Smoothed": false,
+    "StartOrEnd": 0,
+    "Timestamp": null,
+    "unquotedUTF8Names": false
+   },
+   "Offset": 0,
+   "OriginalOffset": 0,
+   "OriginalOffsetExpr": null,
+   "Range": 600000000000,
+   "RangeExpr": null,
+   "StartOrEnd": 57438,
+   "Step": 5000000000,
+   "StepExpr": null,
+   "Timestamp": 9999000
+  },
+  "input": "some_metric[10m:5s] @ end()",
+  "outputTest": false
+ },
+ {
+  "expected": {
+   "$t": "Call",
+   "Args": [
+    {
+     "$t": "BinaryExpr",
+     "LHS": {
+      "$t": "VectorSelector",
+      "Anchored": false,
+      "BypassEmptyMatcherCheck": false,
+      "LabelMatchers": [
+       {
+        "Name": "__name__",
+        "Type": 0,
+        "Value": "some_metric"
+       }
+      ],
+      "Name": "some_metric",
+      "Offset": 0,
+      "OriginalOffset": 0,
+      "OriginalOffsetExpr": null,
+      "PosRange": {
+       "$t": "PositionRange",
+       "End": 17,
+       "Start": 6
+      },
+      "SkipHistogramBuckets": false,
+      "Smoothed": false,
+      "StartOrEnd": 0,
+      "Timestamp": null,
+      "unquotedUTF8Names": false
+     },
+     "Op": 57384,
+     "RHS": {
+      "$t": "StepInvariantExpr",
+      "Expr": {
+       "$t": "ParenExpr",
+       "Expr": {
+        "$t": "BinaryExpr",
+        "LHS": {
+         "$t": "NumberLiteral",
+         "Duration": false,
+         "PosRange": {
+          "$t": "PositionRange",
+          "End": 22,
+          "Start": 21
+         },
+         "Val": "3"
+        },
+        "Op": 57397,
+        "RHS": {
+         "$t": "NumberLiteral",
+         "Duration": false,
+         "PosRange": {
+          "$t": "PositionRange",
+          "End": 29,
+          "Start": 25
+         },
+         "Val": "1024"
+        },
+        "ReturnBool": false,
+        "VectorMatching": null,
+        "unquotedUTF8Names": false
+       },
+       "PosRange": {
+        "$t": "PositionRange",
+        "End": 30,
+        "Start": 20
+       }
+      }
+     },
+     "ReturnBool": false,
+     "VectorMatching": null,
+     "unquotedUTF8Names": false
+    }
+   ],
+   "Func": {
+    "$t": "Function",
+    "ArgTypes": [
+     "vector"
+    ],
+    "Experimental": false,
+    "Name": "floor",
+    "ReturnType": "vector",
+    "Variadic": 0
+   },
+   "PosRange": {
+    "$t": "PositionRange",
+    "End": 31,
+    "Start": 0
+   }
+  },
+  "input": "floor(some_metric / (3 * 1024))",
+  "outputTest": true
+ },
+ {
+  "expected": {
+   "$t": "StepInvariantExpr",
+   "Expr": {
+    "$t": "Call",
+    "Args": [
+     {
+      "$t": "VectorSelector",
+      "Anchored": false,
+      "BypassEmptyMatcherCheck": false,
+      "LabelMatchers": [
+       {
+        "Name": "__name__",
+        "Type": 0,
+        "Value": "metric"
+       }
+      ],
+      "Name": "metric",
+      "Offset": 0,
+      "OriginalOffset": 0,
+      "OriginalOffsetExpr": null,
+      "PosRange": {
+       "$t": "PositionRange",
+       "End": 21,
+       "Start": 10
+      },
+      "SkipHistogramBuckets": true,
+      "Smoothed": false,
+      "StartOrEnd": 0,
+      "Timestamp": 10000,
+      "unquotedUTF8Names": false
+     }
+    ],
+    "Func": {
+     "$t": "Function",
+     "ArgTypes": [
+      "vector"
+     ],
+     "Experimental": false,
+     "Name": "timestamp",
+     "ReturnType": "vector",
+     "Variadic": 0
+    },
+    "PosRange": {
+     "$t": "PositionRange",
+     "End": 22,
+     "Start": 0
+    }
+   }
+  },
+  "input": "timestamp(metric @ 10)",
+  "outputTest": false
+ },
+ {
+  "expected": {
+   "$t": "Call",
+   "Args": [
+    {
+     "$t": "StepInvariantExpr",
+     "Expr": {
+      "$t": "Call",
+      "Args": [
+       {
+        "$t": "VectorSelector",
+        "Anchored": false,
+        "BypassEmptyMatcherCheck": false,
+        "LabelMatchers": [
+         {
+          "Name": "__name__",
+          "Type": 0,
+          "Value": "metric"
+         }
+        ],
+        "Name": "metric",
+        "Offset": 0,
+        "OriginalOffset": 0,
+        "OriginalOffsetExpr": null,
+        "PosRange": {
+         "$t": "PositionRange",
+         "End": 25,
+         "Start": 14
+        },
+        "SkipHistogramBuckets": true,
+        "Smoothed": false,
+        "StartOrEnd": 0,
+        "Timestamp": 10000,
+        "unquotedUTF8Names": false
+       }
+      ],
+      "Func": {
+       "$t": "Function",
+       "ArgTypes": [
+        "vector"
+       ],
+       "Experimental": false,
+       "Name": "abs",
+       "ReturnType": "vector",
+       "Variadic": 0
+      },
+      "PosRange": {
+       "$t": "PositionRange",
+       "End": 26,
+       "Start": 10
+      }
+     }
+    }
+   ],
+   "Func": {
+    "$t": "Function",
+    "ArgTypes": [
+     "vector"
+    ],
+    "Experimental": false,
+    "Name": "timestamp",
+    "ReturnType": "vector",
+    "Variadic": 0
+   },
+   "PosRange": {
+    "$t": "PositionRange",
+    "End": 27,
+    "Start": 0
+   }
+  },
+  "input": "timestamp(abs(metric @ 10))",
+  "outputTest": false
+ }
+]

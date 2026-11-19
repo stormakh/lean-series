@@ -1235,9 +1235,11 @@ impl<'a, 'o> YyParser<'a, 'o> {
             // string_literal: STRING
             281 => {
                 let it = item(&mut v[0]);
+                let invalid_utf8 = super::quote::unquote_invalid_bytes(&it.val);
                 let val = self.unquote_string(&it.val);
                 Sym::Node(Node::Expr(Expr::StringLiteral(Box::new(StringLiteral {
                     val,
+                    invalid_utf8,
                     pos_range: it.position_range(),
                 }))))
             }

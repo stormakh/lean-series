@@ -48,6 +48,34 @@ pub const ERR_SYNTAX: &str = "invalid syntax";
 /// Go strings may hold any bytes; a Rust `String` holds UTF-8. Escapes such as `\xff` that produce invalid
 /// UTF-8 are replaced with U+FFFD (as `String::from_utf8_lossy` does).
 pub fn unquote(s: &str) -> Result<String, &'static str> {
+    unquote_checked(s).map(|(s, _)| s)
+}
+
+/// Go `strconv.Quote` of a byte string that may not be valid UTF-8 (invalid bytes become `\xNN`).
+pub fn go_quote_bytes(b: &[u8]) -> String {
+    let mut out = String::from("\"");
+    for chunk in b.utf8_chunks() {
+        let q = go_quote(chunk.valid());
+        out.push_str(&q[1..q.len() - 1]);
+        for &x in chunk.invalid() {
+            out.push_str(&format!("\\x{:02x}", x));
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// The bytes of a quoted Go string literal that is not valid UTF-8, or `None` when it is valid.
+pub fn unquote_invalid_bytes(s: &str) -> Option<Vec<u8>> {
+    match unquote_raw(s) {
+        Ok(b) if std::str::from_utf8(&b).is_err() => Some(b),
+        _ => None,
+    }
+}
+
+/// Like [`unquote`], also telling whether the Go string would not be valid UTF-8 (the result then holds
+/// U+FFFD in place of the invalid bytes).
+pub fn unquote_checked(s: &str) -> Result<(String, bool), &'static str> {
     let b = s.as_bytes();
     let n = b.len();
     if n < 2 {
@@ -62,7 +90,7 @@ pub fn unquote(s: &str) -> Result<String, &'static str> {
         if inner.contains('`') {
             return Err(ERR_SYNTAX);
         }
-        return Ok(inner.to_string());
+        return Ok((inner.to_string(), false));
     }
     if quote != b'"' && quote != b'\'' {
         return Err(ERR_SYNTAX);
@@ -71,7 +99,7 @@ pub fn unquote(s: &str) -> Result<String, &'static str> {
         return Err(ERR_SYNTAX);
     }
     if !inner.contains('\\') && !inner.as_bytes().contains(&quote) {
-        return Ok(inner.to_string());
+        return Ok((inner.to_string(), false));
     }
 
     let mut buf: Vec<u8> = Vec::with_capacity(3 * inner.len() / 2);
@@ -88,9 +116,32 @@ pub fn unquote(s: &str) -> Result<String, &'static str> {
         }
     }
     match String::from_utf8(buf) {
-        Ok(s) => Ok(s),
-        Err(e) => Ok(String::from_utf8_lossy(e.as_bytes()).into_owned()),
+        Ok(s) => Ok((s, false)),
+        Err(e) => Ok((String::from_utf8_lossy(e.as_bytes()).into_owned(), true)),
     }
+}
+
+/// The bytes of an escaped quoted string (no backquotes).
+fn unquote_raw(s: &str) -> Result<Vec<u8>, &'static str> {
+    let b = s.as_bytes();
+    let n = b.len();
+    if n < 2 || (b[0] != b'"' && b[0] != b'\'') || b[0] != b[n - 1] {
+        return Err(ERR_SYNTAX);
+    }
+    let quote = b[0];
+    let mut buf: Vec<u8> = Vec::new();
+    let mut rest = &b[1..n - 1];
+    while !rest.is_empty() {
+        let (c, multibyte, tail) = unquote_char(rest, quote)?;
+        rest = tail;
+        if c < 0x80 || !multibyte {
+            buf.push(c as u8);
+        } else {
+            let ch = char::from_u32(c).unwrap_or('\u{FFFD}');
+            buf.extend_from_slice(ch.encode_utf8(&mut [0u8; 4]).as_bytes());
+        }
+    }
+    Ok(buf)
 }
 
 fn unhex(b: u8) -> Option<u32> {

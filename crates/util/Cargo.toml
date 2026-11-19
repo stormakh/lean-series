@@ -7,4 +7,7 @@ license.workspace = true
 [dependencies]
 storage = { path = "../storage" }
 model = { path = "../model" }
+json = { path = "../json" }
 
+[dev-dependencies]
+regex = "1.13"

@@ -139,6 +139,8 @@ pub struct ParenExpr {
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct StringLiteral {
     pub val: String,
+    /// The Go string bytes when they are not valid UTF-8 (`val` then holds U+FFFD for the invalid bytes).
+    pub invalid_utf8: Option<Vec<u8>>,
     pub pos_range: PositionRange,
 }
 
