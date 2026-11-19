@@ -91,3 +91,9 @@ pub fn relabel_alerts(relabel_configs: &[relabel::Config], external_labels: &Lab
     }
     out
 }
+
+impl AsRef<Alert> for Alert {
+    fn as_ref(&self) -> &Alert {
+        self
+    }
+}

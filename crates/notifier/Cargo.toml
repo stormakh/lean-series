@@ -10,6 +10,7 @@ config = { path = "../config" }
 discovery = { path = "../discovery" }
 net = { path = "../net" }
 json = { path = "../json" }
+yaml = { path = "../yaml" }
 
 [dev-dependencies]
 http = { path = "../http" }
