@@ -11,7 +11,10 @@ use model::labels::{self, Label, Labels, ValidationScheme};
 use model::matcher::{MatchType, Matcher};
 use model::value::{is_stale_nan, STALE_NAN};
 use promql::parser::{Expr, Options, Parser};
-use promql::promqltest::{self, TestStorage};
+use promql::promqltest;
+use tsdb::db::DB;
+
+mod common;
 use promql::{Engine, EngineOpts, QueryResult, Sample, Value, Vector};
 use rules::group::is_independent;
 use rules::log::Logger;
@@ -22,7 +25,7 @@ use rules::{
     ManagerOptions, NotifyFunc, QueryEngine, QueryFunc, RecordingRule, Rule, RuleHealth, RuleRef,
     SequentialRuleEvalController, Time,
 };
-use storage::{AppendV2Options, AppendableV2, AppenderTransaction as _, AppenderV2 as _, BoxSeriesSet, Context, Error, Queryable};
+use storage::{AppendV2Options, AppendableV2, BoxSeriesSet, Context, Error, Queryable};
 
 // ---------------- helpers ----------------
 
@@ -86,7 +89,7 @@ fn small_engine() -> Arc<Engine> {
     }))
 }
 
-fn query_func(engine: &Arc<Engine>, st: &Arc<TestStorage>) -> QueryFunc {
+fn query_func(engine: &Arc<Engine>, st: &Arc<DB>) -> QueryFunc {
     let q: Arc<dyn Queryable> = st.clone();
     engine_query_func(engine.clone(), q)
 }
@@ -236,16 +239,12 @@ fn alerting_rule_results(name: &str) -> Vec<Sample> {
 
 #[test]
 fn test_alerting_rule() {
-    let storage = Arc::new(
-        promqltest::loaded_storage(
-            r#"
+    let storage_owner = common::loaded_storage(r#"
 		load 5m
 			http_requests{job="app-server", instance="0", group="canary", severity="overwrite-me"}	75 85  95 105 105  95  85
 			http_requests{job="app-server", instance="1", group="canary", severity="overwrite-me"}	80 90 100 110 120 130 140
-	"#,
-        )
-        .unwrap(),
-    );
+	"#);
+    let storage = storage_owner.db.clone();
 
     let expr = parse(r#"http_requests{group="canary", job="app-server"} < 100"#);
 
@@ -311,16 +310,12 @@ fn test_alerting_rule() {
 #[test]
 fn test_for_state_add_samples() {
     for query_offset in [Duration::ZERO, Duration::from_secs(60)] {
-        let storage = Arc::new(
-            promqltest::loaded_storage(
-                r#"
+        let storage_owner = common::loaded_storage(r#"
 		load 5m
 			http_requests{job="app-server", instance="0", group="canary", severity="overwrite-me"}	75 85  95 105 105  95  85
 			http_requests{job="app-server", instance="1", group="canary", severity="overwrite-me"}	80 90 100 110 120 130 140
-	"#,
-            )
-            .unwrap(),
-        );
+	"#);
+    let storage = storage_owner.db.clone();
 
         let expr = parse(r#"http_requests{group="canary", job="app-server"} < 100"#);
 
@@ -487,7 +482,8 @@ fn test_for_state_restore_hold_duration() {
 
     for test in cases {
         let name = test.name;
-        let st = Arc::new(TestStorage::new());
+        let st_owner = common::new();
+    let st = st_owner.db.clone();
         let expr = parse("vector(1)");
         let opts = Arc::new(ManagerOptions {
             query_func: Some(query_func(&test_engine(), &st)),
@@ -564,16 +560,12 @@ fn test_for_state_restore_hold_duration() {
 #[test]
 fn test_for_state_restore() {
     for query_offset in [Duration::ZERO, Duration::from_secs(60)] {
-        let storage = Arc::new(
-            promqltest::loaded_storage(
-                r#"
+        let storage_owner = common::loaded_storage(r#"
 		load 5m
 		http_requests{job="app-server", instance="0", group="canary", severity="overwrite-me"}	75  85 50 0 0 25 0 0 40 0 120
 		http_requests{job="app-server", instance="1", group="canary", severity="overwrite-me"}	125 90 60 0 0 25 0 0 40 0 130
-	"#,
-            )
-            .unwrap(),
-        );
+	"#);
+    let storage = storage_owner.db.clone();
 
         let expr = parse(r#"http_requests{group="canary", job="app-server"} < 100"#);
 
@@ -748,7 +740,8 @@ fn test_for_state_restore() {
 #[test]
 fn test_staleness() {
     for query_offset in [Duration::ZERO, Duration::from_secs(60)] {
-        let st = Arc::new(TestStorage::new());
+        let st_owner = common::new();
+    let st = st_owner.db.clone();
 
         let engine = small_engine();
         let opts = Arc::new(ManagerOptions {
@@ -773,7 +766,7 @@ fn test_staleness() {
         });
 
         // A time series that has two samples and then goes stale.
-        let mut app = st.appender_v2();
+        let mut app = st.appender_v2(&Context::background());
         let a = ls(&["__name__", "a"]);
         let o = AppendV2Options::default();
         app.append(0, &a, 0, 0, 1.0, None, None, &o).unwrap();
@@ -913,7 +906,8 @@ fn test_copy_state() {
 
 #[test]
 fn test_deleted_rule_marked_stale() {
-    let st = Arc::new(TestStorage::new());
+    let st_owner = common::new();
+    let st = st_owner.db.clone();
 
     let old_group = Group::new(GroupOptions {
         rules: vec![new_recording_rule("rule1", nil_expr(), ls(&["l1", "v1"]))],
@@ -1019,7 +1013,8 @@ fn reload_and_validate(
 fn test_update() {
     let files = vec![fixture("rules.yaml")];
     let expected = series_map(&[("test", ls(&["name", "value"]))]);
-    let st = Arc::new(TestStorage::new());
+    let st_owner = common::new();
+    let st = st_owner.db.clone();
 
     let engine = small_engine();
     let rule_manager = Manager::new(ManagerOptions {
@@ -1090,7 +1085,8 @@ fn test_update() {
 
 #[test]
 fn test_notify() {
-    let st = Arc::new(TestStorage::new());
+    let st_owner = common::new();
+    let st = st_owner.db.clone();
 
     let engine = small_engine();
     let last_notified: Arc<Mutex<Vec<Alert>>> = Arc::new(Mutex::new(Vec::new()));
@@ -1120,7 +1116,7 @@ fn test_notify() {
         ..Default::default()
     });
 
-    let mut app = st.appender_v2();
+    let mut app = st.appender_v2(&Context::background());
     let a = ls(&["__name__", "a"]);
     let o = AppendV2Options::default();
     app.append(0, &a, 0, 1000, 2.0, None, None, &o).unwrap();
@@ -1162,7 +1158,8 @@ fn test_metrics_update() {
         "prometheus_rule_group_rules",
     ];
 
-    let storage = Arc::new(TestStorage::new());
+    let storage_owner = common::new();
+    let storage = storage_owner.db.clone();
 
     let registry = Registry::new();
     let engine = small_engine();
@@ -1199,7 +1196,7 @@ fn test_metrics_update() {
 }
 
 /// Go `countStaleNaN`.
-fn count_stale_nan(st: &TestStorage) -> usize {
+fn count_stale_nan(st: &DB) -> usize {
     let mut c = 0;
     let mut querier = st.querier(0, Time::now().unix_secs() * 1000).unwrap();
 
@@ -1224,7 +1221,8 @@ fn test_group_staleness_on_removal() {
     let files = vec![fixture("rules2.yaml")];
     let same_files = vec![fixture("rules2_copy.yaml")];
 
-    let storage = Arc::new(TestStorage::new());
+    let storage_owner = common::new();
+    let storage = storage_owner.db.clone();
 
     let engine = small_engine();
     let rule_manager = Manager::new(ManagerOptions {
@@ -1265,7 +1263,8 @@ fn test_group_staleness_on_removal() {
 fn test_metrics_staleness_on_manager_shutdown() {
     let files = vec![fixture("rules2.yaml")];
 
-    let storage = Arc::new(TestStorage::new());
+    let storage_owner = common::new();
+    let storage = storage_owner.db.clone();
 
     let engine = small_engine();
     let rule_manager = Manager::new(ManagerOptions {
@@ -1290,11 +1289,9 @@ fn test_metrics_staleness_on_manager_shutdown() {
 }
 
 #[test]
-#[ignore = "waiting: needs the real TSDB (tsdb crate not merged)"]
 fn test_rule_moved_between_groups() {
-    // Go: teststorage.New(t, func(opt *tsdb.Options) { opt.OutOfOrderTimeWindow = 600000 }). The test storage has
-    // no out-of-order window; this must use the real TSDB with that option once it is available.
-    let storage = Arc::new(TestStorage::new());
+    let storage_owner = common::new_with(|opt| opt.out_of_order_time_window = 600000);
+    let storage = storage_owner.db.clone();
 
     let engine = Arc::new(Engine::new(EngineOpts { max_samples: 10, timeout: Duration::from_secs(10), ..Default::default() }));
     let rule_manager = Manager::new(ManagerOptions {
@@ -1359,7 +1356,8 @@ fn test_group_has_alerting_rules() {
 
 #[test]
 fn test_rule_health_updates() {
-    let st = Arc::new(TestStorage::new());
+    let st_owner = common::new();
+    let st = st_owner.db.clone();
 
     let engine = small_engine();
     let opts = Arc::new(ManagerOptions {
@@ -1383,7 +1381,7 @@ fn test_rule_health_updates() {
     });
 
     // A time series that has two samples.
-    let mut app = st.appender_v2();
+    let mut app = st.appender_v2(&Context::background());
     let a = ls(&["__name__", "a"]);
     let o = AppendV2Options::default();
     app.append(0, &a, 0, 0, 1.0, None, None, &o).unwrap();
@@ -1413,15 +1411,11 @@ fn test_rule_health_updates() {
 
 #[test]
 fn test_rule_group_eval_iteration_func() {
-    let storage = Arc::new(
-        promqltest::loaded_storage(
-            r#"
+    let storage_owner = common::loaded_storage(r#"
 		load 5m
 		http_requests{instance="0"}	75  85 50 0 0 25 0 0 40 0 120
-	"#,
-        )
-        .unwrap(),
-    );
+	"#);
+    let storage = storage_owner.db.clone();
 
     let expr = parse(r#"http_requests{group="canary", job="app-server"} < 100"#);
 
@@ -1515,13 +1509,14 @@ fn test_rule_group_eval_iteration_func() {
 
 #[test]
 fn test_native_histograms_in_recording_rules() {
-    // Go appends to st.DB directly; the test storage is the DB here.
-    let st = Arc::new(TestStorage::new());
+    let st_owner = common::new();
+    let st = st_owner.db.clone();
 
     // Add some histograms.
+    let db = &st_owner.db;
     let hists = storage::tsdbutil::generate_test_histograms(5);
     let ts = Time::now();
-    let mut app = st.appender_v2();
+    let mut app = db.appender_v2(&Context::background());
     for (i, h) in hists.iter().enumerate() {
         let l = ls(&["__name__", "histogram_metric", "idx", &i.to_string()]);
         app.append(0, &l, 0, ts.millis(), 0.0, Some(&h.clone()), None, &AppendV2Options::default()).unwrap();
@@ -1552,7 +1547,7 @@ fn test_native_histograms_in_recording_rules() {
 
     group.eval(&Context::background(), ts.add(Duration::from_secs(10)));
 
-    let mut q = st.querier(ts.millis(), ts.add(Duration::from_secs(20)).millis()).unwrap();
+    let mut q = db.querier(ts.millis(), ts.add(Duration::from_secs(20)).millis()).unwrap();
     let mut ss = q.select(&Context::background(), false, None, &[eq_matcher("__name__", "sum:histogram_metric")]);
     assert!(ss.next());
     let s = ss.at().clone();
@@ -1593,7 +1588,8 @@ fn test_manager_load_groups_without_logger() {
 
 #[test]
 fn test_manager_load_groups_should_check_whether_each_rule_has_dependents_and_dependencies() {
-    let storage = Arc::new(TestStorage::new());
+    let storage_owner = common::new();
+    let storage = storage_owner.db.clone();
 
     let rule_manager = Manager::new(ManagerOptions {
         context: Context::background(),
@@ -1846,7 +1842,8 @@ fn test_dependent_rules_with_non_metric_expression() {
 
 #[test]
 fn test_dependency_map_updates_on_group_update() {
-    let storage = Arc::new(TestStorage::new());
+    let storage_owner = common::new();
+    let storage = storage_owner.db.clone();
     let engine = test_engine();
 
     let mut files = vec![fixture("rules.yaml")];
@@ -1918,7 +1915,7 @@ fn test_dependency_map_updates_on_group_update() {
 const ARTIFICIAL_DELAY: Duration = Duration::from_millis(250);
 
 /// Go `optsFactory`.
-fn opts_factory(storage: &Arc<TestStorage>, max_inflight: &Arc<AtomicI32>, inflight_queries: &Arc<AtomicI32>, max_concurrent: i64) -> ManagerOptions {
+fn opts_factory(storage: &Arc<DB>, max_inflight: &Arc<AtomicI32>, inflight_queries: &Arc<AtomicI32>, max_concurrent: i64) -> ManagerOptions {
     let inflight_mu = Arc::new(Mutex::new(()));
 
     let concurrent = max_concurrent > 0;
@@ -1978,7 +1975,8 @@ fn split(group: &Group, ctx: &Context) -> Vec<Vec<usize>> {
 fn test_async_rule_evaluation() {
     // synchronous evaluation with independent rules
     {
-        let storage = Arc::new(TestStorage::new());
+        let storage_owner = common::new();
+    let storage = storage_owner.db.clone();
         let inflight_queries = Arc::new(AtomicI32::new(0));
         let max_inflight = Arc::new(AtomicI32::new(0));
         let ctx = Context::background();
@@ -2012,7 +2010,8 @@ fn test_async_rule_evaluation() {
 
     // asynchronous evaluation with independent and dependent rules
     {
-        let storage = Arc::new(TestStorage::new());
+        let storage_owner = common::new();
+    let storage = storage_owner.db.clone();
         let inflight_queries = Arc::new(AtomicI32::new(0));
         let max_inflight = Arc::new(AtomicI32::new(0));
         let ctx = Context::background();
@@ -2047,7 +2046,8 @@ fn test_async_rule_evaluation() {
 
     // asynchronous evaluation of all independent rules, insufficient concurrency
     {
-        let storage = Arc::new(TestStorage::new());
+        let storage_owner = common::new();
+    let storage = storage_owner.db.clone();
         let inflight_queries = Arc::new(AtomicI32::new(0));
         let max_inflight = Arc::new(AtomicI32::new(0));
         let ctx = Context::background();
@@ -2086,7 +2086,8 @@ fn test_async_rule_evaluation() {
 
     // asynchronous evaluation of all independent rules, sufficient concurrency
     {
-        let storage = Arc::new(TestStorage::new());
+        let storage_owner = common::new();
+    let storage = storage_owner.db.clone();
         let inflight_queries = Arc::new(AtomicI32::new(0));
         let max_inflight = Arc::new(AtomicI32::new(0));
         let ctx = Context::background();
@@ -2129,7 +2130,8 @@ fn test_async_rule_evaluation() {
 
     // asynchronous evaluation of independent rules, with indeterminate. Should be synchronous
     {
-        let storage = Arc::new(TestStorage::new());
+        let storage_owner = common::new();
+    let storage = storage_owner.db.clone();
         let inflight_queries = Arc::new(AtomicI32::new(0));
         let max_inflight = Arc::new(AtomicI32::new(0));
         let ctx = Context::background();
@@ -2163,7 +2165,8 @@ fn test_async_rule_evaluation() {
 
     // asynchronous evaluation of rules that benefit from reordering
     {
-        let storage = Arc::new(TestStorage::new());
+        let storage_owner = common::new();
+    let storage = storage_owner.db.clone();
         let inflight_queries = Arc::new(AtomicI32::new(0));
         let max_inflight = Arc::new(AtomicI32::new(0));
         let ctx = Context::background();
@@ -2199,7 +2202,8 @@ fn test_async_rule_evaluation() {
 
     // attempted asynchronous evaluation of chained rules
     {
-        let storage = Arc::new(TestStorage::new());
+        let storage_owner = common::new();
+    let storage = storage_owner.db.clone();
         let inflight_queries = Arc::new(AtomicI32::new(0));
         let max_inflight = Arc::new(AtomicI32::new(0));
         let ctx = Context::background();
@@ -2244,7 +2248,8 @@ fn wait_for_evaluations(ch: &std::sync::mpsc::Receiver<i32>, target_count: i32) 
 }
 
 fn new_rule_group_restoration(restore_new_rule_groups: bool) {
-    let store = Arc::new(TestStorage::new());
+    let store_owner = common::new();
+    let store = store_owner.db.clone();
 
     let inflight_queries = Arc::new(AtomicI32::new(0));
     let max_inflight = Arc::new(AtomicI32::new(0));
@@ -2320,7 +2325,8 @@ fn test_new_rule_group_restoration_with_restore_new_group_option() {
 
 #[test]
 fn test_bounded_rule_eval_concurrency() {
-    let storage = Arc::new(TestStorage::new());
+    let storage_owner = common::new();
+    let storage = storage_owner.db.clone();
 
     let inflight_queries = Arc::new(AtomicI32::new(0));
     let max_inflight = Arc::new(AtomicI32::new(0));
@@ -2367,7 +2373,8 @@ fn test_update_when_stopped() {
 
 #[test]
 fn test_group_eval_race_condition_on_stopping_group_evaluation_while_rules_are_evaluated_concurrently() {
-    let storage = Arc::new(TestStorage::new());
+    let storage_owner = common::new();
+    let storage = storage_owner.db.clone();
 
     let inflight_queries = Arc::new(AtomicI32::new(0));
     let max_inflight = Arc::new(AtomicI32::new(0));
@@ -2472,7 +2479,8 @@ fn test_rule_dependency_controller_analyse_rules() {
     ];
 
     for tc in test_cases {
-        let storage = Arc::new(TestStorage::new());
+        let storage_owner = common::new();
+    let storage = storage_owner.db.clone();
 
         let rule_manager = Manager::new(ManagerOptions {
             context: Context::background(),
@@ -2524,7 +2532,8 @@ impl EngineQuery for CloseCountingQuery {
 fn test_engine_query_func_closes_query() {
     let eng = Arc::new(CloseCountingEngine { close_calls: Arc::new(AtomicUsize::new(0)) });
     // adapted: Go passes a nil Queryable; the engine here never uses it.
-    let q: Arc<dyn Queryable> = Arc::new(TestStorage::new());
+    let st_owner = common::new();
+    let q: Arc<dyn Queryable> = st_owner.db.clone();
     let qf = engine_query_func(eng.clone(), q);
 
     qf(&Context::background(), "vector(0)", Time::unix(0, 0)).unwrap();
