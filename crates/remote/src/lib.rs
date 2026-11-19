@@ -8,4 +8,5 @@ pub mod client;
 pub mod codec;
 pub mod dial_context;
 pub mod prompb;
+pub mod read;
 pub mod stats;
