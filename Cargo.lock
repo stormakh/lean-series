@@ -508,6 +508,8 @@ version = "0.1.0"
 dependencies = [
  "model",
  "promql",
+ "storage",
+ "yaml",
 ]
 
 [[package]]
