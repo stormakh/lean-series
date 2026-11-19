@@ -123,7 +123,7 @@ impl Error {
 
     /// Go `context.Canceled`.
     pub fn canceled() -> Error {
-        Error::context(crate::context::CANCELED)
+        Error::context("context canceled")
     }
 
     /// Go `ErrPostingsOffsetTableTooLarge`.
@@ -240,58 +240,48 @@ impl From<std::io::Error> for Error {
 // ---------------------------------------------------------------------------------------------------------------
 // Context.
 
-/// The part of Go's `context.Context` this package uses: `Err()`. Implemented by [`crate::context::Context`];
-/// tests implement it to count calls (Go `testutil.MockContextErrAfter`).
-// TODO(storage): use the shared context type after merge.
+/// The part of Go's `context.Context` this package uses: `Err()`. Implemented by [`storage::Context`]; tests
+/// implement it to count calls (Go `testutil.MockContextErrAfter`).
 pub trait Ctx {
     /// Go `ctx.Err()`: `Some` once the context is done.
     fn err(&self) -> Option<Error>;
 }
 
-impl Ctx for crate::context::Context {
+impl Ctx for storage::Context {
     fn err(&self) -> Option<Error> {
-        crate::context::Context::err(self).map(Error::context)
+        storage::Context::err(self).map(|e| {
+            if e.is(&storage::ERR_DEADLINE_EXCEEDED) {
+                Error::context("context deadline exceeded")
+            } else {
+                Error::context("context canceled")
+            }
+        })
     }
 }
 
 /// Go `context.Background()` as a `&dyn Ctx`.
-pub fn background() -> &'static crate::context::Context {
-    static BG: std::sync::OnceLock<crate::context::Context> = std::sync::OnceLock::new();
-    BG.get_or_init(crate::context::Context::background)
+pub fn background() -> &'static storage::Context {
+    static BG: storage::Context = storage::Context::background();
+    &BG
 }
 
 // ---------------------------------------------------------------------------------------------------------------
 // LabelHints.
 
-/// Go `storage.LabelHints`: hints passed for label reads. Results are returned in natural (alphabetical) order.
-// TODO(storage): use storage::LabelHints after merge.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct LabelHints {
-    /// Maximum number of results returned. Use a value of 0 to disable.
-    pub limit: usize,
-    /// Requires `limit` and selects the lexically smallest `limit` values.
-    pub limit_smallest: bool,
-}
+pub use storage::LabelHints;
 
-impl LabelHints {
-    /// Go `(*LabelHints).AllowsEarlyStop` (a `None` receiver is Go's nil).
-    pub fn allows_early_stop(h: Option<&LabelHints>) -> bool {
-        h.is_some_and(|h| h.limit > 0 && !h.limit_smallest)
+/// Go `(*LabelHints).ApplyLimit` on an owned vector: at most `limit` values, the lexically smallest ones (sorted)
+/// with `limit_smallest`, else the leading ones.
+pub fn apply_limit(h: Option<&LabelHints>, mut values: Vec<String>) -> Vec<String> {
+    let Some(h) = h else { return values };
+    if h.limit <= 0 || values.len() as i64 <= h.limit {
+        return values;
     }
-
-    /// Go `(*LabelHints).ApplyLimit`: reduces `values` to at most `limit` entries, keeping the lexically smallest
-    /// ones (sorted) when `limit_smallest` is set, and otherwise the leading ones.
-    pub fn apply_limit(h: Option<&LabelHints>, mut values: Vec<String>) -> Vec<String> {
-        let Some(h) = h else { return values };
-        if h.limit == 0 || values.len() <= h.limit {
-            return values;
-        }
-        if h.limit_smallest {
-            return smallest_n_values(values, h.limit);
-        }
-        values.truncate(h.limit);
-        values
+    if h.limit_smallest {
+        return smallest_n_values(values, h.limit as usize);
     }
+    values.truncate(h.limit as usize);
+    values
 }
 
 /// Go `storage.smallestNValues`: the `n` lexically smallest values, sorted.

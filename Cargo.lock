@@ -336,6 +336,7 @@ dependencies = [
  "json",
  "model",
  "net",
+ "promql",
  "scrape",
  "snap",
  "storage",
@@ -481,6 +482,7 @@ version = "0.1.0"
 dependencies = [
  "chunkenc",
  "model",
+ "tsdb",
 ]
 
 [[package]]
@@ -497,6 +499,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tsdb"
+version = "0.1.0"
+dependencies = [
+ "chunkenc",
+ "crypto",
+ "json",
+ "libc",
+ "model",
+ "storage",
+ "tsdb-format",
+]
+
+[[package]]
 name = "tsdb-format"
 version = "0.1.0"
 dependencies = [
@@ -505,6 +520,7 @@ dependencies = [
  "memmap2",
  "model",
  "snap",
+ "storage",
  "zstd",
 ]
 

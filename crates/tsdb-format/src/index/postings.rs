@@ -976,15 +976,16 @@ impl MemPostings {
         // The values are not held in order, so keeping the leading limit of them returns an arbitrary subset.
         // apply_limit selects the smallest values when the caller needs them.
         if let Some(h) = hints {
-            if h.limit > 0 && values.len() > h.limit {
+            if h.limit > 0 && values.len() as i64 > h.limit {
+                let limit = h.limit as usize;
                 if h.limit_smallest {
                     let refs: Vec<&str> = values.iter().map(|v| &**v).collect();
-                    return smallest_n_values(refs, h.limit)
+                    return smallest_n_values(refs, limit)
                         .into_iter()
                         .map(str::to_string)
                         .collect();
                 }
-                return values[..h.limit].iter().map(|v| v.to_string()).collect();
+                return values[..limit].iter().map(|v| v.to_string()).collect();
             }
         }
         values.iter().map(|v| v.to_string()).collect()

@@ -16,12 +16,15 @@ json = { path = "../json" }
 yaml = { path = "../yaml" }
 textparse = { path = "../textparse" }
 discovery = { path = "../discovery" }
+# md5 of config YAML (Go toHash) in storage.rs and write.rs.
+crypto = { path = "../crypto" }
 # go_duration_string for error texts.
 util = { path = "../util" }
 # Remote write/read bodies are Snappy block format.
 snap = "1"
 # Queue manager: scrape.MetricMetadata and scrape.Target for the metadata watcher.
 scrape = { path = "../scrape" }
-# write.go toHash: md5 of the remote write config YAML.
-crypto = { path = "../crypto" }
 
+[dev-dependencies]
+# Test storage (promqltest.LoadedStorage) for the read handler tests.
+promql = { path = "../promql" }

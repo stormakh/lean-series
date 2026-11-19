@@ -1,0 +1,15 @@
+[package]
+name = "tsdb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+model = { path = "../model" }
+chunkenc = { path = "../chunkenc" }
+storage = { path = "../storage" }
+tsdb-format = { path = "../tsdb-format" }
+json = { path = "../json" }
+crypto = { path = "../crypto" }
+# flock, statfs and similar calls (tsdb-format already depends on it).
+libc = "0.2"
