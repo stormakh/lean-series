@@ -2109,7 +2109,11 @@ fn fmt_paths(p: &[PathBuf]) -> String {
 fn to_wlog_err(e: &Error) -> wlog::Error {
     match e.downcast_ref::<wlog::Error>() {
         Some(w) => w.clone(),
-        None => wlog::Error::msg(&e.to_string()),
+        // Go `errors.As` unwraps through `errLoadWbl` (the WBL replay wraps its errors twice).
+        None => match e.downcast_ref::<ErrLoadWbl>() {
+            Some(inner) => to_wlog_err(&inner.0),
+            None => wlog::Error::msg(&e.to_string()),
+        },
     }
 }
 
