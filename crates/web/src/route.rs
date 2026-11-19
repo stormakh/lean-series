@@ -104,6 +104,18 @@ impl Router {
         self.trees.insert(method.to_string(), Arc::new(r));
     }
 
+    /// The registered (method, path) pairs, in registration order for each method (the OpenAPI coverage
+    /// tests compare them with the documented paths).
+    pub fn routes(&self) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        for (m, routes) in &self.pending {
+            for (p, _) in routes {
+                out.push((m.clone(), p.clone()));
+            }
+        }
+        out
+    }
+
     pub fn get(&mut self, path: &str, h: HandlerFn) {
         self.handle("GET", path, h);
     }
