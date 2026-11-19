@@ -1,0 +1,25 @@
+[package]
+name = "web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+json = { path = "../json" }
+http = { path = "../http" }
+crypto = { path = "../crypto" }
+model = { path = "../model" }
+storage = { path = "../storage" }
+chunkenc = { path = "../chunkenc" }
+promql = { path = "../promql" }
+tsdb = { path = "../tsdb" }
+tsdb-format = { path = "../tsdb-format" }
+scrape = { path = "../scrape" }
+config = { path = "../config" }
+discovery = { path = "../discovery" }
+yaml = { path = "../yaml" }
+util = { path = "../util" }
+regex = "1.13"
+flate2 = "=1.1.10"
+
+[dev-dependencies]
