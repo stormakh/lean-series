@@ -2137,3 +2137,71 @@ fn test_query_cost_samples_accounting_range() {
     assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.join("\n"));
 }
 
+
+#[test]
+fn test_query_start_timestamps_override() {
+    let opts = promqltest::teststorage::Options { use_xor2: true, enable_st_storage: true, ..Default::default() };
+    let st = promqltest::loaded_storage_with_options("load 10s\n  metric@st 0 -5s\n  metric 1 1\n", opts).unwrap();
+    let cases: [(&str, bool, Option<bool>, &str); 4] = [
+        ("Override to false (engine default: true)", true, Some(false), "{} => 0 @[10000]"),
+        ("Override to true on false default (engine default: false)", false, Some(true), "{} => 2 @[10000]"),
+        ("Default is used when nil (engine default: true)", true, None, "{} => 2 @[10000]"),
+        ("Default is used when nil (engine default: false)", false, None, "{} => 0 @[10000]"),
+    ];
+    for (name, engine_st, query_st, expected) in cases {
+        let engine = Engine::new(EngineOpts {
+            use_start_timestamps: engine_st,
+            timeout: Duration::from_secs(300),
+            max_samples: promqltest::DEFAULT_MAX_SAMPLES_PER_QUERY,
+            ..Default::default()
+        });
+        let opts = promql::QueryOpts::new(false, Duration::ZERO, query_st);
+        let ctx = Context::background();
+        let mut q = engine.new_instant_query(&ctx, Arc::new(st.clone()), Some(&opts), "increase(metric[20s])", 10_000).unwrap();
+        let res = q.exec(&ctx);
+        assert!(res.err.is_none(), "{}: {:?}", name, res.err);
+        assert_eq!(expected, res.value.unwrap().to_string(), "{}", name);
+    }
+}
+
+#[test]
+fn test_type_and_unit_metadata_labels_in_functions_and_matching() {
+    let st = promqltest::loaded_storage(
+        r#"load 1m
+  hist_metric{__type__="histogram", __unit__="seconds", job="api"} {{schema:1 sum:10 count:5 buckets:[1 2 2]}}
+  lhs_metric{__type__="counter", __unit__="requests", job="api", instance="0"} 10
+  rhs_metric{__type__="gauge", __unit__="seconds", job="only-rhs", instance="1"} 20
+  target_info{__type__="info", job="api", instance="0", env="prod"} 1
+"#,
+    )
+    .unwrap();
+    for delayed in [false, true] {
+        let engine = Engine::new(EngineOpts {
+            timeout: Duration::from_secs(300),
+            max_samples: promqltest::DEFAULT_MAX_SAMPLES_PER_QUERY,
+            enable_delayed_name_removal: delayed,
+            enable_type_and_unit_labels: true,
+            parser: Some(promql::parser::Parser::new(promql::parser::Options {
+                enable_binop_fill_modifiers: true,
+                enable_experimental_functions: true,
+                ..Default::default()
+            })),
+            ..Default::default()
+        });
+        for (expr, expected) in [
+            ("histogram_count(hist_metric)", r#"{job="api"} => 5 @[0]"#),
+            ("histogram_sum(hist_metric)", r#"{job="api"} => 10 @[0]"#),
+            (r#"absent(nonexistent{__type__="counter", __unit__="seconds", job="api"})"#, r#"{job="api"} => 1 @[0]"#),
+            ("sum without (instance) (lhs_metric)", r#"{job="api"} => 10 @[0]"#),
+            ("lhs_metric > ignoring(instance) fill_left(100) rhs_metric", r#"{job="only-rhs"} => 100 @[0]"#),
+            ("info(sum by (job, instance) (lhs_metric))", r#"{env="prod", instance="0", job="api"} => 10 @[0]"#),
+        ] {
+            let ctx = Context::background();
+            let mut q = engine.new_instant_query(&ctx, Arc::new(st.clone()), None, expr, 0).unwrap();
+            let res = q.exec(&ctx);
+            assert!(res.err.is_none(), "delayed={} {}: {:?}", delayed, expr, res.err);
+            assert_eq!(expected, res.value.unwrap().to_string(), "delayed={} query: {}", delayed, expr);
+        }
+    }
+}
+

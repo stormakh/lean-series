@@ -157,7 +157,12 @@ pub fn new_test_storage() -> Arc<dyn Storage> {
 
 /// Go `LoadedStorage`: a storage with the data of the `load` commands of `input`.
 pub fn loaded_storage(input: &str) -> Result<TestStorage, String> {
-    let st = TestStorage::new();
+    loaded_storage_with_options(input, teststorage::Options::default())
+}
+
+/// Go `LoadedStorage(t, input, opts...)` with storage options.
+pub fn loaded_storage_with_options(input: &str, opts: teststorage::Options) -> Result<TestStorage, String> {
+    let st = TestStorage::with_options(opts);
     let st2 = st.clone();
     let open = move || -> Arc<dyn Storage> { Arc::new(st2.clone()) };
     let mut test = Test::new(input, false, &open)?;
