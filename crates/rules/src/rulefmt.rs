@@ -316,12 +316,16 @@ pub fn parse(content: &[u8], ignore_unknown_fields: bool, scheme: ValidationSche
     };
     let root = match yaml::node::parse(text) {
         Ok(r) => r,
-        Err(e) => return (None, vec![msg(e)]),
+        Err(e) => {
+            // Go reports the error of the decoder and the one of yaml.Unmarshal.
+            let e = v3_syntax_error(text).unwrap_or(e);
+            return (None, vec![msg(e.clone()), msg(e)]);
+        }
     };
     let mut groups = RuleGroups::default();
     let mut node = RuleGroupsNode::default();
     if let Some(root) = &root {
-        let mut d = V3Decoder { strict: !ignore_unknown_fields, terrors: Vec::new() };
+        let mut d = V3Decoder { strict: !ignore_unknown_fields, terrors: Vec::new(), node_pass: false };
         if let Err(e) = d.rule_groups(root, &mut groups, &mut RuleGroupsNode::default()) {
             errs.push(msg(e));
         } else if !d.terrors.is_empty() {
@@ -332,7 +336,7 @@ pub fn parse(content: &[u8], ignore_unknown_fields: bool, scheme: ValidationSche
         logger.warn("Multiple document yaml rules files are not supported, only the first document is processed", &[]);
     }
     if let Some(root) = &root {
-        let mut d = V3Decoder { strict: false, terrors: Vec::new() };
+        let mut d = V3Decoder { strict: false, terrors: Vec::new(), node_pass: true };
         let mut scratch = RuleGroups::default();
         if let Err(e) = d.rule_groups(root, &mut scratch, &mut node) {
             errs.push(msg(e));
@@ -398,6 +402,38 @@ fn count_documents(text: &str) -> usize {
 struct V3Decoder {
     strict: bool,
     terrors: Vec<String>,
+    /// Decoding into Go's `ruleGroups` (the node types, whose record/alert/expr fields are `yaml.Node`).
+    node_pass: bool,
+}
+
+/// go-yaml v3 reports parser errors at the start of the enclosing collection (the libyaml context mark, 0-based)
+/// where v2 reports the problem line. `None` when the error has no context.
+fn v3_syntax_error(text: &str) -> Option<String> {
+    use yaml_rust2::parser::{Event, MarkedEventReceiver, Parser as YParser};
+    use yaml_rust2::scanner::Marker;
+    struct S(Vec<usize>);
+    impl MarkedEventReceiver for S {
+        fn on_event(&mut self, ev: Event, m: Marker) {
+            match ev {
+                Event::SequenceStart(..) | Event::MappingStart(..) => self.0.push(m.line()),
+                Event::SequenceEnd | Event::MappingEnd => {
+                    self.0.pop();
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut st = S(Vec::new());
+    let mut p = YParser::new_from_str(text);
+    let err = p.load(&mut st, true).err()?;
+    let info = err.info().to_string();
+    let rest = info.strip_prefix("while parsing ")?;
+    let problem = &rest[rest.find(", ")? + 2..];
+    let ctx_line = st.0.last().copied()?.saturating_sub(1);
+    if ctx_line == 0 {
+        return None;
+    }
+    Some(format!("yaml: line {ctx_line}: {problem}"))
 }
 
 fn resolve(n: &Rc<Node>) -> &Rc<Node> {
@@ -577,7 +613,7 @@ impl V3Decoder {
             return Ok(());
         }
         if root.kind != Kind::Mapping {
-            self.terror(&root, "rulefmt.RuleGroups");
+            self.terror(&root, if self.node_pass { "rulefmt.ruleGroups" } else { "rulefmt.RuleGroups" });
             return Ok(());
         }
         for (k, v) in self.pairs(&root)? {
@@ -598,7 +634,7 @@ impl V3Decoder {
                                 node.groups.push(gn);
                             }
                         }
-                        _ => self.terror(&vr, "[]rulefmt.RuleGroup"),
+                        _ => self.terror(&vr, if self.node_pass { "[]rulefmt.RuleGroupNode" } else { "[]rulefmt.RuleGroup" }),
                     }
                 }
                 _ => self.unknown(kr, "rulefmt.RuleGroups"),
@@ -616,7 +652,7 @@ impl V3Decoder {
             return Ok(());
         }
         if n.kind != Kind::Mapping {
-            self.terror(&n, "rulefmt.RuleGroup");
+            self.terror(&n, if self.node_pass { "rulefmt.RuleGroupNode" } else { "rulefmt.RuleGroup" });
             return Ok(());
         }
         for (k, v) in self.pairs(&n)? {
@@ -650,7 +686,7 @@ impl V3Decoder {
                                 node.rules.push(rn);
                             }
                         }
-                        _ => self.terror(&vr, "[]rulefmt.Rule"),
+                        _ => self.terror(&vr, if self.node_pass { "[]rulefmt.RuleNode" } else { "[]rulefmt.Rule" }),
                     }
                 }
                 "labels" => self.string_map(&v, &mut out.labels)?,
@@ -666,7 +702,7 @@ impl V3Decoder {
             return Ok(());
         }
         if n.kind != Kind::Mapping {
-            self.terror(&n, "rulefmt.Rule");
+            self.terror(&n, if self.node_pass { "rulefmt.RuleNode" } else { "rulefmt.Rule" });
             return Ok(());
         }
         for (k, v) in self.pairs(&n)? {
@@ -674,15 +710,21 @@ impl V3Decoder {
             match kr.value.as_str() {
                 "record" => {
                     node.record = pos(&v);
-                    self.string(&v, &mut out.record);
+                    if !self.node_pass {
+                        self.string(&v, &mut out.record);
+                    }
                 }
                 "alert" => {
                     node.alert = pos(&v);
-                    self.string(&v, &mut out.alert);
+                    if !self.node_pass {
+                        self.string(&v, &mut out.alert);
+                    }
                 }
                 "expr" => {
                     node.expr = pos(&v);
-                    self.string(&v, &mut out.expr);
+                    if !self.node_pass {
+                        self.string(&v, &mut out.expr);
+                    }
                 }
                 "for" => self.duration(&v, &mut out.r#for)?,
                 "keep_firing_for" => self.duration(&v, &mut out.keep_firing_for)?,
