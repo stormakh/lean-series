@@ -126,8 +126,9 @@ fn is_valid_legacy_metric_byte(b: u8, i: usize) -> bool {
 const REF_MARK: u8 = 254;
 /// Marks a long string (followed by a 3-byte little-endian length).
 const LONG_MARK: u8 = 255;
-/// Strings shorter than this stay inline (a reference takes 3 bytes).
-const MIN_INTERN_LEN: usize = 4;
+/// Strings shorter than this stay inline: a reference takes 3 bytes, and short strings are more often unique
+/// values (ids, counters) that would fill the table without being shared.
+const MIN_INTERN_LEN: usize = 8;
 /// The most strings and bytes the intern table holds; interned strings are never freed.
 const MAX_SYMBOLS: usize = 1 << 16;
 const MAX_SYMBOL_BYTES: usize = 16 << 20;
