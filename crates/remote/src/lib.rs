@@ -9,4 +9,6 @@ pub mod codec;
 pub mod dial_context;
 pub mod prompb;
 pub mod read;
+pub mod read_handler;
+pub mod remoteapi;
 pub mod stats;
