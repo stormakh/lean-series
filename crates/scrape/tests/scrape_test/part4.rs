@@ -56,6 +56,11 @@ fn select_appendable(app: &Appendable, v2: bool) -> Apps {
     if v2 { (None, Some(Arc::new(app.clone()))) } else { (Some(Arc::new(app.clone())), None) }
 }
 
+/// Go `selectAppendable(s, appV2)` for a real TSDB (`teststorage.New`).
+fn select_storage(s: &Arc<tsdb::teststorage::TestStorage>, v2: bool) -> Apps {
+    if v2 { (None, Some(s.clone())) } else { (Some(s.clone()), None) }
+}
+
 fn dur(d: Duration) -> yaml::types::Duration {
     yaml::types::Duration(d.as_nanos() as i64)
 }
@@ -256,9 +261,7 @@ fn test_scrape_loop_run_creates_stale_markers_on_failed_scrape_for_timestamped_m
 #[test]
 fn test_scrape_loop_compression() {
     foreach_appendable(|v2| {
-        // adapted: Go appends to teststorage.New (a real TSDB) but never queries it; the test only checks the
-        // Accept-Encoding header, so the mock appendable is the sink here.
-        let s = Appendable::new();
+        let s = Arc::new(tsdb::teststorage::new_default());
         let metrics_text = make_test_gauges(10);
 
         struct Tc {
@@ -296,7 +299,7 @@ fn test_scrape_loop_compression() {
             };
             let sp = new_pool(
                 cfg,
-                select_appendable(&s, v2),
+                select_storage(&s, v2),
                 Options { enable_zstd_scrape: tc.enable_zstd, ..Default::default() },
             );
 

@@ -1136,9 +1136,8 @@ fn test_target_scraper_zstd_feature_flag() {
 #[test]
 fn test_scrape_loop_respect_timestamps() {
     foreach_appendable(|app_v2| {
-        // adapted: Go chains the mock to a real TSDB (Then(teststorage.New)) that the test never reads; only the
-        // mock's samples are checked, so the mock runs alone.
-        let app_test = Appendable::new();
+        let s = Arc::new(tsdb::teststorage::new_default());
+        let app_test = Appendable::new().then(s.clone());
         let (sl, _) = new_test_scrape_loop(|sl| with_appendable(sl, &app_test, app_v2));
 
         let now = SystemTime::now();
