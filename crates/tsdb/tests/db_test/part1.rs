@@ -17,7 +17,7 @@ use model::labels::{self, Labels, ScratchBuilder};
 use model::matcher::{MatchType, Matcher};
 use storage::{
     Annotations, Appender, ChunkQuerier, Context, ERR_DUPLICATE_SAMPLE_FOR_TIMESTAMP, ERR_OUT_OF_BOUNDS, Error,
-    LabelQuerier, Meta, Querier, Sample, SeriesSet,
+    Meta, Sample, SeriesSet,
 };
 use tsdb::block::{Block, open_block};
 use tsdb::compact::Compactor;
@@ -32,7 +32,7 @@ use tsdb_format::chunks;
 use tsdb_format::fileutil;
 use tsdb_format::index::all_postings_key;
 use tsdb_format::record::{self, Decoder, Encoder, RefSample, RefSeries};
-use tsdb_format::tombstones::{self, Interval, MemTombstones};
+use tsdb_format::tombstones::{Interval, MemTombstones};
 use tsdb_format::wlog::{self, WL, compression};
 
 use crate::common::{
@@ -2048,4 +2048,954 @@ fn test_overlapping_blocks_detects_all_overlaps() {
         ]),
         overlapping_blocks(&nc1)
     );
+}
+
+// Regression test for https://github.com/prometheus/tsdb/issues/347
+#[test]
+fn test_chunk_at_block_boundary() {
+    let db = new_test_db(vec![]);
+
+    let mut app = db.appender(&ctx());
+
+    let block_range = block_range(&db);
+    let label = ls(&["foo", "bar"]);
+
+    for i in 0..3i64 {
+        app.append(0, &label, i * block_range, 0.0).unwrap();
+        app.append(0, &label, i * block_range + 1000, 0.0).unwrap();
+    }
+
+    commit(app.as_mut());
+
+    db.compact(&ctx()).unwrap();
+
+    let mut builder = ScratchBuilder::new(0);
+
+    for block in db.blocks() {
+        let r = block.index().unwrap();
+
+        let meta = block.meta();
+
+        let (k, v) = all_postings_key();
+        let mut p = r.postings(&ctx(), k, &[v]).unwrap();
+
+        let mut chks = Vec::new();
+
+        let mut chunk_count = 0;
+
+        while p.next() {
+            r.series(p.at(), &mut builder, &mut chks).unwrap();
+            for c in &chks {
+                assert!(
+                    meta.min_time <= c.min_time && c.max_time <= meta.max_time,
+                    "chunk spans beyond block boundaries: [block.MinTime={}, block.MaxTime={}]; [chunk.MinTime={}, chunk.MaxTime={}]",
+                    meta.min_time,
+                    meta.max_time,
+                    c.min_time,
+                    c.max_time
+                );
+                chunk_count += 1;
+            }
+        }
+        assert_eq!(1, chunk_count, "expected 1 chunk in block {}, got {}", meta.ulid, chunk_count);
+        drop(p);
+        r.close().unwrap();
+    }
+}
+
+#[test]
+fn test_querier_with_boundary_chunks() {
+    let db = new_test_db(vec![]);
+
+    let mut app = db.appender(&ctx());
+
+    let block_range = block_range(&db);
+    let label = ls(&["foo", "bar"]);
+
+    for i in 0..5i64 {
+        app.append(0, &label, i * block_range, 0.0).unwrap();
+        app.append(0, &ls(&["blockID", &i.to_string()]), i * block_range, 0.0).unwrap();
+    }
+
+    commit(app.as_mut());
+
+    db.compact(&ctx()).unwrap();
+
+    assert!(db.blocks().len() >= 3, "invalid test, less than three blocks in DB");
+
+    let mut q = db.querier(block_range, 2 * block_range).unwrap();
+
+    // The requested interval covers 2 blocks, so the querier's label values for blockID should give us 2 values,
+    // one from each block.
+    let (b, ws, err) = q.label_values(&ctx(), "blockID", None, &[]);
+    assert!(err.is_none());
+    assert!(ws.is_empty());
+    assert_eq!(vec!["1".to_string(), "2".to_string()], b);
+    q.close();
+}
+
+/// Writes the series and samples records of the WAL-only tests of `TestInitializeHeadTimestamp`.
+fn write_test_wal(dir: &Path, enable_st_storage: bool) {
+    std::fs::create_dir_all(dir.join("wal")).unwrap();
+    let w = WL::new(dir.join("wal"), compression::Type::None).unwrap();
+
+    let enc = Encoder { enable_st_storage };
+    let mut series = Vec::new();
+    enc.series(
+        &[
+            RefSeries { r#ref: 123, labels: ls(&["a", "1"]) },
+            RefSeries { r#ref: 124, labels: ls(&["a", "2"]) },
+        ],
+        &mut series,
+    );
+    let mut samples = Vec::new();
+    enc.samples(
+        &[RefSample { r#ref: 123, st: 0, t: 5000, v: 1.0 }, RefSample { r#ref: 124, st: 0, t: 15000, v: 1.0 }],
+        &mut samples,
+    );
+    w.log_batch(&[series, samples]).unwrap();
+    w.close().unwrap();
+}
+
+// TestInitializeHeadTimestamp ensures that the h.minTime is set properly.
+//   - no blocks no WAL: set to the time of the first  appended sample
+//   - no blocks with WAL: set to the smallest sample from the WAL
+//   - with blocks no WAL: set to the last block maxT
+//   - with blocks with WAL: same as above
+#[test]
+fn test_initialize_head_timestamp() {
+    // clean
+    {
+        let db = new_test_db(vec![]);
+
+        // Should be set to init values if no WAL or blocks exist so far.
+        assert_eq!(i64::MAX, db.head().min_time());
+        assert_eq!(i64::MIN, db.head().max_time());
+        assert!(!db.head().initialized());
+
+        // First added sample initializes the writable range.
+        let mut app = db.appender(&ctx());
+        app.append(0, &ls(&["a", "b"]), 1000, 1.0).unwrap();
+
+        assert_eq!(1000, db.head().min_time());
+        assert_eq!(1000, db.head().max_time());
+        assert!(db.head().initialized());
+    }
+
+    for enable_st_storage in [false, true] {
+        // wal-only-st-<enableSTStorage>
+        let dir = TempDir::new();
+        write_test_wal(dir.path(), enable_st_storage);
+
+        let db = db_in(dir.path());
+
+        assert_eq!(5000, db.head().min_time());
+        assert_eq!(15000, db.head().max_time());
+        assert!(db.head().initialized());
+    }
+
+    // existing-block
+    {
+        let dir = TempDir::new();
+
+        create_block(dir.path(), &gen_series(1, 1, 1000, 2000));
+
+        let db = db_in(dir.path());
+
+        assert_eq!(2000, db.head().min_time());
+        assert_eq!(2000, db.head().max_time());
+        assert!(db.head().initialized());
+    }
+
+    for enable_st_storage in [false, true] {
+        // existing-block-and-wal,enableSTStorage=<enableSTStorage>
+        let dir = TempDir::new();
+
+        create_block(dir.path(), &gen_series(1, 1, 1000, 6000));
+        write_test_wal(dir.path(), enable_st_storage);
+
+        let db = db_in(dir.path());
+
+        assert_eq!(6000, db.head().min_time());
+        assert_eq!(15000, db.head().max_time());
+        assert!(db.head().initialized());
+        // Check that old series has been GCed.
+        // adapted: Go reads the `prometheus_tsdb_head_series` gauge, a function of the head's series count.
+        assert_eq!(1, db.head().num_series());
+    }
+}
+
+#[test]
+fn test_no_empty_blocks() {
+    let db = new_test_db(vec![with_rngs(&[100])]);
+
+    db.disable_compactions();
+
+    let range_to_trigger_compaction = block_range(&db) / 2 * 3 - 1;
+    let default_label = ls(&["foo", "bar"]);
+    let default_matcher = m(MatchType::Regexp, "", ".*");
+
+    // Test no blocks after compact with empty head.
+    {
+        db.compact(&ctx()).unwrap();
+        let act_blocks = block_dirs(db.dir()).unwrap();
+        assert_eq!(act_blocks.len(), db.blocks().len());
+        assert!(act_blocks.is_empty());
+        assert_eq!(0, compactions_ran(&db), "no compaction should be triggered here");
+    }
+
+    // Test no blocks after deleting all samples from head.
+    {
+        let mut app = db.appender(&ctx());
+        app.append(0, &default_label, 1, 0.0).unwrap();
+        app.append(0, &default_label, 2, 0.0).unwrap();
+        app.append(0, &default_label, 3 + range_to_trigger_compaction, 0.0).unwrap();
+        commit(app.as_mut());
+        db.delete(&ctx(), i64::MIN, i64::MAX, std::slice::from_ref(&default_matcher)).unwrap();
+        db.compact(&ctx()).unwrap();
+        assert_eq!(1, compactions_ran(&db), "compaction should have been triggered here");
+
+        let act_blocks = block_dirs(db.dir()).unwrap();
+        assert_eq!(act_blocks.len(), db.blocks().len());
+        assert!(act_blocks.is_empty());
+
+        let mut app = db.appender(&ctx());
+        let err = app.append(0, &default_label, 1, 0.0).unwrap_err();
+        assert!(
+            err.is(&ERR_OUT_OF_BOUNDS) && err.to_string() == ERR_OUT_OF_BOUNDS.to_string(),
+            "the head should be truncated so no samples in the past should be allowed: {err}"
+        );
+
+        // Adding new blocks.
+        let current_time = db.head().max_time();
+        app.append(0, &default_label, current_time, 0.0).unwrap();
+        app.append(0, &default_label, current_time + 1, 0.0).unwrap();
+        app.append(0, &default_label, current_time + range_to_trigger_compaction, 0.0).unwrap();
+        commit(app.as_mut());
+
+        db.compact(&ctx()).unwrap();
+        assert_eq!(2, compactions_ran(&db), "compaction should have been triggered here");
+        let act_blocks = block_dirs(db.dir()).unwrap();
+        assert_eq!(act_blocks.len(), db.blocks().len());
+        assert_eq!(act_blocks.len(), 1, "No blocks created when compacting with >0 samples");
+    }
+
+    // When no new block is created from head, and there are some blocks on disk compaction should not run into
+    // infinite loop (was seen during development).
+    {
+        let old_blocks = db.blocks();
+        let mut app = db.appender(&ctx());
+        let current_time = db.head().max_time();
+        app.append(0, &default_label, current_time, 0.0).unwrap();
+        app.append(0, &default_label, current_time + 1, 0.0).unwrap();
+        app.append(0, &default_label, current_time + range_to_trigger_compaction, 0.0).unwrap();
+        commit(app.as_mut());
+        db.head().delete(&ctx(), i64::MIN, i64::MAX, std::slice::from_ref(&default_matcher)).unwrap();
+        db.compact(&ctx()).unwrap();
+        assert_eq!(3, compactions_ran(&db), "compaction should have been triggered here");
+        // Go require.Equal on the block pointers: the same blocks.
+        let blocks = db.blocks();
+        assert_eq!(old_blocks.len(), blocks.len());
+        for (a, b) in old_blocks.iter().zip(&blocks) {
+            assert!(a.ptr_eq(b));
+        }
+    }
+
+    // Test no blocks remaining after deleting all samples from disk.
+    {
+        let current_time = db.head().max_time();
+        let r0 = block_range(&db);
+        let blocks = [meta(current_time, current_time + r0), meta(current_time + 100, current_time + 100 + r0)];
+        for m in &blocks {
+            create_block(db.dir(), &gen_series(2, 2, m.min_time, m.max_time));
+        }
+
+        let old_blocks = db.blocks();
+        db.reload_blocks().unwrap(); // Reload the db to register the new blocks.
+        assert_eq!(db.blocks().len(), blocks.len() + old_blocks.len()); // Ensure all blocks are registered.
+        db.delete(&ctx(), i64::MIN, i64::MAX, std::slice::from_ref(&default_matcher)).unwrap();
+        db.compact(&ctx()).unwrap();
+        assert_eq!(
+            5,
+            compactions_ran(&db),
+            "compaction should have been triggered here once for each block that have tombstones"
+        );
+
+        let act_blocks = block_dirs(db.dir()).unwrap();
+        assert_eq!(act_blocks.len(), db.blocks().len());
+        assert_eq!(
+            act_blocks.len(),
+            1,
+            "All samples are deleted. Only the most recent block should remain after compaction."
+        );
+    }
+}
+
+#[test]
+fn test_db_label_names() {
+    struct Case {
+        // Add 'sampleLabels1' -> Test Head -> Compact -> Test Disk -> -> Add 'sampleLabels2' -> Test Head+Disk
+        sample_labels1: Vec<[&'static str; 2]>, // For checking head and disk separately.
+        // To test Head+Disk, sampleLabels2 should have at least 1 unique label name which is not in
+        // sampleLabels1.
+        sample_labels2: Vec<[&'static str; 2]>, // For checking head and disk together.
+        exp1: Vec<&'static str>,                // after adding sampleLabels1.
+        exp2: Vec<&'static str>,                // after adding sampleLabels1 and sampleLabels2.
+    }
+    let tests = vec![
+        Case {
+            sample_labels1: vec![["name1", "1"], ["name3", "3"], ["name2", "2"]],
+            sample_labels2: vec![["name4", "4"], ["name1", "1"]],
+            exp1: vec!["name1", "name2", "name3"],
+            exp2: vec!["name1", "name2", "name3", "name4"],
+        },
+        Case {
+            sample_labels1: vec![["name2", "2"], ["name1", "1"], ["name2", "2"]],
+            sample_labels2: vec![["name6", "6"], ["name0", "0"]],
+            exp1: vec!["name1", "name2"],
+            exp2: vec!["name0", "name1", "name2", "name6"],
+        },
+    ];
+
+    let block_range = 1000i64;
+    // Appends samples into the database.
+    let append_samples = |db: &DB, mint: i64, maxt: i64, sample_labels: &[[&str; 2]]| {
+        let mut app = db.appender(&ctx());
+        for i in mint..=maxt {
+            for tuple in sample_labels {
+                let label = ls(&[tuple[0], tuple[1]]);
+                app.append(0, &label, i * block_range, 0.0).unwrap();
+            }
+        }
+        commit(app.as_mut());
+    };
+    let strs = |v: &[&str]| -> Vec<String> { v.iter().map(|s| s.to_string()).collect() };
+    for tst in &tests {
+        let db = new_test_db(vec![]);
+
+        append_samples(&db, 0, 4, &tst.sample_labels1);
+
+        // Testing head.
+        let head_indexr = db.head().index();
+        let label_names = head_indexr.label_names(&ctx(), &[]).unwrap();
+        assert_eq!(strs(&tst.exp1), label_names);
+        head_indexr.close().unwrap();
+
+        // Testing disk.
+        db.compact(&ctx()).unwrap();
+        // All blocks have same label names, hence check them individually.
+        // No need to aggregate and check.
+        for b in db.blocks() {
+            let block_indexr = b.index().unwrap();
+            let label_names = block_indexr.label_names(&ctx(), &[]).unwrap();
+            assert_eq!(strs(&tst.exp1), label_names);
+            block_indexr.close().unwrap();
+        }
+
+        // Adding more samples to head with new label names so that we can test (head+disk).LabelNames(ctx) (the
+        // union).
+        append_samples(&db, 5, 9, &tst.sample_labels2);
+
+        // Testing DB (union).
+        let mut q = db.querier(i64::MIN, i64::MAX).unwrap();
+        let (label_names, ws, err) = q.label_names(&ctx(), None, &[]);
+        assert!(err.is_none());
+        assert!(ws.is_empty());
+        assert!(q.close().is_none());
+        assert_eq!(strs(&tst.exp2), label_names);
+    }
+}
+
+#[test]
+fn test_correct_num_tombstones() {
+    let db = new_test_db(vec![]);
+
+    let block_range = block_range(&db);
+    let (name, value) = ("foo", "bar");
+    let default_label = ls(&[name, value]);
+    let default_matcher = [eq(name, value)];
+
+    let mut app = db.appender(&ctx());
+    for i in 0..3i64 {
+        for j in 0..15i64 {
+            app.append(0, &default_label, i * block_range + j, 0.0).unwrap();
+        }
+    }
+    commit(app.as_mut());
+
+    db.compact(&ctx()).unwrap();
+    assert_eq!(db.blocks().len(), 1);
+
+    db.delete(&ctx(), 0, 1, &default_matcher).unwrap();
+    assert_eq!(1, db.blocks()[0].meta().stats.num_tombstones);
+
+    // {0, 1} and {2, 3} are merged to form 1 tombstone.
+    db.delete(&ctx(), 2, 3, &default_matcher).unwrap();
+    assert_eq!(1, db.blocks()[0].meta().stats.num_tombstones);
+
+    db.delete(&ctx(), 5, 6, &default_matcher).unwrap();
+    assert_eq!(2, db.blocks()[0].meta().stats.num_tombstones);
+
+    db.delete(&ctx(), 9, 11, &default_matcher).unwrap();
+    assert_eq!(3, db.blocks()[0].meta().stats.num_tombstones);
+}
+
+// TestBlockRanges checks the following use cases:
+//   - No samples can be added with timestamps lower than the last block maxt.
+//   - The compactor doesn't create overlapping blocks even when the last blocks is not within the default
+//     boundaries.
+//   - Lower boundary is based on the smallest sample in the head and upper boundary is rounded to the configured
+//     block range.
+//
+// This ensures that a snapshot that includes the head and creates a block with a custom time range will not
+// overlap with the first block created by the next compaction.
+#[test]
+fn test_block_ranges() {
+    let logger = tsdb::Logger::nop();
+
+    let dir = TempDir::new();
+
+    // Test that the compactor doesn't create overlapping blocks when a non standard block already exists.
+    let first_block_max_t = 3i64;
+    create_block(dir.path(), &gen_series(1, 1, 0, first_block_max_t));
+    let db = tsdb::db::open_with_ranges(dir.path(), Some(logger.clone()), default_options(), vec![10000], None)
+        .unwrap();
+    db.disable_compactions();
+
+    let range_to_trigger_compaction = block_range(&db) / 2 * 3 + 1;
+
+    let mut app = db.appender(&ctx());
+    let lbl = ls(&["a", "b"]);
+    assert!(
+        app.append(0, &lbl, first_block_max_t - 1, rand_f64()).is_err(),
+        "appending a sample with a timestamp covered by a previous block shouldn't be possible"
+    );
+    app.append(0, &lbl, first_block_max_t + 1, rand_f64()).unwrap();
+    app.append(0, &lbl, first_block_max_t + 2, rand_f64()).unwrap();
+    let second_block_maxt = first_block_max_t + range_to_trigger_compaction;
+    app.append(0, &lbl, second_block_maxt, rand_f64()).unwrap(); // Add samples to trigger a new compaction
+
+    commit(app.as_mut());
+    db.compact(&ctx()).unwrap();
+    let blocks = db.blocks();
+    assert_eq!(blocks.len(), 2, "no new block after compaction");
+
+    assert!(
+        blocks[1].meta().min_time >= blocks[0].meta().max_time,
+        "new block overlaps  old:{:?},new:{:?}",
+        blocks[0].meta(),
+        blocks[1].meta()
+    );
+
+    // Test that wal records are skipped when an existing block covers the same time ranges and compaction
+    // doesn't create an overlapping block.
+    let mut app = db.appender(&ctx());
+    app.append(0, &lbl, second_block_maxt + 1, rand_f64()).unwrap();
+    app.append(0, &lbl, second_block_maxt + 2, rand_f64()).unwrap();
+    app.append(0, &lbl, second_block_maxt + 3, rand_f64()).unwrap();
+    app.append(0, &lbl, second_block_maxt + 4, rand_f64()).unwrap();
+    commit(app.as_mut());
+    db.close().unwrap();
+
+    let third_block_maxt = second_block_maxt + 2;
+    create_block(dir.path(), &gen_series(1, 1, second_block_maxt + 1, third_block_maxt));
+
+    let db = tsdb::db::open_with_ranges(dir.path(), Some(logger), default_options(), vec![10000], None).unwrap();
+    db.disable_compactions();
+
+    assert_eq!(db.blocks().len(), 3, "db doesn't include expected number of blocks");
+    assert_eq!(db.blocks()[2].meta().max_time, third_block_maxt, "unexpected maxt of the last block");
+
+    let mut app = db.appender(&ctx());
+    app.append(0, &lbl, third_block_maxt + range_to_trigger_compaction, rand_f64()).unwrap(); // Trigger a compaction
+    commit(app.as_mut());
+    db.compact(&ctx()).unwrap();
+    let blocks = db.blocks();
+    assert_eq!(blocks.len(), 4, "no new block after compaction");
+
+    assert!(
+        blocks[3].meta().min_time >= blocks[2].meta().max_time,
+        "new block overlaps  old:{:?},new:{:?}",
+        blocks[2].meta(),
+        blocks[3].meta()
+    );
+    db.close().unwrap();
+}
+
+// TestDBReadOnly ensures that opening a DB in readonly mode doesn't modify any files on the disk. It also checks
+// that the API calls return equivalent results as a normal db.Open() mode.
+#[test]
+fn test_db_read_only() {
+    let db_dir = TempDir::new();
+    let match_all = [eq("", "")];
+
+    // Bootstrap the db.
+    {
+        let db_blocks = [
+            // Create three 2-sample blocks.
+            meta(10, 12),
+            meta(12, 14),
+            meta(14, 16),
+        ];
+
+        for m in &db_blocks {
+            let _ = create_block(db_dir.path(), &gen_series(1, 1, m.min_time, m.max_time));
+        }
+
+        // Add head to test DBReadOnly WAL reading capabilities.
+        let w = Arc::new(WL::new(db_dir.path().join("wal"), compression::Type::Snappy).unwrap());
+        let h = create_head(w, &gen_series(1, 1, 16, 18), db_dir.path());
+        h.close().unwrap();
+    }
+
+    // Open a normal db to use for a comparison.
+    let (exp_blocks, exp_series, exp_chunks, exp_db_hash);
+    {
+        let db_writable = db_in(db_dir.path());
+        db_writable.disable_compactions();
+
+        let db_size_before_append = fileutil::dir_size(db_writable.dir()).unwrap();
+        let mut app = db_writable.appender(&ctx());
+        app.append(0, &ls(&["foo", "bar"]), db_writable.head().max_time() + 1, 0.0).unwrap();
+        commit(app.as_mut());
+
+        exp_blocks = db_writable.blocks().iter().map(|b| b.meta()).collect::<Vec<_>>();
+        let exp_db_size = fileutil::dir_size(db_writable.dir()).unwrap();
+        assert!(exp_db_size > db_size_before_append, "db size didn't increase after an append");
+
+        let q = db_writable.querier(i64::MIN, i64::MAX).unwrap();
+        exp_series = query(q, &match_all);
+        let cq = db_writable.chunk_querier(i64::MIN, i64::MAX).unwrap();
+        exp_chunks = query_and_expand_chunks(cq, &match_all);
+
+        db_writable.close().unwrap(); // Close here to allow getting the dir hash for windows.
+        exp_db_hash = dir_hash(db_writable.dir());
+    }
+    let exp_block = exp_blocks[0].clone();
+
+    // Open a read only db and ensure that the API returns the same result as the normal DB.
+    let mut db_read_only = DbReadOnly::open(db_dir.path(), None, None).unwrap();
+
+    // blocks
+    {
+        let blocks = db_read_only.blocks().unwrap();
+        assert_eq!(blocks.len(), exp_blocks.len());
+        for (i, exp_block) in exp_blocks.iter().enumerate() {
+            assert_eq!(exp_block, &blocks[i].meta(), "block meta mismatch");
+        }
+    }
+    // block
+    {
+        let block_id = exp_block.ulid.to_string();
+        let block = db_read_only.block(&block_id, None).unwrap();
+        assert_eq!(exp_block, block.meta(), "block meta mismatch");
+    }
+    // invalid block ID
+    {
+        let block_id = "01GTDVZZF52NSWB5SXQF0P2PGF";
+        assert!(db_read_only.block(block_id, None).is_err());
+    }
+    // last block ID
+    {
+        let block_id = db_read_only.last_block_id().unwrap();
+        assert_eq!(exp_blocks[2].ulid.to_string(), block_id);
+    }
+    // querier
+    {
+        // Open a read only db and ensure that the API returns the same result as the normal DB.
+        let q = db_read_only.querier(i64::MIN, i64::MAX).unwrap();
+        let read_only_series = query(q, &match_all);
+        let read_only_db_hash = dir_hash(db_dir.path());
+
+        assert_eq!(read_only_series.len(), exp_series.len(), "total series mismatch");
+        assert_eq!(exp_series, read_only_series, "series mismatch");
+        assert_eq!(exp_db_hash, read_only_db_hash, "after all read operations the db hash should remain the same");
+    }
+    // chunk querier
+    {
+        let cq = db_read_only.chunk_querier(i64::MIN, i64::MAX).unwrap();
+        let read_only_series = query_and_expand_chunks(cq, &match_all);
+        let read_only_db_hash = dir_hash(db_dir.path());
+
+        assert_eq!(read_only_series.len(), exp_chunks.len(), "total series mismatch");
+        assert_eq!(exp_chunks, read_only_series, "series chunks mismatch");
+        assert_eq!(exp_db_hash, read_only_db_hash, "after all read operations the db hash should remain the same");
+    }
+    db_read_only.close().unwrap();
+}
+
+// TestDBReadOnlyClosing ensures that after closing the db all api methods return an ErrClosed.
+#[test]
+fn test_db_read_only_closing() {
+    let sandbox_dir = TempDir::new();
+    let dir = TempDir::new();
+    let mut db = DbReadOnly::open(dir.path(), Some(sandbox_dir.path()), Some(tsdb::Logger::nop())).unwrap();
+    // The sandboxDir was there.
+    assert!(db.sandbox_dir().is_dir());
+    db.close().unwrap();
+    // The sandboxDir was deleted when closing.
+    assert!(!db.sandbox_dir().exists());
+    let err = db.close().unwrap_err();
+    assert!(err.is(&ERR_CLOSED), "{err}");
+    let err = db.blocks().err().unwrap();
+    assert!(err.is(&ERR_CLOSED), "{err}");
+    let err = db.querier(0, 1).err().unwrap();
+    assert!(err.is(&ERR_CLOSED), "{err}");
+}
+
+#[test]
+fn test_db_read_only_flush_wal() {
+    let db_dir = TempDir::new();
+    let maxt = 1000;
+
+    // Bootstrap the db.
+    {
+        // Append data to the WAL.
+        let db = db_in(db_dir.path());
+        db.disable_compactions();
+        let mut app = db.appender(&ctx());
+        for i in 0..maxt {
+            app.append(0, &ls(&[DEFAULT_LABEL_NAME, "flush"]), i, 1.0).unwrap();
+        }
+        commit(app.as_mut());
+        db.close().unwrap();
+    }
+
+    // Flush WAL.
+    let mut db = DbReadOnly::open(db_dir.path(), None, None).unwrap();
+
+    let flush = TempDir::new();
+    db.flush_wal(flush.path()).unwrap();
+    db.close().unwrap();
+
+    // Reopen the DB from the flushed WAL block.
+    let mut db = DbReadOnly::open(flush.path(), None, None).unwrap();
+    let blocks = db.blocks().unwrap();
+    assert_eq!(blocks.len(), 1);
+
+    let mut querier = db.querier(0, maxt - 1).unwrap();
+
+    // Sum the values.
+    let sum = sum_values(querier.as_ref(), eq(DEFAULT_LABEL_NAME, "flush"));
+    assert!(querier.close().is_none());
+    assert_eq!(1000.0, sum);
+    db.close().unwrap();
+}
+
+#[test]
+fn test_db_read_only_querier_no_alteration() {
+    let count_chunks = |dir: &Path| -> usize { std::fs::read_dir(mmapped_chunks_dir(dir)).unwrap().count() };
+
+    let spin_up_querier_and_check = |dir: &Path, sandbox_dir: &Path, chunks_count: usize| {
+        let db_dir_hash = dir_hash(dir);
+        // Bootstrap a RO db from the same dir and set up a querier.
+        let mut db_read_only = DbReadOnly::open(dir, Some(sandbox_dir), None).unwrap();
+        assert_eq!(chunks_count, count_chunks(dir));
+        let mut q = db_read_only.querier(i64::MIN, i64::MAX).unwrap();
+        assert!(q.close().is_none());
+        db_read_only.close().unwrap();
+        // The RO Head doesn't alter RW db chunks_head/.
+        assert_eq!(chunks_count, count_chunks(dir));
+        assert_eq!(dir_hash(dir), db_dir_hash);
+    };
+
+    // doesn't cut chunks while replaying WAL
+    {
+        let db = new_test_db(vec![]);
+
+        // Append until the first mmapped head chunk.
+        for i in 0..121 {
+            let mut app = db.appender(&ctx());
+            app.append(0, &ls(&["foo", "bar"]), i, 0.0).unwrap();
+            commit(app.as_mut());
+        }
+
+        let sandbox = TempDir::new();
+        spin_up_querier_and_check(db.dir(), sandbox.path(), 0);
+
+        // The RW Head should have no problem cutting its own chunk, this also proves that a chunk needed to be
+        // cut.
+        db.force_head_mmap();
+        assert_eq!(1, count_chunks(db.dir()));
+    }
+
+    // doesn't truncate corrupted chunks
+    {
+        let db = new_test_db(vec![]);
+        db.close().unwrap();
+
+        // Simulate a corrupted chunk: without a header.
+        std::fs::File::create(mmapped_chunks_dir(db.dir()).join("000001")).unwrap();
+
+        let sandbox = TempDir::new();
+        spin_up_querier_and_check(db.dir(), sandbox.path(), 1);
+
+        // The RW Head should have no problem truncating its corrupted file: this proves that the chunk needed to
+        // be truncated.
+        let db2 = db_in(db.dir());
+
+        assert_eq!(0, count_chunks(db2.dir()));
+    }
+}
+
+#[test]
+fn test_db_cannot_see_partial_commits() {
+    // Go skips the test when isolation is disabled (defaultIsolationDisabled); it is enabled here.
+    let db = new_test_db(vec![]);
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let (first_insert_tx, first_insert_rx) = mpsc::channel::<()>();
+
+    // Insert data in batches.
+    let writer = {
+        let db: Arc<DB> = db.db.clone();
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            let mut iter = 0i64;
+            loop {
+                let mut app = db.appender(&ctx());
+
+                for j in 0..100 {
+                    app.append(0, &ls(&["foo", "bar", "a", &j.to_string()]), iter, iter as f64).unwrap();
+                }
+                commit(app.as_mut());
+
+                if iter == 0 {
+                    first_insert_tx.send(()).unwrap();
+                }
+                iter += 1;
+
+                if stop.load(Ordering::SeqCst) {
+                    return;
+                }
+            }
+        })
+    };
+
+    first_insert_rx.recv().unwrap();
+
+    // This is a race condition, so do a few tests to tickle it.
+    // Usually most will fail.
+    let mut inconsistencies = 0;
+    for _ in 0..10 {
+        let mut querier = db.querier(0, 1000000).unwrap();
+        {
+            let mut ss = querier.select(&ctx(), false, None, &[eq("foo", "bar")]);
+            let (_, series_set, ws, err) = expand_series_set(ss.as_mut());
+            assert!(err.is_none());
+            assert!(ws.is_empty());
+
+            let mut values = std::collections::HashSet::new();
+            for series in series_set.values() {
+                values.insert(series[series.len() - 1].1.to_bits());
+            }
+            if values.len() != 1 {
+                inconsistencies += 1;
+            }
+        }
+        querier.close();
+    }
+    stop.store(true, Ordering::SeqCst);
+    writer.join().unwrap();
+
+    assert_eq!(0, inconsistencies, "Some queries saw inconsistent results.");
+}
+
+#[test]
+fn test_db_query_doesnt_see_appends_after_creation() {
+    // Go skips the test when isolation is disabled (defaultIsolationDisabled); it is enabled here.
+    let db = new_test_db(vec![]);
+    let mut querier_before_add = db.querier(0, 1000000).unwrap();
+
+    let mut app = db.appender(&ctx());
+    app.append(0, &ls(&["foo", "bar"]), 0, 0.0).unwrap();
+
+    let mut querier_after_add_but_before_commit = db.querier(0, 1000000).unwrap();
+
+    let expand = |q: &dyn storage::Querier| {
+        let mut ss = q.select(&ctx(), false, None, &[eq("foo", "bar")]);
+        let (_, series_set, ws, err) = expand_series_set(ss.as_mut());
+        assert!(err.is_none());
+        assert!(ws.is_empty());
+        series_set
+    };
+
+    // None of the queriers should return anything after the Add but before the commit.
+    assert_eq!(BTreeMap::new(), expand(querier_before_add.as_ref()));
+    assert_eq!(BTreeMap::new(), expand(querier_after_add_but_before_commit.as_ref()));
+
+    // This commit is after the queriers are created, so should not be returned.
+    commit(app.as_mut());
+
+    // Nothing returned for querier created before the Add.
+    assert_eq!(BTreeMap::new(), expand(querier_before_add.as_ref()));
+
+    // Series exists but has no samples for querier created after Add.
+    assert_eq!(
+        BTreeMap::from([(r#"{foo="bar"}"#.to_string(), Vec::new())]),
+        expand(querier_after_add_but_before_commit.as_ref())
+    );
+
+    let mut querier_after_commit = db.querier(0, 1000000).unwrap();
+
+    // Samples are returned for querier created after Commit.
+    assert_eq!(
+        BTreeMap::from([(r#"{foo="bar"}"#.to_string(), vec![(0, 0.0)])]),
+        expand(querier_after_commit.as_ref())
+    );
+    querier_after_commit.close();
+    querier_after_add_but_before_commit.close();
+    querier_before_add.close();
+}
+
+fn assure_chunk_from_samples(samples: &[Sample]) -> Meta {
+    storage::chunks::chunk_from_samples(samples).unwrap()
+}
+
+/// The length of the uvarint encoding of `x` (Go `binary.PutUvarint`).
+fn uvarint_len(mut x: u64) -> usize {
+    let mut n = 1;
+    while x >= 0x80 {
+        x >>= 7;
+        n += 1;
+    }
+    n
+}
+
+// TestChunkWriter_ReadAfterWrite ensures that chunk segment are cut at the set segment size and that the
+// resulted segments includes the expected chunks data.
+#[test]
+fn test_chunk_writer_read_after_write() {
+    let chk1 = assure_chunk_from_samples(&[fs(1, 1.0)]);
+    let chk2 = assure_chunk_from_samples(&[fs(1, 2.0)]);
+    let chk3 = assure_chunk_from_samples(&[fs(1, 3.0)]);
+    let chk4 = assure_chunk_from_samples(&[fs(1, 4.0)]);
+    let chk5 = assure_chunk_from_samples(&[fs(1, 5.0)]);
+    let chunk_size = chk1.chunk.as_ref().unwrap().bytes().len()
+        + chunks::MAX_CHUNK_LENGTH_FIELD_SIZE
+        + chunks::CHUNK_ENCODING_SIZE
+        + 4; // crc32.Size
+
+    struct Case {
+        chks: Vec<Vec<Meta>>,
+        segment_size: usize,
+        exp_segments_count: usize,
+        exp_segment_sizes: Vec<usize>,
+    }
+    let c = |v: &[&Meta]| -> Vec<Meta> { v.iter().map(|m| (*m).clone()).collect() };
+    let tests = vec![
+        // 0:Last chunk ends at the segment boundary so all chunks should fit in a single segment.
+        Case {
+            chks: vec![c(&[&chk1, &chk2, &chk3])],
+            segment_size: 3 * chunk_size,
+            exp_segment_sizes: vec![3 * chunk_size],
+            exp_segments_count: 1,
+        },
+        // 1:Two chunks can fit in a single segment so the last one should result in a new segment.
+        Case {
+            chks: vec![c(&[&chk1, &chk2, &chk3, &chk4, &chk5])],
+            segment_size: 2 * chunk_size,
+            exp_segment_sizes: vec![2 * chunk_size, 2 * chunk_size, chunk_size],
+            exp_segments_count: 3,
+        },
+        // 2:When the segment size is smaller than the size of 2 chunks the last segment should still create a
+        // new segment.
+        Case {
+            chks: vec![c(&[&chk1, &chk2, &chk3])],
+            segment_size: 2 * chunk_size - 1,
+            exp_segment_sizes: vec![chunk_size, chunk_size, chunk_size],
+            exp_segments_count: 3,
+        },
+        // 3:When the segment is smaller than a single chunk it should still be written by ignoring the max
+        // segment size.
+        Case {
+            chks: vec![c(&[&chk1])],
+            segment_size: chunk_size - 1,
+            exp_segment_sizes: vec![chunk_size],
+            exp_segments_count: 1,
+        },
+        // 4:All chunks are bigger than the max segment size, but these should still be written even when this
+        // will result in bigger segment than the set size. Each segment will hold a single chunk.
+        Case {
+            chks: vec![c(&[&chk1, &chk2, &chk3])],
+            segment_size: 1,
+            exp_segment_sizes: vec![chunk_size, chunk_size, chunk_size],
+            exp_segments_count: 3,
+        },
+        // 5:Adding multiple batches of chunks.
+        Case {
+            chks: vec![c(&[&chk1, &chk2, &chk3]), c(&[&chk4, &chk5])],
+            segment_size: 3 * chunk_size,
+            exp_segment_sizes: vec![3 * chunk_size, 2 * chunk_size],
+            exp_segments_count: 2,
+        },
+        // 6:Adding multiple batches of chunks.
+        Case {
+            chks: vec![c(&[&chk1]), c(&[&chk2, &chk3]), c(&[&chk4])],
+            segment_size: 2 * chunk_size,
+            exp_segment_sizes: vec![2 * chunk_size, 2 * chunk_size],
+            exp_segments_count: 2,
+        },
+    ];
+
+    for (i, mut test) in tests.into_iter().enumerate() {
+        let temp_dir = TempDir::new();
+
+        let mut chunkw = chunks::new_writer(
+            temp_dir.path(),
+            &[chunks::with_segment_size((chunks::SEGMENT_HEADER_SIZE + test.segment_size) as i64)],
+        )
+        .unwrap();
+
+        for chks in &mut test.chks {
+            chunkw.write_chunks(chks).unwrap();
+        }
+        chunkw.close().unwrap();
+
+        let files = file_names(temp_dir.path());
+        assert_eq!(files.len(), test.exp_segments_count, "case {i}: expected segments count mismatch");
+
+        // Verify that all data is written to the segments.
+        let mut size_exp = 0;
+        let mut size_act = 0;
+
+        for chks in &test.chks {
+            for chk in chks {
+                let n = chk.chunk.as_ref().unwrap().bytes().len();
+                size_exp += uvarint_len(n as u64); // The length field.
+                size_exp += chunks::CHUNK_ENCODING_SIZE;
+                size_exp += n; // The data itself.
+                size_exp += 4; // The 4 bytes of crc32
+            }
+        }
+        size_exp += test.exp_segments_count * chunks::SEGMENT_HEADER_SIZE; // The segment header bytes.
+
+        for (j, f) in files.iter().enumerate() {
+            let size = std::fs::metadata(temp_dir.path().join(f)).unwrap().len() as usize;
+            // Verify that the segment is the same or smaller than the expected size.
+            assert!(
+                chunks::SEGMENT_HEADER_SIZE + test.exp_segment_sizes[j] >= size,
+                "Segment:{} should NOT be bigger than:{} actual:{}",
+                j,
+                chunks::SEGMENT_HEADER_SIZE + test.exp_segment_sizes[j],
+                size
+            );
+
+            size_act += size;
+        }
+        assert_eq!(size_exp, size_act, "case {i}");
+
+        // Check the content of the chunks.
+        let r = chunks::new_dir_reader(temp_dir.path(), None).unwrap();
+
+        for chks in &test.chks {
+            for chk_exp in chks {
+                // adapted: the Rust block chunk reader returns the chunk only (never an iterable), so Go's
+                // `require.Nil(t, iterable)` holds by type.
+                let chk_act = r.chunk_or_iterable(chk_exp).unwrap();
+                assert_eq!(chk_exp.chunk.as_ref().unwrap().bytes(), chk_act.bytes());
+            }
+        }
+        r.close().unwrap();
+    }
 }
