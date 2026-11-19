@@ -668,6 +668,9 @@ impl Handler {
             r.set(API, "otlp_write_receiver", o.enable_otlp_write_receiver);
             r.set(API, "query_cost", o.enable_query_cost);
             r.set(API, "search", o.enable_search);
+            for alg in crate::api::search::fuzz_algorithms() {
+                r.enable(API, &format!("search_fuzz_alg_{}", alg));
+            }
             r.set("otlp_receiver", "delta_conversion", o.convert_otlp_delta);
             r.set("otlp_receiver", "native_delta_ingestion", o.native_otlp_delta_ingestion);
             for f in ["label_values_match", "query_warnings", "query_stats", "time_range_series", "time_range_labels", "exclude_alerts", "openapi_3.1", "openapi_3.2"] {
@@ -755,7 +758,12 @@ impl Handler {
             lookback_delta: o.lookback_delta.as_nanos() as i64,
             override_error_code: None,
             feature_registry: o.feature_registry.clone(),
-            openapi_options: Default::default(),
+            openapi_options: crate::api::openapi::OpenApiOptions {
+                include_paths: Vec::new(),
+                external_url: o.external_url.to_string(),
+                version: o.version.as_ref().map(|v| v.version.clone()).unwrap_or_default(),
+                max_search_limit: o.max_search_limit,
+            },
             parser: Some(parser.clone()),
             enable_query_cost: o.enable_query_cost,
             query_timeout_flag: o.query_timeout.as_nanos() as i64,

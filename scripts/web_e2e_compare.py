@@ -78,9 +78,14 @@ SELF_RS = RS.split("//")[1]
 SELF_GO = GO.split("//")[1]
 
 
+PORT_RS = ":" + SELF_RS.rsplit(":", 1)[1]
+PORT_GO = ":" + SELF_GO.rsplit(":", 1)[1]
+
+
 def mask_self(v):
     if isinstance(v, str):
-        return v.replace(SELF_RS, "SELF").replace(SELF_GO, "SELF")
+        # The self-scrape address, and the external host:port the global URL uses for it.
+        return v.replace(SELF_RS, "SELF").replace(SELF_GO, "SELF").replace(PORT_RS + "/", ":SELFPORT/").replace(PORT_GO + "/", ":SELFPORT/")
     if isinstance(v, dict):
         return {mask_self(k): mask_self(x) for k, x in v.items()}
     if isinstance(v, list):
@@ -203,6 +208,22 @@ def main():
     compare("query_exemplars empty", "/api/v1/query_exemplars", {"query": "up", "start": "0", "end": now})
     compare("admin disabled", "/api/v1/admin/tsdb/snapshot")
     compare("unknown endpoint", "/api/v1/nope")
+    # Web handler endpoints (non-JSON bodies are compared as text).
+    compare("/-/healthy", "/-/healthy")
+    compare("/-/ready", "/-/ready")
+    compare("/-/reload GET", "/-/reload")
+    compare("/query UI page", "/query")
+    compare("/graph redirect", "/graph", {"g0.expr": "up"})
+    s1, c1, b1 = get(RS, "/version")
+    s2, c2, b2 = get(GO, "/version")
+    report("/version (status, type, keys)", (s1, c1, list(json.loads(b1))) == (s2, c2, list(json.loads(b2))), f"rust={s1} {c1} {b1}\ngo  ={s2} {c2} {b2}")
+    s1, c1, b1 = get(RS, "/federate", {"match[]": "node_load1"})
+    s2, c2, b2 = get(GO, "/federate", {"match[]": "node_load1"})
+    strip = lambda b: [ln.split("{")[0] for ln in b.splitlines()]
+    report("/federate node_load1 (names, status, type)", (s1, c1, strip(b1)) == (s2, c2, strip(b2)), f"rust={s1} {c1} {b1[:300]}\ngo  ={s2} {c2} {b2[:300]}")
+    s1, c1, _ = get(RS, "/metrics")
+    s2, c2, _ = get(GO, "/metrics")
+    report("/metrics status and content type", (s1, c1) == (s2, c2), f"rust={s1} {c1} go={s2} {c2}")
     print(f"{fails} differences")
     sys.exit(1 if fails else 0)
 

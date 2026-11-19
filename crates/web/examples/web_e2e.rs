@@ -8,8 +8,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use web::api::{Api, ApiOptions, GlobalUrlOptions, PrometheusVersion, RuntimeInfo};
-use web::gotime::Time;
+use web::api::PrometheusVersion;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -28,14 +27,13 @@ fn main() {
         }
     }
     let cfg = Arc::new(cfg);
-    let start_time = Time::now();
 
     // TSDB (Prometheus defaults: 15d retention, exemplar storage off).
     let opts = tsdb::db::prometheus_options(15 * 24 * 3600 * 1000, false);
     let db = tsdb::db::open(std::path::Path::new(&data_dir), None, Some(opts), None).expect("open tsdb");
 
     // Discovery and scrape.
-    let reg = discovery::Registry::new();
+    let reg = web::metrics::default_registry().clone();
     let sd_metrics = discovery::create_and_register_sd_metrics(&reg).expect("sd metrics");
     let ctx = discovery::CancelToken::new();
     let dm = discovery::Manager::new(&ctx, logger.clone(), &reg, &sd_metrics, discovery::ManagerOptions::default()).expect("discovery manager");
@@ -71,67 +69,61 @@ fn main() {
         ..Default::default()
     }));
 
-    let cwd = std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default();
-    let hostname = std::fs::read_to_string("/proc/sys/kernel/hostname").unwrap_or_default().trim().to_string();
     let mut flags = BTreeMap::new();
     flags.insert("config.file".to_string(), cfg_file.clone());
     flags.insert("web.listen-address".to_string(), listen.clone());
     flags.insert("storage.tsdb.path".to_string(), data_dir.clone());
-    let cfg2 = cfg.clone();
     // Go's default external URL: http://<hostname>:<port>/.
     let port = listen.rsplit(':').next().unwrap_or("9090").to_string();
-    let host = format!("{}:{}", std::fs::read_to_string("/proc/sys/kernel/hostname").unwrap_or_default().trim(), port);
-    let api = Arc::new(Api::new(ApiOptions {
-        query_engine: Some(engine),
-        queryable: Some(db.clone()),
-        exemplar_queryable: Some(db.clone()),
+    let hostname = std::fs::read_to_string("/proc/sys/kernel/hostname").unwrap_or_default().trim().to_string();
+    let features = Arc::new(promql::features::Registry::new());
+    let adapter = Arc::new(web::web::TsdbAdapter(db.clone()));
+    let h = web::web::Handler::new(web::web::Options {
+        tsdb_retention_duration: yaml::types::Duration(15 * 24 * 3600 * 1_000_000_000),
+        tsdb_dir: data_dir.clone(),
+        local_storage: Some(adapter.clone()),
+        tsdb_admin: Some(adapter),
+        storage: Some(db.clone()),
+        exemplar_storage: Some(db.clone()),
         cost_sampling: Some(db.clone()),
+        query_engine: Some(engine),
+        lookback_delta: Duration::from_secs(300),
+        query_timeout: Duration::from_secs(120),
         scrape_pools_retriever: Some(sm.clone()),
         target_retriever: Some(sm.clone()),
-        config: Some(Arc::new(move || cfg2.clone())),
-        flags,
-        global_url_options: GlobalUrlOptions { listen_address: listen.clone(), host, scheme: "http".to_string() },
-        db: Some(db.clone()),
-        db_dir: data_dir.clone(),
-        runtime_info: Some(Arc::new(move || {
-            Ok(RuntimeInfo {
-                start_time,
-                cwd: cwd.clone(),
-                hostname: hostname.clone(),
-                server_time: Time::now(),
-                reload_config_success: true,
-                last_config_time: start_time,
-                storage_retention: "15d".to_string(),
-                gomaxprocs: std::thread::available_parallelism().map(|n| n.get() as i64).unwrap_or(1),
-                ..Default::default()
-            })
-        })),
-        build_info: PrometheusVersion {
+        version: Some(PrometheusVersion {
             version: env!("CARGO_PKG_VERSION").to_string(),
             revision: String::new(),
             branch: String::new(),
             build_user: String::new(),
             build_date: String::new(),
             go_version: "rust".to_string(),
-        },
-        gatherer: Some(web::metrics::default_gatherer()),
-        lookback_delta: 300_000_000_000,
-        openapi_options: web::api::openapi::OpenApiOptions {
-            external_url: format!("http://{}", listen),
-            version: env!("CARGO_PKG_VERSION").to_string(),
-            ..Default::default()
-        },
+        }),
+        flags,
+        listen_addresses: vec![listen.clone()],
+        external_url: web::web::ExternalUrl::parse(&format!("http://{}:{}", hostname, port)),
+        route_prefix: "/".to_string(),
+        enable_lifecycle: std::env::var("WEB_E2E_LIFECYCLE").is_ok(),
+        page_title: "Prometheus Time Series Collection and Processing Server".to_string(),
+        app_name: "Prometheus Server".to_string(),
+        registerer: Some(reg.clone()),
+        feature_registry: Some(features),
         ..Default::default()
-    }));
-    let router = Arc::new(api.router("/api/v1"));
-
-    struct Svc(Arc<web::route::Router>);
-    impl http::Service for Svc {
-        fn handle(&self, req: http::Request) -> http::Response {
-            self.0.serve(req)
-        }
-    }
-    let server = http::Server::bind(&listen, http::ServerConfig { gzip: false, ..Default::default() }).expect("bind");
+    });
+    h.apply_config(cfg.clone());
+    h.set_ready(web::web::ReadyStatus::Ready);
+    let listeners = h.listeners().expect("listen");
     eprintln!("web_e2e listening on {}", listen);
-    server.run(Arc::new(Svc(router)));
+    let token = web::web::CancelToken::new();
+    let (h2, t2) = (h.clone(), token.clone());
+    std::thread::spawn(move || {
+        h2.quit_signal().wait();
+        t2.cancel();
+    });
+    if let Err(e) = h.run(&token, listeners, "") {
+        eprintln!("web: {}", e);
+    }
+    sm.stop();
+    ctx.cancel();
+    let _ = db.close();
 }
