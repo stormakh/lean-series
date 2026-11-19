@@ -83,7 +83,7 @@ impl ItemType {
             NEQ_REGEX => "!~",
             POW => "^",
             AT => "@",
-            _ => return KEYWORDS.iter().find(|(_, t)| *t == self).map(|(s, _)| *s),
+            _ => return KEYWORDS.iter().chain(MORE_KEYWORDS.iter()).find(|(_, t)| *t == self).map(|(s, _)| *s),
         })
     }
 

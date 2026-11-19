@@ -624,6 +624,8 @@ pub enum Data {
     RawList(Vec<String>),
     /// A JSON value (parse_query).
     Json(json::Json),
+    /// A single float point `[ts, "v"]`.
+    FPoint(promql::FPoint),
 }
 
 impl Data {
@@ -843,6 +845,7 @@ impl Data {
                 out.push(']');
             }
             Data::Json(j) => j.write(out),
+            Data::FPoint(p) => super::jsonutil::write_fpoint(p, out),
         }
     }
 }
