@@ -58,6 +58,22 @@ impl LabelSet {
         }
         r
     }
+    /// Go `Fingerprint`: FNV-1a 64 over the sorted names and values, each followed by the separator byte 255.
+    /// The empty set has the FNV offset basis.
+    pub fn fingerprint(&self) -> u64 {
+        const OFFSET64: u64 = 14695981039346656037;
+        const PRIME64: u64 = 1099511628211;
+        let add = |h: u64, b: &[u8]| b.iter().fold(h, |h, &c| (h ^ c as u64).wrapping_mul(PRIME64));
+        let mut h = OFFSET64;
+        for (k, v) in self.0.iter() {
+            h = add(h, k.as_bytes());
+            h = add(h, &[255]);
+            h = add(h, v.as_bytes());
+            h = add(h, &[255]);
+        }
+        h
+    }
+
     /// As `labels.Labels`.
     pub fn to_labels(&self) -> Labels {
         labels::from_map(self.0.iter().map(|(k, v)| (k.as_str(), v.as_str())))

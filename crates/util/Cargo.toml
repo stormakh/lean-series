@@ -8,6 +8,24 @@ license.workspace = true
 storage = { path = "../storage" }
 model = { path = "../model" }
 json = { path = "../json" }
+# httputil: request and response types of the HTTP server.
+http = { path = "../http" }
+# httputil: the CORS origin regex.
+regex = "1.13"
+# compression: Snappy block format and zstd (already used by tsdb-format).
+snap = "1"
+zstd = { version = "0.13", default-features = false }
+# runtime: getrlimit, uname, statfs (already used by tsdb-format).
+libc = "0.2"
+textparse = { path = "../textparse" }
+yaml = { path = "../yaml" }
 
 [dev-dependencies]
-regex = "1.13"
+# decoding compressed test responses
+flate2 = "=1.1.10"
+config = { path = "../config" }
+net = { path = "../net" }
+promql = { path = "../promql" }
+chunkenc = { path = "../chunkenc" }
+# Generated WAL records (util/testwal) for records_test.
+tsdb-format = { path = "../tsdb-format" }

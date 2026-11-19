@@ -1,8 +1,6 @@
 //! scrape_test.go part 4 (Go lines 6500 to the end).
 //!
-//! Not written here because they query the real TSDB (`teststorage.New` + `Querier`):
-//! TestConvertClassicHistogramsToNHCB, TestTypeUnitReLabel, TestNativeHistogramMaxSchemaSet,
-//! TestNewScrapeLoopHonorLabelsWiring.
+//! The tests of this range that query the real TSDB (`teststorage.New`) are in part5.rs.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -54,6 +52,11 @@ type Apps = (Option<Arc<dyn storage::Appendable>>, Option<Arc<dyn storage::Appen
 /// Go `selectAppendable(app, appV2)` with `.V1()` and `.V2()`.
 fn select_appendable(app: &Appendable, v2: bool) -> Apps {
     if v2 { (None, Some(Arc::new(app.clone()))) } else { (Some(Arc::new(app.clone())), None) }
+}
+
+/// Go `selectAppendable(s, appV2)` for a real TSDB (`teststorage.New`).
+fn select_storage(s: &Arc<tsdb::teststorage::TestStorage>, v2: bool) -> Apps {
+    if v2 { (None, Some(s.clone())) } else { (Some(s.clone()), None) }
 }
 
 fn dur(d: Duration) -> yaml::types::Duration {
@@ -256,9 +259,7 @@ fn test_scrape_loop_run_creates_stale_markers_on_failed_scrape_for_timestamped_m
 #[test]
 fn test_scrape_loop_compression() {
     foreach_appendable(|v2| {
-        // adapted: Go appends to teststorage.New (a real TSDB) but never queries it; the test only checks the
-        // Accept-Encoding header, so the mock appendable is the sink here.
-        let s = Appendable::new();
+        let s = tsdb::teststorage::new_shared_default();
         let metrics_text = make_test_gauges(10);
 
         struct Tc {
@@ -296,7 +297,7 @@ fn test_scrape_loop_compression() {
             };
             let sp = new_pool(
                 cfg,
-                select_appendable(&s, v2),
+                select_storage(&s, v2),
                 Options { enable_zstd_scrape: tc.enable_zstd, ..Default::default() },
             );
 

@@ -226,16 +226,16 @@ impl<'a> ProtobufParser<'a> {
         if v == 0.0 {
             v = h.sample_count as f64;
         }
-        self.tmp_nhcb.set_count(v).map_err(Error::Msg)?;
-        self.tmp_nhcb.set_sum(h.sample_sum).map_err(Error::Msg)?;
+        self.tmp_nhcb.set_count(v).map_err(|e| Error::Msg(e.into()))?;
+        self.tmp_nhcb.set_sum(h.sample_sum).map_err(|e| Error::Msg(e.into()))?;
         for b in &h.bucket {
             let mut v = b.cumulative_count_float;
             if v == 0.0 {
                 v = b.cumulative_count as f64;
             }
-            self.tmp_nhcb.set_bucket_count(b.upper_bound, v).map_err(Error::Msg)?;
+            self.tmp_nhcb.set_bucket_count(b.upper_bound, v).map_err(|e| Error::Msg(e.into()))?;
         }
-        let (mut ch, mut cfh) = self.tmp_nhcb.convert().map_err(Error::Msg)?;
+        let (mut ch, mut cfh) = self.tmp_nhcb.convert().map_err(|e| Error::Msg(e.into()))?;
         if t == PbType::GAUGE_HISTOGRAM {
             if let Some(ch) = ch.as_mut() {
                 ch.counter_reset_hint = CounterResetHint::GaugeType;
