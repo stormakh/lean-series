@@ -24,6 +24,8 @@ util = { path = "../util" }
 snap = "1"
 # Queue manager: scrape.MetricMetadata and scrape.Target for the metadata watcher.
 scrape = { path = "../scrape" }
+# OTLP write requests may be gzip-compressed (same pin as the http crate).
+flate2 = "=1.1.10"
 
 [dev-dependencies]
 # Test storage (promqltest.LoadedStorage) for the read handler tests.

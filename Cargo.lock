@@ -332,6 +332,7 @@ dependencies = [
  "config",
  "crypto",
  "discovery",
+ "flate2",
  "http",
  "json",
  "model",

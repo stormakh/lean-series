@@ -20,3 +20,5 @@ pub mod stats;
 pub mod storage;
 pub mod write;
 pub mod write_handler;
+pub mod otlptranslator;
+pub mod write_otlp_handler;
