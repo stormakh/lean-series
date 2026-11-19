@@ -267,6 +267,20 @@ impl<'a> Evaluator<'a> {
         let mut input = CursorMatrix::new(input);
         let mut ts = self.start_timestamp;
         while ts <= self.end_timestamp {
+            // Jump over the steps without input samples: they give no output (a 24 h dashboard range has 720
+            // steps, mostly without data on a young server). The parameter still moves one value per step.
+            let next = input.next_ts();
+            if next > ts {
+                match self.step_at_or_after(ts, next) {
+                    Some(t) => {
+                        for _ in 0..(t - ts) / self.interval {
+                            params.next();
+                        }
+                        ts = t;
+                    }
+                    None => break,
+                }
+            }
             let fparam = params.next();
             self.check_ctx("expression evaluation")?;
             self.current_samples = temp_num_samples;

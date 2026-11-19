@@ -458,9 +458,56 @@ impl CursorMatrix {
         }
         None
     }
+
+    /// The earliest timestamp of a point not yet consumed, or `i64::MAX`.
+    pub fn next_ts(&self) -> i64 {
+        let mut t = i64::MAX;
+        for (i, s) in self.mat.iter().enumerate() {
+            if let Some(p) = s.floats.get(self.fpos[i] as usize) {
+                t = t.min(p.t);
+            }
+            if let Some(p) = s.histograms.get(self.hpos[i] as usize) {
+                t = t.min(p.t);
+            }
+        }
+        t
+    }
+
+    /// Consumes the points before `ts`; returns whether there were any.
+    pub fn skip_before(&mut self, ts: i64) -> bool {
+        let mut any = false;
+        for (i, s) in self.mat.iter().enumerate() {
+            while let Some(p) = s.floats.get(self.fpos[i] as usize) {
+                if p.t >= ts {
+                    break;
+                }
+                self.fpos[i] += 1;
+                any = true;
+            }
+            while let Some(p) = s.histograms.get(self.hpos[i] as usize) {
+                if p.t >= ts {
+                    break;
+                }
+                self.hpos[i] += 1;
+                any = true;
+            }
+        }
+        any
+    }
 }
 
 impl<'a> Evaluator<'a> {
+    /// The first step at or after `t` (`t` > the current step `ts`), or `None` past the end.
+    #[inline]
+    pub(crate) fn step_at_or_after(&self, ts: i64, t: i64) -> Option<i64> {
+        if t == i64::MAX {
+            return None;
+        }
+        let k = (t - ts + self.interval - 1) / self.interval;
+        let next = ts + k * self.interval;
+        if next > self.end_timestamp { None } else { Some(next) }
+    }
+
     #[inline]
     fn num_steps_total(&self) -> usize {
         ((self.end_timestamp - self.start_timestamp) / self.interval) as usize + 1
@@ -970,7 +1017,8 @@ impl<'a> Evaluator<'a> {
     fn eval_binary(&mut self, e: &parser::BinaryExpr) -> EvalResult<(Value, Annotations)> {
         let lt = e.lhs.value_type();
         let rt = e.rhs.value_type();
-        let pos = pr(parser::Expr::position_range(&Expr::Binary(Box::new(e.clone()))));
+        // Go `e.PositionRange()` of the binary expression, without cloning it into an `Expr`.
+        let pos = pr(parser::PositionRange { start: e.lhs.position_range().start, end: e.rhs.position_range().end });
         let res = match (lt, rt) {
             (ValueType::Scalar, ValueType::Scalar) => {
                 let op = e.op;
@@ -983,32 +1031,32 @@ impl<'a> Evaluator<'a> {
             (ValueType::Vector, ValueType::Vector) => {
                 let matching = e.vector_matching.as_deref().cloned().unwrap_or_default();
                 match e.op {
-                    LAND => self.range_eval(Some(&matching), &[Some(&e.lhs), Some(&e.rhs)], |_, v, sh, enh| {
+                    LAND => self.range_eval_skip(Some(&matching), &[Some(&e.lhs), Some(&e.rhs)], &[0, 1], |_, v, sh, enh| {
                         binop::vector_and(&v[0], &v[1], &matching, &sh[0], &sh[1], enh);
                         Ok(Annotations::new())
                     })?,
-                    LOR => self.range_eval(Some(&matching), &[Some(&e.lhs), Some(&e.rhs)], |_, v, sh, enh| {
+                    LOR => self.range_eval_skip(Some(&matching), &[Some(&e.lhs), Some(&e.rhs)], &[0, 1], |_, v, sh, enh| {
                         binop::vector_or(&v[0], &v[1], &matching, &sh[0], &sh[1], enh);
                         Ok(Annotations::new())
                     })?,
-                    LUNLESS => self.range_eval(Some(&matching), &[Some(&e.lhs), Some(&e.rhs)], |_, v, sh, enh| {
+                    LUNLESS => self.range_eval_skip(Some(&matching), &[Some(&e.lhs), Some(&e.rhs)], &[0, 1], |_, v, sh, enh| {
                         binop::vector_unless(&v[0], &v[1], &matching, &sh[0], &sh[1], enh);
                         Ok(Annotations::new())
                     })?,
-                    _ => self.range_eval(Some(&matching), &[Some(&e.lhs), Some(&e.rhs)], |ev, v, sh, enh| {
+                    _ => self.range_eval_skip(Some(&matching), &[Some(&e.lhs), Some(&e.rhs)], &[0, 1], |ev, v, sh, enh| {
                         let r = binop::vector_binop(ev, e.op, &v[0], &v[1], &matching, e.return_bool, &sh[0], &sh[1], enh, pos)?;
                         binop::handle_vector_binop_error(r, e, pos)
                     })?,
                 }
             }
             (ValueType::Vector, ValueType::Scalar) => {
-                self.range_eval(None, &[Some(&e.lhs), Some(&e.rhs)], |ev, v, _, enh| {
+                self.range_eval_skip(None, &[Some(&e.lhs), Some(&e.rhs)], &[0], |ev, v, _, enh| {
                     let r = binop::vector_scalar_binop(ev, e.op, &v[0], v[1][0].f, false, e.return_bool, enh, pos);
                     binop::handle_vector_binop_error(r, e, pos)
                 })?
             }
             (ValueType::Scalar, ValueType::Vector) => {
-                self.range_eval(None, &[Some(&e.lhs), Some(&e.rhs)], |ev, v, _, enh| {
+                self.range_eval_skip(None, &[Some(&e.lhs), Some(&e.rhs)], &[1], |ev, v, _, enh| {
                     let r = binop::vector_scalar_binop(ev, e.op, &v[1], v[0][0].f, true, e.return_bool, enh, pos);
                     binop::handle_vector_binop_error(r, e, pos)
                 })?
@@ -1027,6 +1075,23 @@ impl<'a> Evaluator<'a> {
         &mut self,
         matching: Option<&VectorMatching>,
         exprs: &[Option<&Expr>],
+        f: F,
+    ) -> EvalResult<(Matrix, Annotations)>
+    where
+        F: FnMut(&mut Evaluator<'a>, &[Vector], &[Vec<EvalSeriesHelper>], &mut EvalNodeHelper) -> EvalResult<Annotations>,
+    {
+        self.range_eval_skip(matching, exprs, &[], f)
+    }
+
+    /// [`Evaluator::range_eval`] that jumps over the steps where none of the inputs listed in `skip_on` has a
+    /// sample, for an `f` whose output is empty then. The other inputs must be scalars (one series): the samples
+    /// they would have counted in the skipped steps are still checked against the limit and the peak.
+    /// A 24 h dashboard range has 720 steps, mostly without data on a young server.
+    pub(crate) fn range_eval_skip<F>(
+        &mut self,
+        matching: Option<&VectorMatching>,
+        exprs: &[Option<&Expr>],
+        skip_on: &[usize],
         mut f: F,
     ) -> EvalResult<(Matrix, Annotations)>
     where
@@ -1090,8 +1155,34 @@ impl<'a> Evaluator<'a> {
         let mut out = SeriesCollector::new(biggest_len, num_steps);
         let mut temp_num_samples = self.current_samples;
 
+        let others: Vec<usize> = (0..matrixes.len()).filter(|i| !skip_on.contains(i)).collect();
+        let skip = !skip_on.is_empty()
+            && skip_on.iter().all(|&i| i < matrixes.len())
+            && others.len() <= 1
+            && others.iter().all(|&i| matrixes[i].mat.len() <= 1);
         let mut ts = self.start_timestamp;
         while ts <= self.end_timestamp {
+            if skip {
+                let next = skip_on.iter().map(|&i| matrixes[i].next_ts()).min().unwrap_or(i64::MAX);
+                if next > ts {
+                    let to = self.step_at_or_after(ts, next);
+                    let lim = to.unwrap_or(self.end_timestamp + 1);
+                    // The scalar inputs' samples of the skipped steps: one per step at most.
+                    let mut any = false;
+                    for m in matrixes.iter_mut() {
+                        any |= m.skip_before(lim);
+                    }
+                    if any {
+                        self.current_samples = temp_num_samples + 1;
+                        self.check_samples()?;
+                        self.update_peak();
+                    }
+                    match to {
+                        Some(t) => ts = t,
+                        None => break,
+                    }
+                }
+            }
             self.check_ctx("expression evaluation")?;
             self.current_samples = temp_num_samples;
             for i in 0..matrixes.len() {
