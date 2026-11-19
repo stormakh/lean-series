@@ -286,6 +286,7 @@ dependencies = [
  "json",
  "model",
  "storage",
+ "tsdb",
  "util",
 ]
 

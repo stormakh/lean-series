@@ -8,7 +8,7 @@
 //!   reports each eval result to a callback instead, and catches panics per eval. A failed `load` or `clear`
 //!   stops the script, as in Go.
 //! - Go iterates the series of a `load` command in map order (random); here they are appended in file order.
-//! - The storage is [`teststorage::TestStorage`] (an in-memory port of the TSDB head) until the `tsdb` crate exists.
+//! - The storage is [`teststorage::TestStorage`]: the real TSDB in a temporary directory (Go `teststorage.New`).
 
 pub mod convertnhcb;
 pub mod migrate;
@@ -26,7 +26,7 @@ use model::regexp::Regexp;
 use model::value::is_stale_nan;
 use storage::annotations::{PROMQL_INFO, PROMQL_WARNING};
 use storage::{
-    Annotations, AppendV2Options, AppenderTransaction, AppenderV2, Context, Error as StorageError,
+    Annotations, AppendV2Options, AppenderV2, Context, Error as StorageError,
     Queryable, Storage,
 };
 
@@ -2254,7 +2254,7 @@ impl LazyLoader {
                     cut = i;
                     break;
                 }
-                append_sample(&mut app, s, m)?;
+                append_sample(&mut *app, s, m)?;
             }
             smpls.drain(..cut);
         }
