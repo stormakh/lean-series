@@ -1,0 +1,9 @@
+# HELP e2e_requests_total Requests.
+# TYPE e2e_requests_total counter
+e2e_requests_total{path="/a"} 12345
+e2e_requests_total{path="/b"} 0.5
+# HELP e2e_temperature_celsius Temperature.
+# TYPE e2e_temperature_celsius gauge
+e2e_temperature_celsius{room="kitchen"} 21.25
+e2e_temperature_celsius{room="cellar"} 12
+e2e_temperature_celsius{room="attic"} 31.5

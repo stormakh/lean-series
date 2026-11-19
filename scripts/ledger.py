@@ -16,7 +16,7 @@ MOD = 'github.com/prometheus/prometheus/'
 
 # Go package prefix -> Rust crate. First match wins.
 CRATE = [
-    ('model/textparse', 'textparse'), ('model/', 'model'), ('promql', 'promql'),
+    ('model/textparse', 'textparse'), ('model/rulefmt', 'rules'), ('model/', 'model'), ('promql', 'promql'),
     ('tsdb/chunkenc', 'chunkenc'), ('tsdb/chunks', 'tsdb-format'), ('tsdb/index', 'tsdb-format'),
     ('tsdb/record', 'tsdb-format'), ('tsdb/wlog', 'tsdb-format'), ('tsdb/tombstones', 'tsdb-format'),
     ('tsdb/encoding', 'tsdb-format'), ('tsdb/fileutil', 'tsdb-format'),

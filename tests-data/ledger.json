@@ -4299,7 +4299,7 @@
 "package": "model/rulefmt",
 "go": "TestError",
 "file": "rulefmt_test",
-"crate": "model",
+"crate": "rules",
 "rust": "test_error",
 "upstream": "pass"
 },
@@ -4307,7 +4307,7 @@
 "package": "model/rulefmt",
 "go": "TestErrorUnwrap",
 "file": "rulefmt_test",
-"crate": "model",
+"crate": "rules",
 "rust": "test_error_unwrap",
 "upstream": "pass"
 },
@@ -4315,7 +4315,7 @@
 "package": "model/rulefmt",
 "go": "TestMultiDocParse",
 "file": "rulefmt_test",
-"crate": "model",
+"crate": "rules",
 "rust": "test_multi_doc_parse",
 "upstream": "pass"
 },
@@ -4323,7 +4323,7 @@
 "package": "model/rulefmt",
 "go": "TestParseFileFailure",
 "file": "rulefmt_test",
-"crate": "model",
+"crate": "rules",
 "rust": "test_parse_file_failure",
 "upstream": "pass"
 },
@@ -4331,7 +4331,7 @@
 "package": "model/rulefmt",
 "go": "TestParseFileSuccess",
 "file": "rulefmt_test",
-"crate": "model",
+"crate": "rules",
 "rust": "test_parse_file_success",
 "upstream": "pass"
 },
@@ -4339,7 +4339,7 @@
 "package": "model/rulefmt",
 "go": "TestParseFileSuccessWithAliases",
 "file": "rulefmt_test",
-"crate": "model",
+"crate": "rules",
 "rust": "test_parse_file_success_with_aliases",
 "upstream": "pass"
 },
@@ -4347,7 +4347,7 @@
 "package": "model/rulefmt",
 "go": "TestTemplateParsing",
 "file": "rulefmt_test",
-"crate": "model",
+"crate": "rules",
 "rust": "test_template_parsing",
 "upstream": "pass"
 },
@@ -4355,7 +4355,7 @@
 "package": "model/rulefmt",
 "go": "TestUniqueErrorNodes",
 "file": "rulefmt_test",
-"crate": "model",
+"crate": "rules",
 "rust": "test_unique_error_nodes",
 "upstream": "pass"
 },
@@ -4363,7 +4363,7 @@
 "package": "model/rulefmt",
 "go": "TestWrappedError",
 "file": "rulefmt_test",
-"crate": "model",
+"crate": "rules",
 "rust": "test_wrapped_error",
 "upstream": "pass"
 },

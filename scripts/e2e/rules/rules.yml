@@ -1,0 +1,35 @@
+groups:
+  - name: e2e
+    interval: 1s
+    rules:
+      - record: job:e2e_requests:sum
+        expr: sum by (job) (e2e_requests_total)
+      - alert: HighRequests
+        expr: job:e2e_requests:sum > 10
+        labels:
+          severity: page
+          team: '{{ $labels.job }}-team'
+        annotations:
+          summary: 'Requests of {{ $labels.job }} are {{ $value }}'
+          description: '{{ $value | humanize }} requests at {{ $externalLabels.site }}, see {{ $externalURL }}'
+      - alert: InstanceHot
+        expr: e2e_temperature_celsius > 20
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ $labels.instance }} is at {{ printf "%.1f" $value }} C in {{ $labels.room }}'
+          runbook: '{{ with query "sum(e2e_requests_total)" }}{{ . | first | value | humanize }}{{ end }} requests in total'
+      - alert: NeverFires
+        expr: e2e_temperature_celsius < 0
+      - alert: LongPending
+        expr: up == 1
+        for: 1h
+  - name: e2e-labels
+    interval: 1s
+    labels:
+      group_label: g1
+    rules:
+      - alert: GroupLabelled
+        expr: count(e2e_temperature_celsius) by (room)
+        annotations:
+          summary: '{{ $labels.room }}: {{ $value }} rooms; {{ "<b>" }} {{ title "hello world" }} {{ toUpper "x" }}'

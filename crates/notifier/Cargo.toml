@@ -1,0 +1,16 @@
+[package]
+name = "notifier"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+model = { path = "../model" }
+config = { path = "../config" }
+discovery = { path = "../discovery" }
+net = { path = "../net" }
+json = { path = "../json" }
+yaml = { path = "../yaml" }
+
+[dev-dependencies]
+http = { path = "../http" }
