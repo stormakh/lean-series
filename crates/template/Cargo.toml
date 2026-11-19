@@ -1,0 +1,9 @@
+[package]
+name = "template"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+model = { path = "../model" }
+promql = { path = "../promql" }
