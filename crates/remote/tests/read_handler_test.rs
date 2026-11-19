@@ -1,6 +1,6 @@
 //! Port of `storage/remote/read_handler_test.go`.
 //!
-//! The storage is the in-memory stand-in of `promqltest.LoadedStorage` (crates/promql) until the TSDB exists.
+//! The storage is the real TSDB (`common::loaded_test_db`, Go `promqltest.LoadedStorage`).
 //! Rust notes: the handler is called directly (no `httptest` server, no HTTP/2, TLS or otelhttp wrapper), and
 //! streamed responses are one byte body, so a stream that fails after its first frame aborts the whole
 //! response ([`AbortHandler`]) instead of truncating it.
@@ -17,13 +17,14 @@ use discovery::metrics::{MetricValue, Registry};
 use model::histogram::CUSTOM_BUCKETS_SCHEMA;
 use model::labels::{self, Labels};
 use model::matcher::{MatchType, Matcher};
-use promql::promqltest::{loaded_storage, TestStorage};
+use common::{loaded_test_db, TestDb};
+use tsdb::db::DB;
 use remote::chunked::{ChunkedReader, ERR_EOF};
 use remote::codec::{new_chunked_series_set, snappy_decode, snappy_encode, to_query, HttpError};
 use remote::prompb::{self, BucketSpan, ChunkEncoding, Count, LabelMatcher, MatcherType, Message, ResponseType};
 use remote::read_handler::{new_read_handler, AbortHandler, ExternalLabelsFn, ReadHandler};
 use storage::{
-    empty_series_set, AppendV2Options, AppenderTransaction, AppenderV2, Annotations, BoxChunkQuerier,
+    empty_series_set, AppendV2Options, Annotations, BoxChunkQuerier,
     BoxChunkSeriesSet, BoxQuerier, ChunkQuerier, ChunkQueryable, ChunkSeriesArc, ChunkSeriesSet, Context, Error,
     LabelHints, LabelQuerier, LabelResult, MockQuerier, Queryable, SampleAndChunkQueryable, SelectHints,
 };
@@ -40,9 +41,9 @@ fn eq(n: &str, v: &str) -> Matcher {
     Matcher::must_new(MatchType::Equal, n, v)
 }
 
-fn add_native_histograms_to_test_suite(s: &TestStorage, n: usize) {
+fn add_native_histograms_to_test_suite(s: &TestDb, n: usize) {
     let lbls = labels::from_strings(&["__name__", "test_histogram_metric1", "baz", "qux"]);
-    let mut app = s.appender_v2();
+    let mut app = storage::AppendableV2::appender_v2(&*s.db, &Context::background());
     for (i, fh) in storage::tsdbutil::generate_test_float_histograms(n).iter().enumerate() {
         app.append(0, &lbls, 0, i as i64 * 60_000, 0.0, None, Some(fh), &AppendV2Options::default()).unwrap();
     }
@@ -76,7 +77,7 @@ fn pl(n: &str, v: &str) -> prompb::Label {
 fn test_sampled_read_endpoint() {
     // with external labels
     {
-        let store = loaded_storage("load 1m\n\ttest_metric1{foo=\"bar\",baz=\"qux\"} 1\n").unwrap();
+        let store = loaded_test_db("load 1m\n\ttest_metric1{foo=\"bar\",baz=\"qux\"} 1\n");
         add_native_histograms_to_test_suite(&store, 1);
 
         let hints = SelectHints { step: 0, func: "avg".into(), ..Default::default() };
@@ -85,7 +86,7 @@ fn test_sampled_read_endpoint() {
         let query3 = to_query(0, 1, &[eq("__name__", "test_nhcb_metric1"), eq("d", "e")], Some(&hints)).unwrap();
 
         let (_, resp) = execute_sampled_read(
-            Arc::new(store),
+            store.db.clone(),
             // We expect external labels to be added, with the source labels honored.
             ext(labels::from_strings(&["b", "c", "baz", "a", "d", "e"])),
             &prompb::ReadRequest { queries: vec![query1, query2, query3], ..Default::default() },
@@ -145,10 +146,10 @@ fn test_sampled_read_endpoint() {
 
     // without external labels
     {
-        let store = loaded_storage("load 1m\n\ttest_metric{foo=\"bar\"} 1\n").unwrap();
+        let store = loaded_test_db("load 1m\n\ttest_metric{foo=\"bar\"} 1\n");
         let query = to_query(0, 1, &[eq("__name__", "test_metric")], None).unwrap();
         let (status, resp) = execute_sampled_read(
-            Arc::new(store),
+            store.db.clone(),
             ext(Labels::empty()),
             &prompb::ReadRequest { queries: vec![query], ..Default::default() },
         );
@@ -202,7 +203,7 @@ fn lm(n: &str, v: &str) -> LabelMatcher {
 
 /// Go `failingChunkQueryable`.
 struct FailingChunkQueryable {
-    store: TestStorage,
+    store: Arc<DB>,
     fail_query: i64,
     fail_after: usize,
     err: Option<Error>,
@@ -328,16 +329,15 @@ fn test_stream_read_endpoint() {
         // Third with 241 float samples. We expect 1 frame with 2 chunks, and 1 frame with 1 chunk for the same
         // series due to the bytes limit.
         // Fourth with 25 histogram samples. We expect 1 frame with 1 chunk.
-        let store = loaded_storage(
+        let store = loaded_test_db(
             "load 1m\n\ttest_metric1{foo=\"bar1\",baz=\"qux\"} 0+100x119\n\ttest_metric1{foo=\"bar2\",baz=\"qux\"} 0+100x120\n\ttest_metric1{foo=\"bar3\",baz=\"qux\"} 0+100x240\n",
-        )
-        .unwrap();
+        );
         add_native_histograms_to_test_suite(&store, 25);
 
         let api = new_read_handler(
             Logger::nop(),
             None,
-            Arc::new(store),
+            store.db.clone(),
             // We expect external labels to be added, with the source labels honored.
             ext(labels::from_strings(&["baz", "a", "b", "c", "d", "e"])),
             1_000_000,
@@ -395,7 +395,7 @@ fn test_stream_read_endpoint() {
     // here the handler is called directly once per case. A failure after the first frame is an abort
     // (AbortHandler) for both the buffered and the flushed cases, as the body is not streamed.
     {
-        let store = loaded_storage("load 1m\n test_metric{series=\"a\"} 1\n test_metric{series=\"b\"} 2\n").unwrap();
+        let store = loaded_test_db("load 1m\n test_metric{series=\"a\"} 1\n test_metric{series=\"b\"} 2\n");
         let storage_err = Error::msg("injected storage error");
         let http_err = Error::other(HttpError { msg: "injected HTTP error".into(), status: 400 });
 
@@ -462,7 +462,7 @@ fn test_stream_read_endpoint() {
             let opened = Arc::new(AtomicI64::new(0));
             let closed = Arc::new(AtomicI64::new(0));
             let queryable = FailingChunkQueryable {
-                store: store.clone(),
+                store: store.db.clone(),
                 fail_query: tc.fail_query,
                 fail_after: tc.fail_after,
                 err: tc.err.clone(),

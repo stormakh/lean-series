@@ -267,3 +267,69 @@ impl ReadClient for MockedRemoteClient {
         combine_query_results(results, sort_series)
     }
 }
+
+// ---------------------------------------------------------------- util/teststorage (real TSDB)
+
+/// Go `teststorage.TestStorage`: a TSDB in a temporary folder under bench/tmp/w3-remote/handlers/, closed and
+/// removed on drop.
+pub struct TestDb {
+    pub db: Arc<tsdb::db::DB>,
+    dir: std::path::PathBuf,
+}
+
+impl std::ops::Deref for TestDb {
+    type Target = Arc<tsdb::db::DB>;
+    fn deref(&self) -> &Self::Target {
+        &self.db
+    }
+}
+
+impl Drop for TestDb {
+    fn drop(&mut self) {
+        let _ = self.db.close();
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// Go `teststorage.New(t)`: 24h blocks, no retention, no out-of-order window, exemplars on (1e5).
+pub fn new_test_db() -> TestDb {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let dir = std::path::PathBuf::from(format!(
+        "{}/../../bench/tmp/w3-remote/handlers/db-{}-{}",
+        env!("CARGO_MANIFEST_DIR"),
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::SeqCst)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create test db dir");
+    let mut opts = tsdb::db::default_options();
+    opts.min_block_duration = 24 * 3600 * 1000;
+    opts.max_block_duration = 24 * 3600 * 1000;
+    opts.retention_duration = 0;
+    opts.out_of_order_time_window = 0;
+    opts.enable_exemplar_storage = true;
+    opts.max_exemplars = 100_000;
+    let db = tsdb::db::open(&dir, None, Some(opts), None).expect("open test db");
+    TestDb { db, dir }
+}
+
+/// Go `promqltest.LoadedStorage(t, input)`: a test TSDB with the data of the `load` commands of `input`.
+pub fn loaded_test_db(input: &str) -> TestDb {
+    use promql::promqltest::{Test, TestCommand};
+    let tdb = new_test_db();
+    let st: Arc<dyn storage::Storage> = tdb.db.clone();
+    let open = move || st.clone();
+    let test = Test::new(input, false, &open).expect("parse load commands");
+    for cmd in test.commands() {
+        match cmd {
+            TestCommand::Load(l) => {
+                let mut app = storage::AppendableV2::appender_v2(&*tdb.db, &Context::background());
+                l.append(&mut *app).expect("load");
+                assert!(storage::AppenderTransaction::commit(&mut *app).is_none());
+            }
+            _ => panic!("only 'load' commands accepted"),
+        }
+    }
+    tdb
+}

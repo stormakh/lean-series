@@ -11,7 +11,8 @@ use remote::client::ReadClient;
 use remote::codec::{from_query_result, to_query_result};
 use remote::prompb::{self, LabelMatcher, MatcherType};
 use remote::read::{new_sample_and_chunk_queryable_client, new_series_set_filter, RemoteQuerier, StartTimeCallback};
-use storage::{Context, Queryable};
+use remote::storage::{RemoteQueryable, Storage};
+use storage::{chained_series_merge, new_merge_querier, AppendV2Options, Context, Queryable};
 
 fn m(t: MatchType, n: &str, v: &str) -> Matcher {
     Matcher::must_new(t, n, v)
@@ -269,5 +270,80 @@ fn test_sample_and_chunk_queryable_client() {
         assert!(qr.close().is_none());
     }
 
-    // The "search warnings" subtest needs a TSDB (teststorage.New): waiting for tsdb.
+    // search warnings
+    {
+        let local = new_test_db();
+        let mut app = storage::AppendableV2::appender_v2(&*local.db, &Context::background());
+        let lbls = labels::from_strings(&["__name__", "up", "job", "prometheus"]);
+        let r = app.append(0, &lbls, 0, 1000, 1.0, None, None, &AppendV2Options::default()).unwrap();
+        app.append(r, &lbls, 0, 1500, 1.0, None, None, &AppendV2Options::default()).unwrap();
+        assert!(app.commit().is_none());
+
+        struct Stc {
+            name: &'static str,
+            mint: i64,
+            maxt: i64,
+            read_recent: bool,
+            warning: bool,
+            empty: bool,
+        }
+        let cases = [
+            Stc { name: "overlapping local history", mint: 0, maxt: 2000, read_recent: false, warning: true, empty: false },
+            Stc { name: "before local history", mint: 0, maxt: 999, read_recent: false, warning: true, empty: true },
+            Stc { name: "local start boundary", mint: 1000, maxt: 2000, read_recent: false, warning: true, empty: false },
+            Stc { name: "recent range excludes remote", mint: 1001, maxt: 2000, read_recent: false, warning: false, empty: false },
+            Stc { name: "read recent includes remote", mint: 1001, maxt: 2000, read_recent: true, warning: true, empty: false },
+        ];
+        for tc in cases {
+            let client = Arc::new(MockedRemoteClient::new(vec![]));
+            let remote = Storage::for_reads(vec![RemoteQueryable {
+                queryable: Arc::new(new_sample_and_chunk_queryable_client(
+                    client.clone() as Arc<dyn ReadClient>,
+                    Labels::empty(),
+                    vec![],
+                    tc.read_recent,
+                    cb(1000),
+                )),
+                external_labels: Labels::empty(),
+            }]);
+            let primary = local.db.querier(tc.mint, tc.maxt).unwrap();
+            let secondary = remote.querier(tc.mint, tc.maxt).unwrap();
+            let mut q = new_merge_querier(vec![primary], vec![secondary], Arc::new(chained_series_merge));
+            {
+                let searcher = q.as_searcher().expect("a Searcher");
+                let ctx = Context::background();
+                for (method, expected) in [("names", vec!["__name__", "job"]), ("values", vec!["prometheus"])] {
+                    let mut rs = if method == "names" {
+                        searcher.search_label_names(&ctx, None, &[])
+                    } else {
+                        searcher.search_label_values(&ctx, "job", None, &[])
+                    };
+                    let mut values = Vec::new();
+                    while rs.next() {
+                        values.push(rs.at().value.clone());
+                    }
+                    assert!(rs.err().is_none(), "{}/{method}", tc.name);
+                    if tc.empty {
+                        assert!(values.is_empty(), "{}/{method}: {values:?}", tc.name);
+                    } else {
+                        assert_eq!(expected, values, "{}/{method}", tc.name);
+                    }
+                    if tc.warning {
+                        let warnings = rs.warnings().as_errors();
+                        assert_eq!(1, warnings.len(), "{}/{method}", tc.name);
+                        assert_eq!(
+                            "search is not supported by a secondary storage backend; results may be incomplete",
+                            warnings[0].to_string()
+                        );
+                    } else {
+                        assert!(rs.warnings().is_empty(), "{}/{method}", tc.name);
+                    }
+                    assert!(client.got.lock().unwrap().is_none());
+                    assert!(client.got_multiple.lock().unwrap().is_empty());
+                    assert!(rs.close().is_none());
+                }
+            }
+            assert!(q.close().is_none());
+        }
+    }
 }
