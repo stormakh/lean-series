@@ -84,6 +84,24 @@ fn json_entry(query: &[u8], timestamp: i64) -> Vec<u8> {
 
 /// Writes a JSON string like Go's encoding/json.
 /// Copies runs of plain bytes at once (query texts are mostly plain, but have quotes in label matchers).
+/// Bytes that `json_write_str` copies as they are (not control, `"`, `\`, `<`, `>`, `&`, or 0xE2 that may start
+/// U+2028/U+2029).
+static PLAIN: [bool; 256] = {
+    let mut t = [true; 256];
+    let mut i = 0;
+    while i < 0x20 {
+        t[i] = false;
+        i += 1;
+    }
+    t[b'"' as usize] = false;
+    t[b'\\' as usize] = false;
+    t[b'<' as usize] = false;
+    t[b'>' as usize] = false;
+    t[b'&' as usize] = false;
+    t[0xE2] = false;
+    t
+};
+
 fn json_write_str(v: &str, out: &mut Vec<u8>) {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let b = v.as_bytes();
@@ -92,6 +110,10 @@ fn json_write_str(v: &str, out: &mut Vec<u8>) {
     let mut i = 0;
     while i < b.len() {
         let c = b[i];
+        if PLAIN[c as usize] {
+            i += 1;
+            continue;
+        }
         let (esc, n): (&[u8], usize) = match c {
             b'"' => (b"\\\"", 1),
             b'\\' => (b"\\\\", 1),
