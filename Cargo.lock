@@ -60,6 +60,7 @@ version = "0.1.0"
 dependencies = [
  "crypto",
  "discovery",
+ "json",
  "model",
  "net",
  "yaml",
@@ -104,6 +105,7 @@ dependencies = [
  "model",
  "net",
  "ring",
+ "rustls",
  "yaml",
 ]
 
