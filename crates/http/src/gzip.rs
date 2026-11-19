@@ -192,7 +192,8 @@ impl Block {
     }
 }
 
-fn deflate(data: &[u8], out: &mut Vec<u8>) {
+/// Appends `data` as a raw RFC 1951 deflate stream to `out`.
+pub fn deflate(data: &[u8], out: &mut Vec<u8>) {
     let n = data.len();
     let mut w = Bits { out, buf: 0, n: 0 };
     let mut bl = Block { syms: Vec::with_capacity(if n < BLOCK_SYMS { n + 1 } else { BLOCK_SYMS }), lfreq: [0; 286], dfreq: [0; 30], start: 0 };
