@@ -362,6 +362,12 @@ impl SeriesCache {
         self.dropped_series.insert(met.into(), iter);
     }
 
+    /// Whether some series texts are dropped.
+    #[inline]
+    pub fn has_dropped(&self) -> bool {
+        !self.dropped_series.is_empty()
+    }
+
     /// Go `getDropped`.
     #[inline]
     pub fn get_dropped(&mut self, met: &[u8]) -> bool {

@@ -1241,7 +1241,10 @@ impl ScrapeLoop {
                 }
             } else {
                 let (m, pts, v) = p.series();
-                met.extend_from_slice(m);
+                // A predicted line needs its text only to check dropped series (and for error messages).
+                if predicted.is_none() || s.has_dropped() {
+                    met.extend_from_slice(m);
+                }
                 parsed_ts = pts;
                 val = v;
             }
@@ -1352,6 +1355,10 @@ impl ScrapeLoop {
                 if (parsed_ts.is_none() || self.track_timestamps_staleness) && er != 0 {
                     s.track_staleness(er, id);
                 }
+            }
+            if met.is_empty() && aerr.is_some() {
+                // The fast path does not copy the series text; the error messages need it.
+                met.extend_from_slice(p.series().0);
             }
             let (sample_added, e2) =
                 self.check_add_error(met, &[], aerr, &mut sample_limit_err, &mut bucket_limit_err, &mut app_errs);
@@ -1539,7 +1546,10 @@ impl ScrapeLoop {
                 }
             } else {
                 let (m, pts, v) = p.series();
-                met.extend_from_slice(m);
+                // A predicted line needs its text only to check dropped series (and for error messages).
+                if predicted.is_none() || s.has_dropped() {
+                    met.extend_from_slice(m);
+                }
                 parsed_ts = pts;
                 val = v;
             }
@@ -1700,6 +1710,10 @@ impl ScrapeLoop {
                         }
                     }
                 }
+            }
+            if met.is_empty() && aerr.is_some() {
+                // The fast path does not copy the series text; the error messages need it.
+                met.extend_from_slice(p.series().0);
             }
             let (sample_added, e2) =
                 self.check_add_error(met, exemplars, aerr, &mut sample_limit_err, &mut bucket_limit_err, &mut app_errs);
