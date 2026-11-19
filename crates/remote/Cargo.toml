@@ -26,3 +26,5 @@ snap = "1"
 [dev-dependencies]
 # Test storage (promqltest.LoadedStorage) for the read handler tests.
 promql = { path = "../promql" }
+# The real TSDB for tests that use teststorage.New / promqltest.LoadedStorage upstream.
+tsdb = { path = "../tsdb" }
