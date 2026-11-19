@@ -9,6 +9,9 @@ use storage::{
     Queryable, Storage,
 };
 
+/// The head's sentinel errors, which appends to this storage return (Go `tsdb.ErrInvalidSample`, ...).
+pub use tsdb::head::{ERR_APPENDER_CLOSED, ERR_INVALID_SAMPLE};
+
 /// The options of the test storage (the parts of `tsdb.Options` that promqltest and its users set).
 #[derive(Clone, Debug)]
 pub struct Options {
