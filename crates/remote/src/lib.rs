@@ -12,4 +12,5 @@ pub mod read;
 pub mod read_handler;
 pub mod remoteapi;
 pub mod stats;
+pub mod storage;
 pub mod write_handler;
