@@ -1524,3 +1524,1290 @@ fn test_query_cost_estimation_queue_timeout() {
         }
     }
 }
+
+// ---- TestEndpoints ----
+
+/// One case of Go `testEndpoints`.
+struct EpCase {
+    endpoint: &'static str,
+    params: Vec<(&'static str, &'static str)>,
+    query: Vec<(&'static str, String)>,
+    response: Option<Data>,
+    /// If nonzero, check only the length; `response` is ignored.
+    response_len: usize,
+    response_metadata_total: usize,
+    response_as_json: &'static str,
+    warnings_count: usize,
+    err_type: ErrorType,
+    sorter: Option<fn(&mut Data)>,
+    metadata: Vec<(&'static str, Vec<scrape::MetricMetadata>)>,
+    zero_func: Option<fn(&mut Data)>,
+}
+
+impl Default for EpCase {
+    fn default() -> EpCase {
+        EpCase {
+            endpoint: "",
+            params: vec![],
+            query: vec![],
+            response: None,
+            response_len: 0,
+            response_metadata_total: 0,
+            response_as_json: "",
+            warnings_count: 0,
+            err_type: ERROR_NONE,
+            sorter: None,
+            metadata: vec![],
+            zero_func: None,
+        }
+    }
+}
+
+fn qv(pairs: &[(&'static str, &str)]) -> Vec<(&'static str, String)> {
+    pairs.iter().map(|(k, v)| (*k, v.to_string())).collect()
+}
+
+fn ep_func(name: &str) -> ApiFunc {
+    match name {
+        "query" => Api::query,
+        "query_range" => Api::query_range,
+        "format_query" => Api::format_query,
+        "series" => Api::series,
+        "targets" => Api::targets,
+        "target_relabel_steps" => Api::target_relabel_steps,
+        "target_metadata" => Api::target_metadata,
+        "alertmanagers" => Api::alertmanagers,
+        "metric_metadata" => Api::metric_metadata,
+        "serve_config" => Api::serve_config,
+        "serve_flags" => Api::serve_flags,
+        "alerts" => Api::alerts,
+        "rules" => Api::rules,
+        "query_exemplars" => Api::query_exemplars,
+        "label_values" => Api::label_values,
+        "label_names" => Api::label_names,
+        _ => panic!("unknown endpoint {}", name),
+    }
+}
+
+fn scalar_data(v: f64, t: i64) -> Data {
+    Data::Query(QueryData {
+        result_type: promql::parser::ValueType::Scalar,
+        result: promql::Value::Scalar(promql::Scalar { t, v }),
+        stats: None,
+        cost: None,
+    })
+}
+
+fn matrix_data(series: Vec<(Labels, Vec<(f64, i64)>)>) -> Data {
+    Data::Query(QueryData {
+        result_type: promql::parser::ValueType::Matrix,
+        result: promql::Value::Matrix(
+            series
+                .into_iter()
+                .map(|(metric, pts)| promql::Series {
+                    metric,
+                    floats: pts.into_iter().map(|(f, t)| promql::FPoint { t, f }).collect(),
+                    ..Default::default()
+                })
+                .collect(),
+        ),
+        stats: None,
+        cost: None,
+    })
+}
+
+fn strings(v: &[&str]) -> Data {
+    Data::Strings(v.iter().map(|s| s.to_string()).collect())
+}
+
+fn series_data(v: Vec<Labels>) -> Data {
+    Data::Series(v)
+}
+
+fn lmap(pairs: &[(&str, &str)]) -> Labels {
+    model::labels::from_map(pairs.iter().copied())
+}
+
+fn mm(family: &str, typ: model::metadata::MetricType, help: &str) -> scrape::MetricMetadata {
+    scrape::MetricMetadata { metric_family: family.to_string(), typ, help: help.to_string(), unit: String::new() }
+}
+
+fn md(typ: &str, help: &str) -> Metadata {
+    Metadata { typ: typ.to_string(), help: help.to_string(), unit: String::new() }
+}
+
+fn metadata_data(v: Vec<(&str, Vec<Metadata>)>) -> Data {
+    Data::Metadata(v.into_iter().map(|(k, m)| (k.to_string(), m)).collect())
+}
+
+fn tmd(target: Labels, family: &str, help: &str) -> MetricMetadataItem {
+    MetricMetadataItem { target, metric_family: family.to_string(), typ: "gauge".to_string(), help: help.to_string(), unit: String::new() }
+}
+
+/// The two active targets of `setup_test_target_retriever`, as the API reports them.
+fn expected_active_targets() -> Vec<Target> {
+    let last_scrape = Time::from_system(scrape_start());
+    vec![
+        Target {
+            discovered_labels: from_strings(&[
+                "__always_scrape_classic_histograms__",
+                "false",
+                "__convert_classic_histograms_to_nhcb__",
+                "false",
+                "__param_target",
+                "example.com",
+                "__scrape_interval__",
+                "0s",
+                "__scrape_native_histograms__",
+                "false",
+                "__scrape_timeout__",
+                "0s",
+            ]),
+            labels: from_strings(&["job", "blackbox"]),
+            scrape_pool: "blackbox".to_string(),
+            scrape_url: "http://localhost:9115/probe?target=example.com".to_string(),
+            global_url: "http://localhost:9115/probe?target=example.com".to_string(),
+            health: "down".to_string(),
+            last_error: "failed: missing port in address".to_string(),
+            last_scrape,
+            last_scrape_duration: 0.1,
+            scrape_interval: "20s".to_string(),
+            scrape_timeout: "10s".to_string(),
+        },
+        Target {
+            discovered_labels: from_strings(&[
+                "__always_scrape_classic_histograms__",
+                "false",
+                "__convert_classic_histograms_to_nhcb__",
+                "false",
+                "__scrape_interval__",
+                "0s",
+                "__scrape_native_histograms__",
+                "false",
+                "__scrape_timeout__",
+                "0s",
+            ]),
+            labels: from_strings(&["job", "test"]),
+            scrape_pool: "test".to_string(),
+            scrape_url: "http://example.com:8080/metrics".to_string(),
+            global_url: "http://example.com:8080/metrics".to_string(),
+            health: "up".to_string(),
+            last_error: String::new(),
+            last_scrape,
+            last_scrape_duration: 0.07,
+            scrape_interval: "15s".to_string(),
+            scrape_timeout: "5s".to_string(),
+        },
+    ]
+}
+
+fn expected_dropped_targets() -> Vec<DroppedTarget> {
+    vec![DroppedTarget {
+        discovered_labels: from_strings(&[
+            "__address__",
+            "http://dropped.example.com:9115",
+            "__always_scrape_classic_histograms__",
+            "false",
+            "__convert_classic_histograms_to_nhcb__",
+            "false",
+            "__metrics_path__",
+            "/probe",
+            "__scheme__",
+            "http",
+            "job",
+            "blackbox",
+            "__scrape_interval__",
+            "30s",
+            "__scrape_native_histograms__",
+            "false",
+            "__scrape_timeout__",
+            "15s",
+        ]),
+        scrape_pool: "blackbox".to_string(),
+    }]
+}
+
+fn dropped_counts() -> Option<std::collections::BTreeMap<String, usize>> {
+    Some(std::collections::BTreeMap::from([("blackbox".to_string(), 1)]))
+}
+
+fn relabel_step(rule: model::relabel::Config, output: Labels, keep: bool) -> RelabelStep {
+    RelabelStep { rule_json: rule.to_json().stringify(), output, keep }
+}
+
+fn tm5_alert() -> Alert {
+    Alert {
+        labels: from_strings(&["alertname", "test_metric5", "name", "tm5"]),
+        annotations: Labels::empty(),
+        state: "pending".to_string(),
+        active_at: None,
+        keep_firing_since: None,
+        value: "1e+00".to_string(),
+    }
+}
+
+/// An expected `AlertingRule` after `rulesZeroFunc` (duration 1s, no annotations, health "ok").
+fn arule(state: &str, name: &str, query: &str, labels: Labels, alerts: Option<Vec<Alert>>) -> Rule {
+    Rule::Alerting(AlertingRule {
+        state: state.to_string(),
+        name: name.to_string(),
+        query: query.to_string(),
+        duration: 1.0,
+        keep_firing_for: 0.0,
+        labels,
+        annotations: Labels::empty(),
+        alerts,
+        health: "ok".to_string(),
+        last_error: String::new(),
+        evaluation_time: 0.0,
+        last_evaluation: Time::ZERO,
+    })
+}
+
+fn rrule(name: &str, labels: Labels) -> Rule {
+    Rule::Recording(RecordingRule {
+        name: name.to_string(),
+        query: "vector(1)".to_string(),
+        labels,
+        health: "ok".to_string(),
+        last_error: String::new(),
+        evaluation_time: 0.0,
+        last_evaluation: Time::ZERO,
+    })
+}
+
+fn rgroup(name: &str, rules: Vec<Rule>) -> RuleGroup {
+    RuleGroup {
+        name: name.to_string(),
+        file: "/path/to/file".to_string(),
+        rules,
+        interval: 1.0,
+        limit: 0,
+        evaluation_time: 0.0,
+        last_evaluation: Time::ZERO,
+    }
+}
+
+fn rules_data(groups: Vec<RuleGroup>, next: &str) -> Data {
+    Data::Rules(RuleDiscovery { rule_groups: groups, group_next_token: next.to_string() })
+}
+
+// The rules of group "grp" as the API reports them; `alerts(true)` gives `[]` lists, `alerts(false)` gives nil.
+fn r_tm3(with_alerts: bool) -> Rule {
+    arule("inactive", "test_metric3", "absent(test_metric3) != 1", Labels::empty(), with_alerts.then(Vec::new))
+}
+fn r_tm4(with_alerts: bool) -> Rule {
+    arule("inactive", "test_metric4", "up == 1", Labels::empty(), with_alerts.then(Vec::new))
+}
+fn r_tm5(with_alerts: bool) -> Rule {
+    arule("pending", "test_metric5", "vector(1)", from_strings(&["name", "tm5"]), with_alerts.then(|| vec![tm5_alert()]))
+}
+fn r_tm6(with_alerts: bool) -> Rule {
+    arule("inactive", "test_metric6", "up == 1", from_strings(&["testlabel", "rule"]), with_alerts.then(Vec::new))
+}
+fn r_tm7(with_alerts: bool) -> Rule {
+    arule("inactive", "test_metric7", "up == 1", from_strings(&["templatedlabel", "{{ $externalURL }}"]), with_alerts.then(Vec::new))
+}
+fn r_rec1() -> Rule {
+    rrule("recording-rule-1", Labels::empty())
+}
+fn r_rec2() -> Rule {
+    rrule("recording-rule-2", from_strings(&["testlabel", "rule"]))
+}
+
+/// Go `rulesZeroFunc`.
+fn rules_zero_func(d: &mut Data) {
+    if let Data::Rules(v) = d {
+        for g in &mut v.rule_groups {
+            g.evaluation_time = 0.0;
+            g.last_evaluation = Time::ZERO;
+            for rule in &mut g.rules {
+                match rule {
+                    Rule::Alerting(r) => {
+                        r.last_evaluation = Time::ZERO;
+                        r.evaluation_time = 0.0;
+                        r.last_error = String::new();
+                        r.health = "ok".to_string();
+                        if let Some(alerts) = &mut r.alerts {
+                            for a in alerts {
+                                a.active_at = None;
+                            }
+                        }
+                    }
+                    Rule::Recording(r) => {
+                        r.last_evaluation = Time::ZERO;
+                        r.evaluation_time = 0.0;
+                        r.last_error = String::new();
+                        r.health = "ok".to_string();
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn alerts_zero_func(d: &mut Data) {
+    if let Data::Alerts(v) = d {
+        for a in v {
+            a.active_at = None;
+        }
+    }
+}
+
+fn sort_target_metadata_by_family(d: &mut Data) {
+    if let Data::TargetMetadata(v) = d {
+        v.sort_by(|a, b| a.metric_family.cmp(&b.metric_family));
+    }
+}
+
+fn sort_go_threads_by_help(d: &mut Data) {
+    if let Data::Metadata(m) = d
+        && let Some(v) = m.get_mut("go_threads")
+    {
+        v.sort_by(|a, b| a.help.cmp(&b.help));
+    }
+}
+
+/// Go `reflect.ValueOf(got).Len()`.
+fn data_len(d: &Option<Data>) -> usize {
+    match d {
+        Some(Data::Strings(v)) => v.len(),
+        Some(Data::Series(v)) => v.len(),
+        Some(Data::Metadata(m)) => m.len(),
+        Some(Data::TargetMetadata(v)) => v.len(),
+        Some(Data::Exemplars(v)) => v.len(),
+        other => panic!("no length for {:?}", other),
+    }
+}
+
+/// Order-insensitive JSON for `require.JSONEq` (objects compare as maps, numbers as float64).
+fn json_norm(j: json::Json) -> json::Json {
+    match j {
+        json::Json::Obj(v) => {
+            let mut v: Vec<(String, json::Json)> = v.into_iter().map(|(k, x)| (k, json_norm(x))).collect();
+            v.sort_by(|a, b| a.0.cmp(&b.0));
+            json::Json::Obj(v)
+        }
+        json::Json::Arr(v) => json::Json::Arr(v.into_iter().map(json_norm).collect()),
+        json::Json::Int(i) => json::Json::Float(i as f64),
+        o => o,
+    }
+}
+
+#[test]
+fn test_endpoints() {
+    let s = loaded_storage(
+        "
+		load 1m
+			test_metric1{foo=\"bar\"} 0+100x100
+			test_metric1{foo=\"boo\"} 1+0x100
+			test_metric2{foo=\"boo\"} 1+0x100
+			test_metric3{foo=\"bar\", dup=\"1\"} 1+0x100
+			test_metric3{foo=\"boo\", dup=\"1\"} 1+0x100
+			test_metric4{foo=\"bar\", dup=\"1\"} 1+0x100
+			test_metric4{foo=\"boo\", dup=\"1\"} 1+0x100
+			test_metric4{foo=\"boo\"} 1+0x100
+			test_metric5{\"host.name\"=\"localhost\"} 1+0x100
+			test_metric5{\"junk\\n{},=:  chars\"=\"bar\"} 1+0x100
+	",
+    );
+
+    // Add exemplar testdata here, given promqltest does not support exemplars.
+    let ex = |series: &[&str], id: &str, ts: i64| ExemplarQueryResult {
+        series_labels: from_strings(series),
+        exemplars: vec![Exemplar { labels: from_strings(&["id", id]), value: 10.0, ts, has_ts: false }],
+    };
+    let exemplars = vec![
+        ex(&["__name__", "test_metric3", "foo", "boo", "dup", "1"], "abc", 2000),
+        ex(&["__name__", "test_metric4", "foo", "bar", "dup", "1"], "lul", 4000),
+        ex(&["__name__", "test_metric3", "foo", "boo", "dup", "1"], "abc2", 4053),
+        ex(&["__name__", "test_metric4", "foo", "bar", "dup", "1"], "lul2", 4153),
+    ];
+    append_exemplars(&s.db, &exemplars);
+
+    let now = Time::now();
+
+    // local
+    let algr = RulesRetrieverMock::new();
+    let tr = Arc::new(setup_test_target_retriever());
+    let api = Api::new(ApiOptions {
+        queryable: Some(s.db.clone()),
+        query_engine: Some(Arc::new(test_engine())),
+        exemplar_queryable: Some(s.db.clone()),
+        target_retriever: Some(tr.clone()),
+        alertmanager_retriever: Some(Arc::new(TestAlertmanagerRetriever)),
+        flags: sample_flag_map(),
+        now: Some(Arc::new(move || now)),
+        config: Some(Arc::new(sample_config)),
+        rules_retriever: Some(Arc::new(algr)),
+        ..base_opts()
+    });
+    test_endpoints_run(&api, &tr, true, now);
+
+    // adapted: the "remote" subtest (the same cases against a remote read storage that forwards to a test server)
+    // waits for the remote crate (storage/remote), which is not on master.
+}
+
+fn sample_flag_map() -> std::collections::BTreeMap<String, String> {
+    std::collections::BTreeMap::from([("flag1".to_string(), "value1".to_string()), ("flag2".to_string(), "value2".to_string())])
+}
+
+/// Go `testEndpoints`.
+fn test_endpoints_run(api: &Api, tr: &TestTargetRetriever, test_label_api: bool, now: Time) {
+    use model::metadata::MetricType::{Gauge, Summary};
+    use model::relabel::Action;
+    let d = EpCase::default;
+    let lv = |name: &'static str, q: &[(&'static str, &str)], resp: Option<&[&str]>, err: ErrorType| EpCase {
+        endpoint: "label_values",
+        params: vec![("name", name)],
+        query: qv(q),
+        response: resp.map(strings),
+        err_type: err,
+        ..d()
+    };
+    let ln = |q: &[(&'static str, &str)], resp: Option<&[&str]>, err: ErrorType| EpCase {
+        endpoint: "label_names",
+        query: qv(q),
+        response: resp.map(strings),
+        err_type: err,
+        ..d()
+    };
+    let all_names: &[&str] = &["__name__", "dup", "foo", "host.name", "junk\n{},=:  chars"];
+    let replace_query = r#"label_replace(vector(42), "foo", "bar", "", "") or label_replace(vector(3.1415), "dings", "bums", "", "")"#;
+    let both_series = || {
+        matrix_data(vec![
+            (lmap(&[("dings", "bums")]), vec![(3.1415, 0), (3.1415, 1000), (3.1415, 2000)]),
+            (lmap(&[("foo", "bar")]), vec![(42.0, 0), (42.0, 1000), (42.0, 2000)]),
+        ])
+    };
+    let both_vector_json = r#"{
+		"resultType": "vector",
+		"result": [
+			{
+				"metric": {
+					"foo": "bar"
+				},
+				"value": [123.4, "42"]
+			},
+			{
+				"metric": {
+					"dings": "bums"
+				},
+				"value": [123.4, "3.1415"]
+			}
+		]
+	}"#;
+    let next_grp2 = get_rule_group_next_token("/path/to/file", "grp2");
+    let all_grp_rules = |a: bool| vec![r_tm3(a), r_tm4(a), r_tm5(a), r_tm6(a), r_tm7(a), r_rec1(), r_rec2()];
+
+    let mut tests: Vec<EpCase> = vec![
+        EpCase { endpoint: "query", query: qv(&[("query", "2"), ("time", "123.4")]), response: Some(scalar_data(2.0, 123_400)), ..d() },
+        // Only matrix and vector responses are limited/truncated. String and scalar responses aren't truncated.
+        EpCase {
+            endpoint: "query",
+            query: qv(&[("query", "2"), ("time", "123.4"), ("limit", "1")]),
+            response: Some(scalar_data(2.0, 123_400)),
+            warnings_count: 0,
+            ..d()
+        },
+        // When limit = 0, limit is disabled.
+        EpCase {
+            endpoint: "query",
+            query: qv(&[("query", "2"), ("time", "123.4"), ("limit", "0")]),
+            response: Some(scalar_data(2.0, 123_400)),
+            warnings_count: 0,
+            ..d()
+        },
+        EpCase { endpoint: "query", query: qv(&[("query", "2"), ("time", "123.4"), ("limit", "-1")]), err_type: ERROR_BAD_DATA, ..d() },
+        // A non-positive timeout could only produce an already-expired deadline.
+        EpCase { endpoint: "query", query: qv(&[("query", "2"), ("time", "123.4"), ("timeout", "0s")]), err_type: ERROR_BAD_DATA, ..d() },
+        EpCase {
+            endpoint: "query_range",
+            query: qv(&[("query", "time()"), ("start", "0"), ("end", "2"), ("step", "1"), ("timeout", "-1")]),
+            err_type: ERROR_BAD_DATA,
+            ..d()
+        },
+        EpCase { endpoint: "query", query: qv(&[("query", "0.333"), ("time", "1970-01-01T00:02:03Z")]), response: Some(scalar_data(0.333, 123_000)), ..d() },
+        EpCase {
+            endpoint: "query",
+            query: qv(&[("query", "0.333"), ("time", "1970-01-01T01:02:03+01:00")]),
+            response: Some(scalar_data(0.333, 123_000)),
+            ..d()
+        },
+        EpCase { endpoint: "query", query: qv(&[("query", "0.333")]), response: Some(scalar_data(0.333, now.unix_milli())), ..d() },
+        EpCase {
+            endpoint: "query",
+            query: qv(&[("query", replace_query), ("time", "123.4"), ("limit", "2")]),
+            warnings_count: 0,
+            response_as_json: both_vector_json,
+            ..d()
+        },
+        EpCase {
+            endpoint: "query",
+            query: qv(&[("query", replace_query), ("time", "123.4"), ("limit", "1")]),
+            warnings_count: 1,
+            response_as_json: r#"{
+		"resultType": "vector",
+		"result": [
+			{
+				"metric": {
+					"foo": "bar"
+				},
+				"value": [123.4, "42"]
+			}
+		]
+	}"#,
+            ..d()
+        },
+        EpCase {
+            endpoint: "query",
+            query: qv(&[("query", replace_query), ("time", "123.4"), ("limit", "0")]),
+            response_as_json: both_vector_json,
+            warnings_count: 0,
+            ..d()
+        },
+        // limit=0 means no limit.
+        EpCase {
+            endpoint: "query_range",
+            query: qv(&[("query", replace_query), ("start", "0"), ("end", "2"), ("step", "1"), ("limit", "0")]),
+            response: Some(both_series()),
+            warnings_count: 0,
+            ..d()
+        },
+        EpCase {
+            endpoint: "query_range",
+            query: qv(&[("query", replace_query), ("start", "0"), ("end", "2"), ("step", "1"), ("limit", "1")]),
+            response: Some(matrix_data(vec![(lmap(&[("dings", "bums")]), vec![(3.1415, 0), (3.1415, 1000), (3.1415, 2000)])])),
+            warnings_count: 1,
+            ..d()
+        },
+        EpCase {
+            endpoint: "query_range",
+            query: qv(&[("query", replace_query), ("start", "0"), ("end", "2"), ("step", "1"), ("limit", "2")]),
+            response: Some(both_series()),
+            warnings_count: 0,
+            ..d()
+        },
+        EpCase {
+            endpoint: "query_range",
+            query: qv(&[("query", "time()"), ("start", "0"), ("end", "2"), ("step", "1")]),
+            response: Some(matrix_data(vec![(Labels::empty(), vec![(0.0, 0), (1.0, 1000), (2.0, 2000)])])),
+            ..d()
+        },
+        // Test empty vector result
+        EpCase { endpoint: "query", query: qv(&[("query", "bottomk(2, notExists)")]), response_as_json: r#"{"resultType":"vector","result":[]}"#, ..d() },
+        EpCase {
+            endpoint: "query_range",
+            query: qv(&[("query", "bottomk(2, notExists)"), ("start", "0"), ("end", "2"), ("step", "1"), ("limit", "-1")]),
+            err_type: ERROR_BAD_DATA,
+            ..d()
+        },
+        // Test empty matrix result
+        EpCase {
+            endpoint: "query_range",
+            query: qv(&[("query", "bottomk(2, notExists)"), ("start", "0"), ("end", "2"), ("step", "1")]),
+            response_as_json: r#"{"resultType":"matrix","result":[]}"#,
+            ..d()
+        },
+        // Missing query params in range queries.
+        EpCase { endpoint: "query_range", query: qv(&[("query", "time()"), ("end", "2"), ("step", "1")]), err_type: ERROR_BAD_DATA, ..d() },
+        EpCase { endpoint: "query_range", query: qv(&[("query", "time()"), ("start", "0"), ("step", "1")]), err_type: ERROR_BAD_DATA, ..d() },
+        EpCase { endpoint: "query_range", query: qv(&[("query", "time()"), ("start", "0"), ("end", "2")]), err_type: ERROR_BAD_DATA, ..d() },
+        // Bad query expression.
+        EpCase { endpoint: "query", query: qv(&[("query", "invalid][query"), ("time", "1970-01-01T01:02:03+01:00")]), err_type: ERROR_BAD_DATA, ..d() },
+        EpCase {
+            endpoint: "query_range",
+            query: qv(&[("query", "invalid][query"), ("start", "0"), ("end", "100"), ("step", "1")]),
+            err_type: ERROR_BAD_DATA,
+            ..d()
+        },
+        // Invalid step.
+        EpCase {
+            endpoint: "query_range",
+            query: qv(&[("query", "time()"), ("start", "1"), ("end", "2"), ("step", "0")]),
+            err_type: ERROR_BAD_DATA,
+            ..d()
+        },
+        // Start after end.
+        EpCase {
+            endpoint: "query_range",
+            query: qv(&[("query", "time()"), ("start", "2"), ("end", "1"), ("step", "1")]),
+            err_type: ERROR_BAD_DATA,
+            ..d()
+        },
+        // Start overflows int64 internally.
+        EpCase {
+            endpoint: "query_range",
+            query: qv(&[("query", "time()"), ("start", "148966367200.372"), ("end", "1489667272.372"), ("step", "1")]),
+            err_type: ERROR_BAD_DATA,
+            ..d()
+        },
+        EpCase { endpoint: "format_query", query: qv(&[("query", "foo+bar")]), response: Some(Data::String("foo + bar".to_string())), ..d() },
+        EpCase { endpoint: "format_query", query: qv(&[("query", "invalid_expression/")]), err_type: ERROR_BAD_DATA, ..d() },
+        EpCase {
+            endpoint: "series",
+            query: qv(&[("match[]", "test_metric2")]),
+            response: Some(series_data(vec![from_strings(&["__name__", "test_metric2", "foo", "boo"])])),
+            ..d()
+        },
+        EpCase { endpoint: "series", query: qv(&[("match[]", r#"{foo=""}"#)]), err_type: ERROR_BAD_DATA, ..d() },
+        EpCase {
+            endpoint: "series",
+            query: qv(&[("match[]", r#"test_metric1{foo=~".+o"}"#)]),
+            response: Some(series_data(vec![from_strings(&["__name__", "test_metric1", "foo", "boo"])])),
+            ..d()
+        },
+        EpCase {
+            endpoint: "series",
+            query: qv(&[("match[]", r#"test_metric1{foo=~".+o$"}"#), ("match[]", r#"test_metric1{foo=~".+o"}"#)]),
+            response: Some(series_data(vec![from_strings(&["__name__", "test_metric1", "foo", "boo"])])),
+            ..d()
+        },
+        // Try to overlap the selected series set as much as possible to test the result de-duplication works well.
+        EpCase {
+            endpoint: "series",
+            query: qv(&[("match[]", r#"test_metric4{foo=~".+o$"}"#), ("match[]", r#"test_metric4{dup=~"^1"}"#)]),
+            response: Some(series_data(vec![
+                from_strings(&["__name__", "test_metric4", "dup", "1", "foo", "bar"]),
+                from_strings(&["__name__", "test_metric4", "dup", "1", "foo", "boo"]),
+                from_strings(&["__name__", "test_metric4", "foo", "boo"]),
+            ])),
+            ..d()
+        },
+        EpCase {
+            endpoint: "series",
+            query: qv(&[("match[]", r#"test_metric1{foo=~".+o"}"#), ("match[]", "none")]),
+            response: Some(series_data(vec![from_strings(&["__name__", "test_metric1", "foo", "boo"])])),
+            ..d()
+        },
+        // Start and end before series starts.
+        EpCase { endpoint: "series", query: qv(&[("match[]", "test_metric2"), ("start", "-2"), ("end", "-1")]), response: Some(series_data(vec![])), ..d() },
+        // Start and end after series ends.
+        EpCase {
+            endpoint: "series",
+            query: qv(&[("match[]", "test_metric2"), ("start", "100000"), ("end", "100001")]),
+            response: Some(series_data(vec![])),
+            ..d()
+        },
+        // Start before series starts, end after series ends.
+        EpCase {
+            endpoint: "series",
+            query: qv(&[("match[]", "test_metric2"), ("start", "-1"), ("end", "100000")]),
+            response: Some(series_data(vec![from_strings(&["__name__", "test_metric2", "foo", "boo"])])),
+            ..d()
+        },
+        // Start and end within series.
+        EpCase {
+            endpoint: "series",
+            query: qv(&[("match[]", "test_metric2"), ("start", "1"), ("end", "100")]),
+            response: Some(series_data(vec![from_strings(&["__name__", "test_metric2", "foo", "boo"])])),
+            ..d()
+        },
+        // Start within series, end after.
+        EpCase {
+            endpoint: "series",
+            query: qv(&[("match[]", "test_metric2"), ("start", "1"), ("end", "100000")]),
+            response: Some(series_data(vec![from_strings(&["__name__", "test_metric2", "foo", "boo"])])),
+            ..d()
+        },
+        // Start before series, end within series.
+        EpCase {
+            endpoint: "series",
+            query: qv(&[("match[]", "test_metric2"), ("start", "-1"), ("end", "1")]),
+            response: Some(series_data(vec![from_strings(&["__name__", "test_metric2", "foo", "boo"])])),
+            ..d()
+        },
+        // Series request with limit.
+        EpCase { endpoint: "series", query: qv(&[("match[]", "test_metric1"), ("limit", "1")]), response_len: 1, warnings_count: 1, ..d() },
+        EpCase { endpoint: "series", query: qv(&[("match[]", "test_metric1"), ("limit", "2")]), response_len: 2, warnings_count: 0, ..d() },
+        EpCase { endpoint: "series", query: qv(&[("match[]", "test_metric1"), ("limit", "0")]), response_len: 2, warnings_count: 0, ..d() },
+        // Missing match[] query params in series requests.
+        EpCase { endpoint: "series", err_type: ERROR_BAD_DATA, ..d() },
+        EpCase {
+            endpoint: "targets",
+            response: Some(Data::Targets(TargetDiscovery {
+                active_targets: expected_active_targets(),
+                dropped_targets: expected_dropped_targets(),
+                dropped_target_counts: dropped_counts(),
+            })),
+            ..d()
+        },
+        EpCase {
+            endpoint: "targets",
+            query: qv(&[("state", "any")]),
+            response: Some(Data::Targets(TargetDiscovery {
+                active_targets: expected_active_targets(),
+                dropped_targets: expected_dropped_targets(),
+                dropped_target_counts: dropped_counts(),
+            })),
+            ..d()
+        },
+        EpCase {
+            endpoint: "targets",
+            query: qv(&[("state", "active")]),
+            response: Some(Data::Targets(TargetDiscovery {
+                active_targets: expected_active_targets(),
+                dropped_targets: vec![],
+                dropped_target_counts: None,
+            })),
+            ..d()
+        },
+        EpCase {
+            endpoint: "targets",
+            query: qv(&[("state", "Dropped")]),
+            response: Some(Data::Targets(TargetDiscovery {
+                active_targets: vec![],
+                dropped_targets: expected_dropped_targets(),
+                dropped_target_counts: dropped_counts(),
+            })),
+            ..d()
+        },
+        EpCase {
+            endpoint: "target_relabel_steps",
+            query: qv(&[("scrapePool", "testpool"), ("labels", r#"{"job":"test","__address__":"localhost:9090"}"#)]),
+            response: Some(Data::RelabelSteps(vec![
+                relabel_step(
+                    test_relabel_config(Action::Replace, None, "__address__", "", "example.com:443", true),
+                    lmap(&[("job", "test"), ("__address__", "example.com:443")]),
+                    true,
+                ),
+                relabel_step(test_relabel_config(Action::Drop, Some(vec!["__address__"]), "", r"example\.com:.*", "", false), Labels::empty(), false),
+            ])),
+            ..d()
+        },
+        EpCase {
+            endpoint: "target_relabel_steps",
+            query: qv(&[("scrapePool", "testpool3"), ("labels", r#"{"job":"test","__address__":"localhost:9090"}"#)]),
+            response: Some(Data::RelabelSteps(vec![
+                relabel_step(
+                    test_relabel_config(Action::Replace, None, "__address__", "", "example.com:443", true),
+                    lmap(&[("job", "test"), ("__address__", "example.com:443")]),
+                    true,
+                ),
+                relabel_step(test_relabel_config(Action::Drop, Some(vec!["__address__"]), "", r"example\.com:.*", "", false), Labels::empty(), false),
+                relabel_step(test_relabel_config(Action::Replace, None, "job", ".*", "should_not_apply", false), Labels::empty(), false),
+            ])),
+            ..d()
+        },
+        // With a matching metric.
+        EpCase {
+            endpoint: "target_metadata",
+            query: qv(&[("metric", "go_threads")]),
+            metadata: vec![("test", vec![mm("go_threads", Gauge, "Number of OS threads created.")])],
+            response: Some(Data::TargetMetadata(vec![tmd(lmap(&[("job", "test")]), "", "Number of OS threads created.")])),
+            ..d()
+        },
+        // With a matching target.
+        EpCase {
+            endpoint: "target_metadata",
+            query: qv(&[("match_target", "{job=\"blackbox\"}")]),
+            metadata: vec![(
+                "blackbox",
+                vec![mm(
+                    "prometheus_tsdb_storage_blocks_bytes",
+                    Gauge,
+                    "The number of bytes that are currently used for local storage by all blocks.",
+                )],
+            )],
+            response: Some(Data::TargetMetadata(vec![tmd(
+                lmap(&[("job", "blackbox")]),
+                "prometheus_tsdb_storage_blocks_bytes",
+                "The number of bytes that are currently used for local storage by all blocks.",
+            )])),
+            ..d()
+        },
+        // Without a target or metric.
+        EpCase {
+            endpoint: "target_metadata",
+            metadata: vec![
+                ("test", vec![mm("go_threads", Gauge, "Number of OS threads created.")]),
+                (
+                    "blackbox",
+                    vec![mm(
+                        "prometheus_tsdb_storage_blocks_bytes",
+                        Gauge,
+                        "The number of bytes that are currently used for local storage by all blocks.",
+                    )],
+                ),
+            ],
+            response: Some(Data::TargetMetadata(vec![
+                tmd(lmap(&[("job", "test")]), "go_threads", "Number of OS threads created."),
+                tmd(
+                    lmap(&[("job", "blackbox")]),
+                    "prometheus_tsdb_storage_blocks_bytes",
+                    "The number of bytes that are currently used for local storage by all blocks.",
+                ),
+            ])),
+            sorter: Some(sort_target_metadata_by_family),
+            ..d()
+        },
+        // Without a matching metric.
+        EpCase {
+            endpoint: "target_metadata",
+            query: qv(&[("match_target", "{job=\"non-existentblackbox\"}")]),
+            response: Some(Data::TargetMetadata(vec![])),
+            ..d()
+        },
+        EpCase {
+            endpoint: "alertmanagers",
+            response: Some(Data::Alertmanagers {
+                active: vec!["http://alertmanager.example.com:8080/api/v1/alerts".to_string()],
+                dropped: vec!["http://dropped.alertmanager.example.com:8080/api/v1/alerts".to_string()],
+            }),
+            ..d()
+        },
+        // With metadata available.
+        EpCase {
+            endpoint: "metric_metadata",
+            metadata: vec![(
+                "test",
+                vec![mm("prometheus_engine_query_duration_seconds", Summary, "Query timings"), mm("go_info", Gauge, "Information about the Go environment.")],
+            )],
+            response: Some(metadata_data(vec![
+                ("prometheus_engine_query_duration_seconds", vec![md("summary", "Query timings")]),
+                ("go_info", vec![md("gauge", "Information about the Go environment.")]),
+            ])),
+            response_as_json: r#"{"prometheus_engine_query_duration_seconds":[{"type":"summary","unit":"",
+"help":"Query timings"}], "go_info":[{"type":"gauge","unit":"",
+"help":"Information about the Go environment."}]}"#,
+            ..d()
+        },
+        // With duplicate metadata for a metric that comes from different targets.
+        EpCase {
+            endpoint: "metric_metadata",
+            metadata: vec![
+                ("test", vec![mm("go_threads", Gauge, "Number of OS threads created")]),
+                ("blackbox", vec![mm("go_threads", Gauge, "Number of OS threads created")]),
+            ],
+            response: Some(metadata_data(vec![("go_threads", vec![md("gauge", "Number of OS threads created")])])),
+            response_as_json: r#"{"go_threads": [{"type":"gauge","unit":"",
+"help":"Number of OS threads created"}]}"#,
+            ..d()
+        },
+        // With non-duplicate metadata for the same metric from different targets.
+        EpCase {
+            endpoint: "metric_metadata",
+            metadata: vec![
+                ("test", vec![mm("go_threads", Gauge, "Number of OS threads created")]),
+                ("blackbox", vec![mm("go_threads", Gauge, "Number of OS threads that were created.")]),
+            ],
+            response: Some(metadata_data(vec![(
+                "go_threads",
+                vec![md("gauge", "Number of OS threads created"), md("gauge", "Number of OS threads that were created.")],
+            )])),
+            response_as_json: r#"{"go_threads": [{"type":"gauge","unit":"",
+"help":"Number of OS threads created"},{"type":"gauge","unit":"",
+"help":"Number of OS threads that were created."}]}"#,
+            sorter: Some(sort_go_threads_by_help),
+            ..d()
+        },
+        // With a limit for the number of metrics returned.
+        EpCase {
+            endpoint: "metric_metadata",
+            query: qv(&[("limit", "2")]),
+            metadata: vec![
+                (
+                    "test",
+                    vec![mm("go_threads", Gauge, "Number of OS threads created"), mm("prometheus_engine_query_duration_seconds", Summary, "Query Timings.")],
+                ),
+                ("blackbox", vec![mm("go_gc_duration_seconds", Summary, "A summary of the GC invocation durations.")]),
+            ],
+            response_len: 2,
+            ..d()
+        },
+        // With a limit for the number of metadata per metric.
+        EpCase {
+            endpoint: "metric_metadata",
+            query: qv(&[("limit_per_metric", "1")]),
+            metadata: vec![(
+                "test",
+                vec![
+                    mm("go_threads", Gauge, "Number of OS threads created"),
+                    mm("go_threads", Gauge, "Repeated metadata"),
+                    mm("go_gc_duration_seconds", Summary, "A summary of the GC invocation durations."),
+                ],
+            )],
+            response: Some(metadata_data(vec![
+                ("go_threads", vec![md("gauge", "Number of OS threads created")]),
+                ("go_gc_duration_seconds", vec![md("summary", "A summary of the GC invocation durations.")]),
+            ])),
+            response_as_json: r#"{"go_gc_duration_seconds":[{"help":"A summary of the GC invocation durations.","type":"summary","unit":""}],"go_threads": [{"type":"gauge","unit":"","help":"Number of OS threads created"}]}"#,
+            ..d()
+        },
+        // With a limit for the number of metadata per metric and per metric.
+        EpCase {
+            endpoint: "metric_metadata",
+            query: qv(&[("limit_per_metric", "1"), ("limit", "1")]),
+            metadata: vec![(
+                "test",
+                vec![
+                    mm("go_threads", Gauge, "Number of OS threads created"),
+                    mm("go_threads", Gauge, "Repeated metadata"),
+                    mm("go_gc_duration_seconds", Summary, "A summary of the GC invocation durations."),
+                ],
+            )],
+            response_len: 1,
+            response_metadata_total: 1,
+            ..d()
+        },
+        // With a limit for the number of metadata per metric and per metric, while having multiple targets.
+        EpCase {
+            endpoint: "metric_metadata",
+            query: qv(&[("limit_per_metric", "1"), ("limit", "1")]),
+            metadata: vec![
+                (
+                    "test",
+                    vec![
+                        mm("go_threads", Gauge, "Number of OS threads created"),
+                        mm("go_threads", Gauge, "Repeated metadata"),
+                        mm("go_gc_duration_seconds", Summary, "A summary of the GC invocation durations."),
+                    ],
+                ),
+                (
+                    "blackbox",
+                    vec![
+                        mm("go_threads", Gauge, "Number of OS threads created, but from a different target"),
+                        mm("go_gc_duration_seconds", Summary, "A summary of the GC invocation durations, but from a different target."),
+                    ],
+                ),
+            ],
+            response_len: 1,
+            response_metadata_total: 1,
+            ..d()
+        },
+        // When requesting a specific metric that is present.
+        EpCase {
+            endpoint: "metric_metadata",
+            query: qv(&[("metric", "go_threads")]),
+            metadata: vec![
+                ("test", vec![mm("go_threads", Gauge, "Number of OS threads created")]),
+                (
+                    "blackbox",
+                    vec![
+                        mm("go_gc_duration_seconds", Summary, "A summary of the GC invocation durations."),
+                        mm("go_threads", Gauge, "Number of OS threads that were created."),
+                    ],
+                ),
+            ],
+            response: Some(metadata_data(vec![(
+                "go_threads",
+                vec![md("gauge", "Number of OS threads created"), md("gauge", "Number of OS threads that were created.")],
+            )])),
+            response_as_json: r#"{"go_threads": [{"type":"gauge","unit":"","help":"Number of OS threads created"},{"type":"gauge","unit":"","help":"Number of OS threads that were created."}]}"#,
+            sorter: Some(sort_go_threads_by_help),
+            ..d()
+        },
+        // With a specific metric that is not present.
+        EpCase {
+            endpoint: "metric_metadata",
+            query: qv(&[("metric", "go_gc_duration_seconds")]),
+            metadata: vec![("test", vec![mm("go_threads", Gauge, "Number of OS threads created")])],
+            response: Some(metadata_data(vec![])),
+            ..d()
+        },
+        // With no available metadata.
+        EpCase { endpoint: "metric_metadata", response: Some(metadata_data(vec![])), ..d() },
+        EpCase { endpoint: "serve_config", response: Some(Data::Config(sample_config().to_string())), ..d() },
+        EpCase { endpoint: "serve_flags", response: Some(Data::Flags(sample_flag_map())), ..d() },
+        EpCase { endpoint: "alerts", response: Some(Data::Alerts(vec![tm5_alert()])), zero_func: Some(alerts_zero_func), ..d() },
+        EpCase {
+            endpoint: "rules",
+            response: Some(rules_data(vec![rgroup("grp", all_grp_rules(true)), rgroup("grp2", vec![r_tm3(true)])], "")),
+            zero_func: Some(rules_zero_func),
+            ..d()
+        },
+        EpCase {
+            endpoint: "rules",
+            query: qv(&[("exclude_alerts", "true")]),
+            response: Some(rules_data(vec![rgroup("grp", all_grp_rules(false)), rgroup("grp2", vec![r_tm3(false)])], "")),
+            zero_func: Some(rules_zero_func),
+            ..d()
+        },
+        EpCase {
+            endpoint: "rules",
+            query: qv(&[("type", "alert")]),
+            response: Some(rules_data(
+                vec![rgroup("grp", vec![r_tm3(true), r_tm4(true), r_tm5(true), r_tm6(true), r_tm7(true)]), rgroup("grp2", vec![r_tm3(true)])],
+                "",
+            )),
+            zero_func: Some(rules_zero_func),
+            ..d()
+        },
+        EpCase {
+            endpoint: "rules",
+            query: qv(&[("type", "record")]),
+            response: Some(rules_data(vec![rgroup("grp", vec![r_rec1(), r_rec2()])], "")),
+            zero_func: Some(rules_zero_func),
+            ..d()
+        },
+        EpCase {
+            endpoint: "rules",
+            query: qv(&[("rule_name[]", "test_metric4")]),
+            response: Some(rules_data(vec![rgroup("grp", vec![r_tm4(true)])], "")),
+            zero_func: Some(rules_zero_func),
+            ..d()
+        },
+        EpCase { endpoint: "rules", query: qv(&[("rule_group[]", "respond-with-nothing")]), response: Some(rules_data(vec![], "")), ..d() },
+        EpCase {
+            endpoint: "rules",
+            query: qv(&[("file[]", "/path/to/file"), ("rule_name[]", "test_metric4")]),
+            response: Some(rules_data(vec![rgroup("grp", vec![r_tm4(true)])], "")),
+            zero_func: Some(rules_zero_func),
+            ..d()
+        },
+        EpCase {
+            endpoint: "rules",
+            query: qv(&[("match[]", r#"{testlabel="rule"}"#)]),
+            response: Some(rules_data(vec![rgroup("grp", vec![r_tm6(true), r_rec2()])], "")),
+            zero_func: Some(rules_zero_func),
+            ..d()
+        },
+        EpCase {
+            endpoint: "rules",
+            query: qv(&[("type", "alert"), ("match[]", r#"{templatedlabel="{{ $externalURL }}"}"#)]),
+            response: Some(rules_data(vec![rgroup("grp", vec![r_tm7(true)])], "")),
+            zero_func: Some(rules_zero_func),
+            ..d()
+        },
+        EpCase { endpoint: "rules", query: qv(&[("match[]", r#"{testlabel="abc"}"#)]), response: Some(rules_data(vec![], "")), ..d() },
+        // This is testing OR condition, the api response should return rule if it matches one of the label selector
+        EpCase {
+            endpoint: "rules",
+            query: qv(&[("match[]", r#"{testlabel="abc"}"#), ("match[]", r#"{testlabel="rule"}"#)]),
+            response: Some(rules_data(vec![rgroup("grp", vec![r_tm6(true), r_rec2()])], "")),
+            zero_func: Some(rules_zero_func),
+            ..d()
+        },
+        EpCase {
+            endpoint: "rules",
+            query: qv(&[("type", "record"), ("match[]", r#"{testlabel="rule"}"#)]),
+            response: Some(rules_data(vec![rgroup("grp", vec![r_rec2()])], "")),
+            zero_func: Some(rules_zero_func),
+            ..d()
+        },
+        EpCase {
+            endpoint: "rules",
+            query: qv(&[("type", "alert"), ("match[]", r#"{testlabel="rule"}"#)]),
+            response: Some(rules_data(vec![rgroup("grp", vec![r_tm6(true)])], "")),
+            zero_func: Some(rules_zero_func),
+            ..d()
+        },
+        EpCase {
+            endpoint: "rules",
+            query: qv(&[("group_limit", "1")]),
+            response: Some(rules_data(vec![rgroup("grp", all_grp_rules(true))], &next_grp2)),
+            zero_func: Some(rules_zero_func),
+            ..d()
+        },
+        EpCase {
+            endpoint: "rules",
+            query: qv(&[("group_limit", "1"), ("group_next_token", &next_grp2)]),
+            response: Some(rules_data(vec![rgroup("grp2", vec![r_tm3(true)])], "")),
+            zero_func: Some(rules_zero_func),
+            ..d()
+        },
+        // invalid pagination request
+        EpCase { endpoint: "rules", query: qv(&[("group_next_token", &next_grp2)]), err_type: ERROR_BAD_DATA, zero_func: Some(rules_zero_func), ..d() },
+        // invalid group_limit
+        EpCase {
+            endpoint: "rules",
+            query: qv(&[("group_limit", "0"), ("group_next_token", &next_grp2)]),
+            err_type: ERROR_BAD_DATA,
+            zero_func: Some(rules_zero_func),
+            ..d()
+        },
+        // Pagination token is invalid due to changes in the rule groups
+        EpCase {
+            endpoint: "rules",
+            query: qv(&[("group_limit", "1"), ("group_next_token", &get_rule_group_next_token("/removed/file", "notfound"))]),
+            err_type: ERROR_BAD_DATA,
+            zero_func: Some(rules_zero_func),
+            ..d()
+        },
+        // groupNextToken should not be in empty response
+        EpCase {
+            endpoint: "rules",
+            query: qv(&[("match[]", r#"{testlabel="abc-cannot-find"}"#), ("group_limit", "1")]),
+            response_as_json: r#"{"groups":[]}"#,
+            ..d()
+        },
+        EpCase {
+            endpoint: "query_exemplars",
+            query: qv(&[("query", r#"test_metric3{foo="boo"} - test_metric4{foo="bar"}"#), ("start", "0"), ("end", "4")]),
+            // Note extra integer length of timestamps for exemplars because of millisecond preservation
+            // of timestamps within Prometheus (see timestamp package).
+            response: Some(Data::Exemplars(vec![
+                ex1(&["__name__", "test_metric3", "foo", "boo", "dup", "1"], &[("abc", 2000)]),
+                ex1(&["__name__", "test_metric4", "foo", "bar", "dup", "1"], &[("lul", 4000)]),
+            ])),
+            ..d()
+        },
+        EpCase {
+            endpoint: "query_exemplars",
+            query: qv(&[("query", r#"{foo="boo"}"#), ("start", "4"), ("end", "4.1")]),
+            response: Some(Data::Exemplars(vec![ex1(&["__name__", "test_metric3", "foo", "boo", "dup", "1"], &[("abc2", 4053)])])),
+            ..d()
+        },
+        EpCase {
+            endpoint: "query_exemplars",
+            query: qv(&[("query", r#"{foo="boo"}"#)]),
+            response: Some(Data::Exemplars(vec![ex1(&["__name__", "test_metric3", "foo", "boo", "dup", "1"], &[("abc", 2000), ("abc2", 4053)])])),
+            ..d()
+        },
+        EpCase { endpoint: "query_exemplars", query: qv(&[("query", r#"{__name__="test_metric5"}"#)]), response: Some(Data::Exemplars(vec![])), ..d() },
+    ];
+
+    if test_label_api {
+        let bar_boo: Option<&[&str]> = Some(&["bar", "boo"]);
+        let none: Option<&[&str]> = Some(&[]);
+        tests.extend([
+            lv("__name__", &[], Some(&["test_metric1", "test_metric2", "test_metric3", "test_metric4", "test_metric5"]), ERROR_NONE),
+            lv("foo", &[], bar_boo, ERROR_NONE),
+            // Bad name parameter: Go passes "host.name\xff" (invalid UTF-8) and expects errorBadData.
+            // Not ported: a Rust `String` (route params of `ApiRequest`) cannot hold invalid UTF-8, so this input
+            // cannot be built at this level.
+            // Valid utf8 name parameter for utf8 validation.
+            lv("host.name", &[], Some(&["localhost"]), ERROR_NONE),
+            // Valid escaped utf8 name parameter for utf8 validation.
+            lv("U__junk_0a__7b__7d__2c__3d_:_20__20_chars", &[], Some(&["bar"]), ERROR_NONE),
+            // Start and end before LabelValues starts.
+            lv("foo", &[("start", "-2"), ("end", "-1")], none, ERROR_NONE),
+            // Start and end within LabelValues.
+            lv("foo", &[("start", "1"), ("end", "100")], bar_boo, ERROR_NONE),
+            // Start before LabelValues, end within LabelValues.
+            lv("foo", &[("start", "-1"), ("end", "3")], bar_boo, ERROR_NONE),
+            // Start before LabelValues starts, end after LabelValues ends.
+            lv("foo", &[("start", "1969-12-31T00:00:00Z"), ("end", "1970-02-01T00:02:03Z")], bar_boo, ERROR_NONE),
+            // Start with bad data, end within LabelValues.
+            lv("foo", &[("start", "boop"), ("end", "1")], None, ERROR_BAD_DATA),
+            // Start within LabelValues, end after.
+            lv("foo", &[("start", "1"), ("end", "100000000")], bar_boo, ERROR_NONE),
+            // Start and end after LabelValues ends.
+            lv("foo", &[("start", "148966367200.372"), ("end", "148966367200.972")], none, ERROR_NONE),
+            // Only provide Start within LabelValues, don't provide an end time.
+            lv("foo", &[("start", "2")], bar_boo, ERROR_NONE),
+            // Only provide end within LabelValues, don't provide a start time.
+            lv("foo", &[("end", "100")], bar_boo, ERROR_NONE),
+            // Label values with bad matchers.
+            lv("foo", &[("match[]", r#"{foo="""#), ("match[]", "test_metric2")], None, ERROR_BAD_DATA),
+            // Label values with empty matchers.
+            lv("foo", &[("match[]", r#"{foo=""}"#)], None, ERROR_BAD_DATA),
+            // Label values with matcher.
+            lv("foo", &[("match[]", "test_metric2")], Some(&["boo"]), ERROR_NONE),
+            // Label values with matcher.
+            lv("foo", &[("match[]", "test_metric1")], bar_boo, ERROR_NONE),
+            // Label values with matcher using label filter.
+            lv("foo", &[("match[]", r#"test_metric1{foo="bar"}"#)], Some(&["bar"]), ERROR_NONE),
+            // Label values with matcher and time range.
+            lv("foo", &[("match[]", "test_metric1"), ("start", "1"), ("end", "100000000")], bar_boo, ERROR_NONE),
+            // Try to overlap the selected series set as much as possible to test that the value de-duplication works.
+            lv("foo", &[("match[]", r#"test_metric4{dup=~"^1"}"#), ("match[]", r#"test_metric4{foo=~".+o$"}"#)], bar_boo, ERROR_NONE),
+            // Label values with limit.
+            EpCase { endpoint: "label_values", params: vec![("name", "__name__")], query: qv(&[("limit", "2")]), response_len: 2, warnings_count: 1, ..d() },
+            EpCase { endpoint: "label_values", params: vec![("name", "__name__")], query: qv(&[("limit", "5")]), response_len: 5, warnings_count: 0, ..d() },
+            // Label names.
+            ln(&[], Some(all_names), ERROR_NONE),
+            // Start and end before Label names starts.
+            ln(&[("start", "-2"), ("end", "-1")], none, ERROR_NONE),
+            // Start and end within Label names.
+            ln(&[("start", "1"), ("end", "100")], Some(all_names), ERROR_NONE),
+            // Start before Label names, end within Label names.
+            ln(&[("start", "-1"), ("end", "10")], Some(all_names), ERROR_NONE),
+            // Start before Label names starts, end after Label names ends.
+            ln(&[("start", "-1"), ("end", "100000")], Some(all_names), ERROR_NONE),
+            // Start with bad data for Label names, end within Label names.
+            ln(&[("start", "boop"), ("end", "1")], None, ERROR_BAD_DATA),
+            // Start within Label names, end after.
+            ln(&[("start", "1"), ("end", "1000000006")], Some(all_names), ERROR_NONE),
+            // Start and end after Label names ends.
+            ln(&[("start", "148966367200.372"), ("end", "148966367200.972")], none, ERROR_NONE),
+            // Only provide Start within Label names, don't provide an end time.
+            ln(&[("start", "4")], Some(all_names), ERROR_NONE),
+            // Only provide End within Label names, don't provide a start time.
+            ln(&[("end", "20")], Some(all_names), ERROR_NONE),
+            // Label names with bad matchers.
+            ln(&[("match[]", r#"{foo="""#), ("match[]", "test_metric2")], None, ERROR_BAD_DATA),
+            // Label values with empty matchers.
+            EpCase { params: vec![("name", "foo")], ..ln(&[("match[]", r#"{foo=""}"#)], None, ERROR_BAD_DATA) },
+            // Label names with matcher.
+            ln(&[("match[]", "test_metric2")], Some(&["__name__", "foo"]), ERROR_NONE),
+            // Label names with matcher.
+            ln(&[("match[]", "test_metric3")], Some(&["__name__", "dup", "foo"]), ERROR_NONE),
+            // Label names with matcher using label filter.
+            // There is no matching series.
+            ln(&[("match[]", r#"test_metric1{foo="test"}"#)], none, ERROR_NONE),
+            // Label names with matcher and time range.
+            ln(&[("match[]", "test_metric2"), ("start", "1"), ("end", "100000000")], Some(&["__name__", "foo"]), ERROR_NONE),
+            // Label names with limit.
+            EpCase { endpoint: "label_names", query: qv(&[("limit", "2")]), response_len: 2, warnings_count: 1, ..d() },
+            EpCase { endpoint: "label_names", query: qv(&[("limit", "5")]), response_len: 5, warnings_count: 0, ..d() },
+        ]);
+    }
+
+    let methods = |ep: &str| -> &'static [&'static str] {
+        if ep == "query" || ep == "query_range" || ep == "series" { &["GET", "POST"] } else { &["GET"] }
+    };
+    let request = |m: &str, q: &[(&str, String)]| -> ApiRequest {
+        let pairs: Vec<(&str, &str)> = q.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        if m == "POST" { ApiRequest::new(m, &[], &pairs) } else { ApiRequest::new(m, &pairs, &[]) }
+    };
+
+    for (i, test) in tests.iter().enumerate() {
+        for method in methods(test.endpoint) {
+            let name = format!("run {} {} {:?} {}", i, test.endpoint, test.query, method);
+            let mut req = request(method, &test.query);
+            for (p, v) in &test.params {
+                req = req.with_param(p, v);
+            }
+            tr.reset_metadata_store();
+            for (id, md) in &test.metadata {
+                tr.set_metadata_store_for_targets(id, Arc::new(TestMetaStore { metadata: md.clone() })).unwrap();
+            }
+            let mut res = (ep_func(test.endpoint))(api, &req);
+            if let Some(f) = res.finalizer.take() {
+                // Finalizers were added to ensure closed readers on API panics, ensure they are closed here too.
+                f();
+            }
+            match &res.err {
+                None => assert_eq!(test.err_type, ERROR_NONE, "{}: expected error of type {:?} but got none", name, test.err_type.str),
+                Some(e) => assert_eq!(test.err_type, e.typ, "{}: ({})", name, e.err),
+            }
+            if let (Some(sorter), Some(data)) = (test.sorter, res.data.as_mut()) {
+                sorter(data);
+            }
+            if test.response_len != 0 {
+                assert_eq!(test.response_len, data_len(&res.data), "{}: Response length does not match", name);
+                if test.response_metadata_total != 0 {
+                    let Some(Data::Metadata(m)) = &res.data else { panic!("{}: not metadata", name) };
+                    let total: usize = m.values().map(|v| v.len()).sum();
+                    assert_eq!(test.response_metadata_total, total, "{}: Amount of metadata in the response does not match", name);
+                }
+            } else {
+                if let (Some(zf), Some(data)) = (test.zero_func, res.data.as_mut()) {
+                    zf(data);
+                }
+                if let Some(exp) = &test.response {
+                    assert_eq!(Some(exp), res.data.as_ref(), "{}", name);
+                }
+            }
+            if !test.response_as_json.is_empty() {
+                let mut got = String::new();
+                match &res.data {
+                    Some(d) => d.write_json(&mut got),
+                    None => got.push_str("null"),
+                }
+                let exp = json_norm(json::Json::parse(test.response_as_json).expect("expected JSON"));
+                let got_j = json_norm(json::Json::parse(&got).expect("response JSON"));
+                assert_eq!(exp, got_j, "{}: {}", name, got);
+            }
+            assert_eq!(test.warnings_count, res.warnings.len(), "{}: warnings {:?}", name, res.warnings.as_errors());
+        }
+    }
+}
+
+fn ex1(series: &[&str], exs: &[(&str, i64)]) -> ExemplarQueryResult {
+    ExemplarQueryResult {
+        series_labels: from_strings(series),
+        exemplars: exs.iter().map(|(id, ts)| Exemplar { labels: from_strings(&["id", id]), value: 10.0, ts: *ts, has_ts: false }).collect(),
+    }
+}

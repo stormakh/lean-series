@@ -409,12 +409,14 @@ fn sanitize_split_host_port(input: &str) -> Result<(String, String), String> {
 
 /// Go `net.SplitHostPort`.
 pub fn split_host_port(hostport: &str) -> Result<(String, String), String> {
-    let missing_port = || format!("address {}: missing port in address", hostport);
-    let too_many = || format!("address {}: too many colons in address", hostport);
+    // Go `AddrError.Error()`: the "address X: " prefix only when the address is not empty.
+    let addr_err = |msg: &str| if hostport.is_empty() { msg.to_string() } else { format!("address {}: {}", hostport, msg) };
+    let missing_port = || addr_err("missing port in address");
+    let too_many = || addr_err("too many colons in address");
     let Some(i) = hostport.rfind(':') else { return Err(missing_port()) };
     let (host, port);
     if hostport.starts_with('[') {
-        let Some(end) = hostport.find(']') else { return Err(format!("address {}: missing ']' in address", hostport)) };
+        let Some(end) = hostport.find(']') else { return Err(addr_err("missing ']' in address")) };
         if end + 1 == hostport.len() {
             return Err(missing_port());
         } else if end + 1 == i {
