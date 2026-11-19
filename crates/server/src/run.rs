@@ -155,6 +155,7 @@ enum TermEvent {
 
 /// Go `main()`.
 pub fn main() {
+    sys::set_malloc_tunables();
     sys::tune_malloc();
     // Before any thread starts: every thread inherits the blocked signals, which only the signal thread takes.
     sys::block_signals();
