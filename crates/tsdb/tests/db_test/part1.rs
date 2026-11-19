@@ -1355,3 +1355,697 @@ impl Compactor for MockCompactorFailing {
         Ok(Vec::new())
     }
 }
+
+#[test]
+fn test_time_retention() {
+    struct Case {
+        name: &'static str,
+        blocks: Vec<BlockMeta>,
+        exp_blocks: Vec<BlockMeta>,
+        retention_duration: i64,
+    }
+    let test_cases = vec![
+        Case {
+            name: "Block max time delta greater than retention duration",
+            blocks: vec![
+                meta(500, 900), // Oldest block, beyond retention
+                meta(1000, 1500),
+                meta(1500, 2000), // Newest block
+            ],
+            exp_blocks: vec![meta(1000, 1500), meta(1500, 2000)],
+            retention_duration: 1000,
+        },
+        Case {
+            name: "Block max time delta equal to retention duration",
+            blocks: vec![
+                meta(500, 900),   // Oldest block
+                meta(1000, 1500), // Coinciding exactly with the retention duration.
+                meta(1500, 2000), // Newest block
+            ],
+            exp_blocks: vec![meta(1500, 2000)],
+            retention_duration: 500,
+        },
+    ];
+    for tc in test_cases {
+        let db = new_test_db(vec![with_rngs(&[1000])]);
+
+        for m in &tc.blocks {
+            create_block(db.dir(), &gen_series(10, 10, m.min_time, m.max_time));
+        }
+
+        db.reload_blocks().unwrap(); // Reload the db to register the new blocks.
+        assert_eq!(db.blocks().len(), tc.blocks.len(), "{}", tc.name); // Ensure all blocks are registered.
+
+        db.opts.write().unwrap().retention_duration = tc.retention_duration;
+        // Reloading should truncate the blocks which are >= the retention duration vs the first block.
+        db.reload_blocks().unwrap();
+
+        let act_blocks = db.blocks();
+
+        assert_eq!(1, db.metrics.time_retention_count.get() as i64, "metric retention count mismatch");
+        assert_eq!(act_blocks.len(), tc.exp_blocks.len(), "{}", tc.name);
+        for (i, eb) in tc.exp_blocks.iter().enumerate() {
+            assert_eq!(eb.min_time, act_blocks[i].meta().min_time);
+            assert_eq!(eb.max_time, act_blocks[i].meta().max_time);
+        }
+    }
+}
+
+#[test]
+fn test_retention_duration_metric() {
+    let db = new_test_db(vec![with_opts(Options { retention_duration: 1000, ..zero_options() }), with_rngs(&[100])]);
+
+    let exp_retention_duration = 1.0;
+    let act_retention_duration = db.metrics.retention_duration.get();
+    assert_eq!(exp_retention_duration, act_retention_duration, "metric retention duration mismatch");
+}
+
+#[test]
+fn test_size_retention() {
+    for enable_st_storage in [false, true] {
+        let mut opts = default_options();
+        opts.out_of_order_time_window = 100;
+        let db = new_test_db(vec![with_opts(opts), with_rngs(&[100])]);
+
+        let blocks = [
+            meta(100, 200), // Oldest block
+            meta(200, 300),
+            meta(300, 400),
+            meta(400, 500),
+            meta(500, 600), // Newest Block
+        ];
+
+        for m in &blocks {
+            create_block(db.dir(), &gen_series(100, 10, m.min_time, m.max_time));
+        }
+
+        let head_blocks = [meta(700, 800)];
+
+        // Add some data to the WAL.
+        let mut head_app = db.head().appender(&ctx());
+        let mut a_series = Labels::empty();
+        for m in &head_blocks {
+            let series = gen_series(100, 10, m.min_time, m.max_time + 1);
+            for s in &series {
+                a_series = s.labels().clone();
+                let mut it = s.iterator(None);
+                while it.next() == ValueType::Float {
+                    let (tim, v) = it.at();
+                    head_app.append(0, s.labels(), tim, v).unwrap();
+                }
+                assert!(it.err().is_none());
+            }
+        }
+        commit(head_app.as_mut());
+        db.head().mmap_head_chunks();
+
+        // Go require.Eventually(2s, 100ms).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !db.head().chunk_disk_mapper.is_queue_empty() {
+            assert!(std::time::Instant::now() < deadline, "chunk write queue not empty");
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+
+        let wal = db.head().wal().unwrap().clone();
+        let cdm = &db.head().chunk_disk_mapper;
+
+        // Test that registered size matches the actual disk size.
+        db.reload_blocks().unwrap(); // Reload the db to register the new db size.
+        assert_eq!(db.blocks().len(), blocks.len()); // Ensure all blocks are registered.
+        let mut block_size = db.metrics.blocks_bytes.get() as i64; // Use the actual internal metrics.
+        let mut wal_size = wal.size().unwrap();
+        let mut cdm_size = cdm.size().unwrap();
+        assert_ne!(0, cdm_size);
+        // Expected size should take into account block size + WAL size + Head chunks size
+        let mut exp_size = block_size + wal_size + cdm_size;
+        let mut act_size = fileutil::dir_size(db.dir()).unwrap();
+        assert_eq!(exp_size, act_size, "registered size doesn't match actual disk size");
+
+        // Create a WAL checkpoint, and compare sizes.
+        let (first, last) = wlog::segments(wal.dir()).unwrap();
+        wlog::checkpoint(&wal, first, last - 1, &|_| false, 0, enable_st_storage, false).unwrap();
+        block_size = db.metrics.blocks_bytes.get() as i64; // Use the actual internal metrics.
+        wal_size = wal.size().unwrap();
+        cdm_size = cdm.size().unwrap();
+        assert_ne!(0, cdm_size);
+        exp_size = block_size + wal_size + cdm_size;
+        act_size = fileutil::dir_size(db.dir()).unwrap();
+        assert_eq!(exp_size, act_size, "registered size doesn't match actual disk size");
+
+        // Truncate Chunk Disk Mapper and compare sizes.
+        cdm.truncate(900).unwrap();
+        cdm_size = cdm.size().unwrap();
+        assert_ne!(0, cdm_size);
+        exp_size = block_size + wal_size + cdm_size;
+        act_size = fileutil::dir_size(db.dir()).unwrap();
+        assert_eq!(exp_size, act_size, "registered size doesn't match actual disk size");
+
+        // Add some out of order samples to check the size of WBL.
+        let mut head_app = db.head().appender(&ctx());
+        for ts in 750..800i64 {
+            head_app.append(0, &a_series, ts, ts as f64).unwrap();
+        }
+        commit(head_app.as_mut());
+
+        wal_size = wal.size().unwrap();
+        let wbl_size = db.head().wbl().unwrap().size().unwrap();
+        assert_ne!(0, wbl_size);
+        cdm_size = cdm.size().unwrap();
+        exp_size = block_size + wal_size + wbl_size + cdm_size;
+        act_size = fileutil::dir_size(db.dir()).unwrap();
+        assert_eq!(exp_size, act_size, "registered size doesn't match actual disk size");
+
+        // Decrease the max bytes limit so that a delete is triggered.
+        // Check total size, total count and check that the oldest block was deleted.
+        let first_block_size = db.blocks()[0].size();
+        let size_limit = act_size - first_block_size;
+        db.opts.write().unwrap().max_bytes = size_limit; // Set the new db size limit one block smaller that the actual size.
+        db.reload_blocks().unwrap(); // Reload the db to register the new db size.
+
+        let exp_blocks = &blocks[1..];
+        let act_blocks = db.blocks();
+        block_size = db.metrics.blocks_bytes.get() as i64;
+        wal_size = wal.size().unwrap();
+        cdm_size = cdm.size().unwrap();
+        assert_ne!(0, cdm_size);
+        // Expected size should take into account block size + WAL size + WBL size
+        exp_size = block_size + wal_size + wbl_size + cdm_size;
+        let act_retention_count = db.metrics.size_retention_count.get() as i64;
+        act_size = fileutil::dir_size(db.dir()).unwrap();
+
+        assert_eq!(1, act_retention_count, "metric retention count mismatch");
+        assert_eq!(exp_size, act_size, "metric db size doesn't match actual disk size");
+        assert!(
+            exp_size <= size_limit,
+            "actual size ({exp_size}) is expected to be less than or equal to limit ({size_limit})"
+        );
+        assert_eq!(
+            act_blocks.len(),
+            blocks.len() - 1,
+            "new block count should be decreased from:{} to:{}",
+            blocks.len(),
+            blocks.len() - 1
+        );
+        assert_eq!(exp_blocks[0].max_time, act_blocks[0].meta().max_time, "maxT mismatch of the first block");
+        assert_eq!(
+            exp_blocks[exp_blocks.len() - 1].max_time,
+            act_blocks[act_blocks.len() - 1].meta().max_time,
+            "maxT mismatch of the last block"
+        );
+    }
+}
+
+#[test]
+fn test_size_retention_metric() {
+    let cases = [(1000i64, 1000i64), (0, 0), (-1000, 0)];
+
+    for (max_bytes, exp_max_bytes) in cases {
+        let db = new_test_db(vec![with_opts(Options { max_bytes, ..zero_options() }), with_rngs(&[100])]);
+
+        let act_max_bytes = db.metrics.max_bytes.get() as i64;
+        assert_eq!(exp_max_bytes, act_max_bytes, "metric retention limit bytes mismatch");
+    }
+}
+
+fn retention_cfg(time_ms: i64) -> ApplyConfig {
+    ApplyConfig {
+        tsdb: Some(TsdbConfig {
+            retention: Some(TsdbRetentionConfig { time: time_ms, ..TsdbRetentionConfig::default() }),
+            ..TsdbConfig::default()
+        }),
+        ..ApplyConfig::default()
+    }
+}
+
+// TestRuntimeRetentionConfigChange tests that retention configuration can be changed at runtime via ApplyConfig
+// and that the retention logic properly deletes blocks when retention is shortened. This test also ensures
+// race-free concurrent access to retention settings.
+#[test]
+fn test_runtime_retention_config_change() {
+    const HOUR: i64 = 60 * 60 * 1000;
+    const INITIAL_RETENTION_DURATION: i64 = 10 * HOUR; // 10 hours
+    const SHORTER_RETENTION_DURATION: i64 = HOUR; // 1 hour
+
+    let db = new_test_db(vec![
+        with_opts(Options { retention_duration: INITIAL_RETENTION_DURATION, ..zero_options() }),
+        with_rngs(&[100]),
+    ]);
+
+    let nine_hours_ms = 9 * HOUR;
+    let nine_and_half_hours_ms = 9 * HOUR + 30 * 60 * 1000;
+    let blocks = [
+        meta(0, 100),                                           // 10 hours old (beyond new retention)
+        meta(100, 200),                                         // 9.9 hours old (beyond new retention)
+        meta(nine_hours_ms, nine_and_half_hours_ms),            // 1 hour old (within new retention)
+        meta(nine_and_half_hours_ms, INITIAL_RETENTION_DURATION), // 0.5 hours old (within new retention)
+    ];
+
+    for m in &blocks {
+        create_block(
+            db.dir(),
+            &gen_series_from_sample_generator(10, 10, m.min_time, m.max_time, 60 * 1000, |ts| fs(ts, rand_f64())),
+        );
+    }
+
+    // Reload blocks and verify all are loaded.
+    db.reload_blocks().unwrap();
+    assert_eq!(db.blocks().len(), blocks.len(), "expected all blocks to be loaded initially");
+
+    db.apply_config(&retention_cfg(SHORTER_RETENTION_DURATION)).expect("ApplyConfig should succeed");
+
+    let actual_retention = db.opts.read().unwrap().retention_duration;
+    assert_eq!(SHORTER_RETENTION_DURATION, actual_retention, "retention duration should be updated");
+
+    let expected_retention_seconds = SHORTER_RETENTION_DURATION as f64 / 1000.0;
+    let actual_retention_seconds = db.metrics.retention_duration.get();
+    assert_eq!(expected_retention_seconds, actual_retention_seconds, "retention duration metric should be updated");
+
+    db.reload_blocks().unwrap();
+
+    // Verify that blocks beyond the new retention were deleted.
+    // We expect only the last 2 blocks to remain (those within 1 hour).
+    let act_blocks = db.blocks();
+    assert_eq!(act_blocks.len(), 2, "expected old blocks to be deleted after retention change");
+
+    // Verify the remaining blocks are the newest ones.
+    assert_eq!(nine_hours_ms, act_blocks[0].meta().min_time, "first remaining block should be within retention");
+    assert_eq!(nine_and_half_hours_ms, act_blocks[1].meta().min_time, "last remaining block should be the newest");
+
+    assert!(db.metrics.time_retention_count.get() as i64 > 0, "time retention count should be incremented");
+}
+
+// TestApplyConfigRetentionDurationMetricUnit verifies that after a config reload the
+// prometheus_tsdb_retention_limit_seconds metric reports the retention in seconds.
+#[test]
+fn test_apply_config_retention_duration_metric_unit() {
+    let one_hour_ms = 60 * 60 * 1000i64;
+    let db = db_with(Options { retention_duration: one_hour_ms, ..zero_options() });
+
+    db.apply_config(&retention_cfg(one_hour_ms)).unwrap();
+
+    assert_eq!(one_hour_ms, db.opts.read().unwrap().retention_duration);
+
+    let got_seconds = db.metrics.retention_duration.get();
+    let want_seconds = 3600.0;
+    assert_eq!(want_seconds, got_seconds);
+}
+
+fn xor_cfg(floats: &str) -> ApplyConfig {
+    ApplyConfig {
+        tsdb: Some(TsdbConfig { float_chunk_encoding: floats.to_string(), ..TsdbConfig::default() }),
+        ..ApplyConfig::default()
+    }
+}
+
+fn opts_with_encoding(enc: chunkenc::Encoding, st: bool) -> Options {
+    let mut opts = default_options();
+    opts.float_chunk_encoding = enc;
+    opts.enable_st_storage = st;
+    opts
+}
+
+// TestDBApplyConfigChunkEncoding verifies that ApplyConfig correctly handles the chunk_encoding setting.
+#[test]
+fn test_db_apply_config_chunk_encoding() {
+    use tsdb::db::{FLOAT_CHUNK_ENCODING_XOR, FLOAT_CHUNK_ENCODING_XOR2};
+
+    // xor_default_accepts_config_xor2
+    {
+        let db = db_with(opts_with_encoding(chunkenc::ENC_XOR, false));
+        db.apply_config(&xor_cfg(FLOAT_CHUNK_ENCODING_XOR2)).unwrap();
+        assert!(db.head().opts.use_xor2_float_encoding());
+    }
+
+    // explicit_xor_overrides_xor2_default
+    {
+        let db = db_with(opts_with_encoding(chunkenc::ENC_XOR2, false));
+        db.apply_config(&xor_cfg(FLOAT_CHUNK_ENCODING_XOR)).unwrap();
+        assert!(!db.head().opts.use_xor2_float_encoding());
+        assert_eq!(chunkenc::ENC_XOR2, db.opts.read().unwrap().float_chunk_encoding, "startup default must not be mutated");
+    }
+
+    // xor2_default_succeeds
+    {
+        let db = db_with(opts_with_encoding(chunkenc::ENC_XOR2, false));
+        db.apply_config(&xor_cfg(FLOAT_CHUNK_ENCODING_XOR2)).unwrap();
+        assert!(db.head().opts.use_xor2_float_encoding());
+    }
+
+    // empty_encoding_uses_startup_option
+    for enc in [chunkenc::ENC_XOR2, chunkenc::ENC_XOR] {
+        let db = db_with(opts_with_encoding(enc, false));
+        db.apply_config(&xor_cfg("")).unwrap();
+        assert_eq!(enc == chunkenc::ENC_XOR2, db.head().opts.use_xor2_float_encoding(), "{enc}");
+    }
+
+    // sequential_reload_reverts_to_startup_option
+    {
+        let db = db_with(opts_with_encoding(chunkenc::ENC_XOR2, false));
+
+        db.apply_config(&xor_cfg(FLOAT_CHUNK_ENCODING_XOR)).unwrap();
+        assert!(!db.head().opts.use_xor2_float_encoding());
+
+        db.apply_config(&xor_cfg("")).unwrap();
+        assert!(db.head().opts.use_xor2_float_encoding(), "empty encoding must revert to startup option");
+    }
+
+    // nil_TSDBConfig_resets_to_startup_option
+    {
+        let db = db_with(opts_with_encoding(chunkenc::ENC_XOR2, false));
+
+        db.apply_config(&xor_cfg(FLOAT_CHUNK_ENCODING_XOR)).unwrap();
+        assert!(!db.head().opts.use_xor2_float_encoding());
+
+        db.apply_config(&ApplyConfig::default()).unwrap();
+        assert!(db.head().opts.use_xor2_float_encoding(), "nil TSDBConfig must revert to startup option");
+    }
+
+    // xor_with_st_storage_returns_error
+    {
+        let db = db_with(opts_with_encoding(chunkenc::ENC_XOR2, true));
+        let err = db.apply_config(&xor_cfg(FLOAT_CHUNK_ENCODING_XOR)).unwrap_err();
+        assert!(err.to_string().contains("is incompatible with start-timestamp storage"), "{err}");
+    }
+
+    // empty_encoding_with_st_storage_keeps_startup_option
+    {
+        let db = db_with(opts_with_encoding(chunkenc::ENC_XOR2, true));
+
+        // Removing the field must fall back to the startup option, not to the XOR default; otherwise st-storage
+        // would silently lose XOR2.
+        db.apply_config(&xor_cfg("")).unwrap();
+        assert!(db.head().opts.use_xor2_float_encoding());
+        db.apply_config(&ApplyConfig::default()).unwrap();
+        assert!(db.head().opts.use_xor2_float_encoding());
+    }
+
+    // rejected_reload_keeps_active_encoding
+    {
+        let db = db_with(opts_with_encoding(chunkenc::ENC_XOR2, true));
+
+        let err = db.apply_config(&xor_cfg(FLOAT_CHUNK_ENCODING_XOR)).unwrap_err();
+        assert!(err.to_string().contains("is incompatible with start-timestamp storage"), "{err}");
+        assert!(db.head().opts.use_xor2_float_encoding(), "active encoding must not change on a rejected reload");
+    }
+}
+
+// requireBlockFloatChunkEncoding queries all chunks of the single series in the block and asserts they all use
+// the expected encoding.
+#[track_caller]
+fn require_block_float_chunk_encoding(b: &Block, expected: chunkenc::Encoding) {
+    let q = tsdb::querier::new_block_chunk_querier(b, b.min_time(), b.max_time()).unwrap();
+    let res = query_chunks(q, &[eq(DEFAULT_LABEL_NAME, "0")]);
+    assert_eq!(res.len(), 1);
+    for chks in res.values() {
+        assert!(!chks.is_empty());
+        for chk in chks {
+            assert_eq!(expected, chk.chunk.as_ref().unwrap().encoding());
+        }
+    }
+}
+
+// createOverlappingBlocks writes two overlapping blocks for the same series.
+fn create_overlapping_blocks(dir: &Path, mint: i64) {
+    create_block(dir, &gen_series(1, 1, mint, mint + 50));
+    create_block(dir, &gen_series(1, 1, mint + 25, mint + 75));
+}
+
+// TestVerticalCompactionFloatChunkEncoding verifies that chunks re-encoded while compacting overlapping blocks
+// use the configured float chunk encoding, including after a runtime configuration reload.
+#[test]
+fn test_vertical_compaction_float_chunk_encoding() {
+    use tsdb::db::{FLOAT_CHUNK_ENCODING_XOR, FLOAT_CHUNK_ENCODING_XOR2};
+
+    // default_xor
+    {
+        let dir = TempDir::new();
+        create_overlapping_blocks(dir.path(), 0);
+
+        let db = db_in(dir.path());
+        db.disable_compactions();
+
+        db.compact(&ctx()).unwrap();
+        let blocks = db.blocks();
+        assert_eq!(blocks.len(), 1);
+        require_block_float_chunk_encoding(&blocks[0], chunkenc::ENC_XOR);
+    }
+
+    // config_xor2
+    {
+        let dir = TempDir::new();
+        create_overlapping_blocks(dir.path(), 0);
+
+        let db = new_test_db(vec![with_dir(dir.path()), with_opts(opts_with_encoding(chunkenc::ENC_XOR2, false))]);
+        db.disable_compactions();
+
+        db.compact(&ctx()).unwrap();
+        let blocks = db.blocks();
+        assert_eq!(blocks.len(), 1);
+        require_block_float_chunk_encoding(&blocks[0], chunkenc::ENC_XOR2);
+    }
+
+    // apply_config_flip
+    {
+        let dir = TempDir::new();
+        create_overlapping_blocks(dir.path(), 0);
+
+        let db = new_test_db(vec![with_dir(dir.path()), with_opts(default_options())]);
+        db.disable_compactions();
+
+        // Flip the startup XOR default to XOR2 before the first compaction.
+        db.apply_config(&xor_cfg(FLOAT_CHUNK_ENCODING_XOR2)).unwrap();
+        db.compact(&ctx()).unwrap();
+        let blocks = db.blocks();
+        assert_eq!(blocks.len(), 1);
+        require_block_float_chunk_encoding(&blocks[0], chunkenc::ENC_XOR2);
+
+        // Flip back to XOR; the next compaction of a new pair of overlapping blocks must re-encode to XOR while
+        // the previous block stays XOR2.
+        create_overlapping_blocks(db.dir(), 100);
+        db.reload_blocks().unwrap();
+        db.apply_config(&xor_cfg(FLOAT_CHUNK_ENCODING_XOR)).unwrap();
+        db.compact(&ctx()).unwrap();
+        let blocks = db.blocks();
+        assert_eq!(blocks.len(), 2);
+        require_block_float_chunk_encoding(&blocks[0], chunkenc::ENC_XOR2);
+        require_block_float_chunk_encoding(&blocks[1], chunkenc::ENC_XOR);
+    }
+}
+
+// TestChunkQuerierFloatChunkEncoding verifies that chunks re-encoded while merging overlapping blocks at query
+// time use the configured float chunk encoding.
+#[test]
+fn test_chunk_querier_float_chunk_encoding() {
+    for (name, xor2, expected) in [("default_xor", false, chunkenc::ENC_XOR), ("config_xor2", true, chunkenc::ENC_XOR2)] {
+        let dir = TempDir::new();
+        create_block(dir.path(), &gen_series(1, 1, 0, 50));
+        create_block(dir.path(), &gen_series(1, 1, 25, 75));
+
+        let mut opts = default_options();
+        if xor2 {
+            opts.float_chunk_encoding = chunkenc::ENC_XOR2;
+        }
+        let db = new_test_db(vec![with_dir(dir.path()), with_opts(opts)]);
+        db.disable_compactions();
+
+        let q = db.chunk_querier(0, 75).unwrap();
+        let res = query_chunks(q, &[eq(DEFAULT_LABEL_NAME, "0")]);
+        assert_eq!(res.len(), 1, "{name}");
+        for chks in res.values() {
+            assert!(!chks.is_empty());
+            for chk in chks {
+                assert_eq!(expected, chk.chunk.as_ref().unwrap().encoding(), "{name}");
+            }
+        }
+    }
+}
+
+#[test]
+fn test_head_options_use_xor2_float_encoding() {
+    let opts = HeadOptions::default();
+    assert!(!opts.use_xor2_float_encoding(), "default must be XOR, not XOR2");
+
+    opts.float_chunk_encoding.store(chunkenc::ENC_XOR2.0 as u32, Ordering::Relaxed);
+    assert!(opts.use_xor2_float_encoding());
+
+    opts.float_chunk_encoding.store(chunkenc::ENC_XOR.0 as u32, Ordering::Relaxed);
+    assert!(!opts.use_xor2_float_encoding());
+
+    // EncNone (zero value) must not be treated as XOR2.
+    opts.float_chunk_encoding.store(chunkenc::ENC_NONE.0 as u32, Ordering::Relaxed);
+    assert!(!opts.use_xor2_float_encoding(), "EncNone must not be treated as XOR2");
+}
+
+#[test]
+fn test_default_options_float_chunk_encoding() {
+    assert_eq!(
+        chunkenc::ENC_XOR,
+        default_options().float_chunk_encoding,
+        "DefaultOptions must use EncXOR as the float chunk encoding"
+    );
+}
+
+#[test]
+fn test_validate_opts_invalid_float_chunk_encoding() {
+    let mut opts = default_options();
+    opts.float_chunk_encoding = chunkenc::ENC_HISTOGRAM;
+    let err = validate_opts(Some(opts), Vec::new()).err().unwrap();
+    assert!(err.to_string().contains("unsupported float chunk encoding"), "{err}");
+}
+
+#[test]
+fn test_validate_opts_st_storage_requires_xor2() {
+    let mut opts = default_options();
+    opts.enable_st_storage = true;
+    // Default encoding is EncXOR; combining it with EnableSTStorage must be rejected.
+    let err = validate_opts(Some(opts.clone()), Vec::new()).err().unwrap();
+    assert!(err.to_string().contains("is incompatible with start-timestamp storage"), "{err}");
+
+    // EncXOR2 + st-storage must be accepted.
+    opts.float_chunk_encoding = chunkenc::ENC_XOR2;
+    validate_opts(Some(opts), Vec::new()).unwrap();
+}
+
+#[test]
+fn test_not_matcher_selects_labels_unset_series() {
+    let db = new_test_db(vec![]);
+
+    let labelpairs = vec![ls(&["a", "abcd", "b", "abcde"]), ls(&["labelname", "labelvalue"])];
+
+    let mut app = db.appender(&ctx());
+    for lbls in &labelpairs {
+        app.append(0, lbls, 0, 1.0).unwrap();
+    }
+    commit(app.as_mut());
+
+    let cases: Vec<(Vec<Matcher>, Vec<Labels>)> = vec![
+        (vec![m(MatchType::NotEqual, "lname", "lvalue")], labelpairs.clone()),
+        (vec![eq("a", "abcd"), m(MatchType::NotEqual, "b", "abcde")], vec![]),
+        (vec![eq("a", "abcd"), m(MatchType::NotEqual, "b", "abc")], vec![labelpairs[0].clone()]),
+        (vec![m(MatchType::NotRegexp, "a", "abd.*")], labelpairs.clone()),
+        (vec![m(MatchType::NotRegexp, "a", "abc.*")], labelpairs[1..].to_vec()),
+        (vec![m(MatchType::NotRegexp, "c", "abd.*")], labelpairs.clone()),
+        (vec![m(MatchType::NotRegexp, "labelname", "labelvalue")], labelpairs[..1].to_vec()),
+    ];
+
+    let mut q = db.querier(0, 10).unwrap();
+
+    for (selector, series) in &cases {
+        let mut ss = q.select(&ctx(), false, None, selector);
+        let (lres, _, ws, err) = expand_series_set(ss.as_mut());
+        assert!(err.is_none());
+        assert!(ws.is_empty());
+        assert_eq!(series, &lres);
+    }
+    assert!(q.close().is_none());
+}
+
+#[test]
+fn test_overlapping_blocks_detects_all_overlaps() {
+    // Create 10 blocks that does not overlap (0-10, 10-20, ..., 100-110) but in reverse order to ensure our
+    // algorithm will handle that.
+    let mut metas = vec![BlockMeta::default(); 11];
+    for i in (0..=10).rev() {
+        metas[i] = meta(i as i64 * 10, (i as i64 + 1) * 10);
+    }
+
+    assert!(overlapping_blocks(&metas).is_empty(), "we found unexpected overlaps");
+
+    // Add overlapping blocks. We've to establish order again since we aren't interested in trivial overlaps
+    // caused by unorderedness.
+    let add = |ms: &[BlockMeta]| -> Vec<BlockMeta> {
+        let mut repl: Vec<BlockMeta> = metas.iter().cloned().chain(ms.iter().cloned()).collect();
+        // Go sort.Slice is not stable; the only ties here are between equal metas, so the order is the same.
+        repl.sort_by_key(|m| m.min_time);
+        repl
+    };
+    let ov = |entries: Vec<((i64, i64), Vec<BlockMeta>)>| -> tsdb::db::Overlaps {
+        entries.into_iter().map(|((a, b), v)| (time_range(a, b), v)).collect()
+    };
+
+    // o1 overlaps with 10-20.
+    let o1 = meta(15, 17);
+    assert_eq!(ov(vec![((15, 17), vec![metas[1].clone(), o1.clone()])]), overlapping_blocks(&add(&[o1.clone()])));
+
+    // o2 overlaps with 20-30 and 30-40.
+    let o2 = meta(21, 31);
+    assert_eq!(
+        ov(vec![((21, 30), vec![metas[2].clone(), o2.clone()]), ((30, 31), vec![o2.clone(), metas[3].clone()])]),
+        overlapping_blocks(&add(&[o2.clone()]))
+    );
+
+    // o3a and o3b overlaps with 30-40 and each other.
+    let o3a = meta(33, 39);
+    let o3b = meta(34, 36);
+    assert_eq!(
+        ov(vec![((34, 36), vec![metas[3].clone(), o3a.clone(), o3b.clone()])]),
+        overlapping_blocks(&add(&[o3a.clone(), o3b.clone()]))
+    );
+
+    // o4 is 1:1 overlap with 50-60.
+    let o4 = meta(50, 60);
+    assert_eq!(ov(vec![((50, 60), vec![metas[5].clone(), o4.clone()])]), overlapping_blocks(&add(&[o4.clone()])));
+
+    // o5 overlaps with 60-70, 70-80 and 80-90.
+    let o5 = meta(61, 85);
+    assert_eq!(
+        ov(vec![
+            ((61, 70), vec![metas[6].clone(), o5.clone()]),
+            ((70, 80), vec![o5.clone(), metas[7].clone()]),
+            ((80, 85), vec![o5.clone(), metas[8].clone()]),
+        ]),
+        overlapping_blocks(&add(&[o5.clone()]))
+    );
+
+    // o6a overlaps with 90-100, 100-110 and o6b, o6b overlaps with 90-100 and o6a.
+    let o6a = meta(92, 105);
+    let o6b = meta(94, 99);
+    assert_eq!(
+        ov(vec![
+            ((94, 99), vec![metas[9].clone(), o6a.clone(), o6b.clone()]),
+            ((100, 105), vec![o6a.clone(), metas[10].clone()]),
+        ]),
+        overlapping_blocks(&add(&[o6a.clone(), o6b.clone()]))
+    );
+
+    // All together.
+    assert_eq!(
+        ov(vec![
+            ((15, 17), vec![metas[1].clone(), o1.clone()]),
+            ((21, 30), vec![metas[2].clone(), o2.clone()]),
+            ((30, 31), vec![o2.clone(), metas[3].clone()]),
+            ((34, 36), vec![metas[3].clone(), o3a.clone(), o3b.clone()]),
+            ((50, 60), vec![metas[5].clone(), o4.clone()]),
+            ((61, 70), vec![metas[6].clone(), o5.clone()]),
+            ((70, 80), vec![o5.clone(), metas[7].clone()]),
+            ((80, 85), vec![o5.clone(), metas[8].clone()]),
+            ((94, 99), vec![metas[9].clone(), o6a.clone(), o6b.clone()]),
+            ((100, 105), vec![o6a.clone(), metas[10].clone()]),
+        ]),
+        overlapping_blocks(&add(&[o1, o2, o3a, o3b, o4, o5, o6a, o6b]))
+    );
+
+    // Additional case.
+    let nc1 = vec![
+        meta(1, 5),
+        meta(2, 3),
+        meta(2, 3),
+        meta(2, 3),
+        meta(2, 3),
+        meta(2, 6),
+        meta(3, 5),
+        meta(5, 7),
+        meta(7, 10),
+        meta(8, 9),
+    ];
+    assert_eq!(
+        ov(vec![
+            // 1-5, 2-3, 2-3, 2-3, 2-3, 2,6
+            ((2, 3), vec![nc1[0].clone(), nc1[1].clone(), nc1[2].clone(), nc1[3].clone(), nc1[4].clone(), nc1[5].clone()]),
+            ((3, 5), vec![nc1[0].clone(), nc1[5].clone(), nc1[6].clone()]), // 1-5, 2-6, 3-5
+            ((5, 6), vec![nc1[5].clone(), nc1[7].clone()]),                 // 2-6, 5-7
+            ((8, 9), vec![nc1[8].clone(), nc1[9].clone()]),                 // 7-10, 8-9
+        ]),
+        overlapping_blocks(&nc1)
+    );
+}
