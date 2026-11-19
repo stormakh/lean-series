@@ -49,86 +49,19 @@ pub fn new_logger(root: util::logging::Logger) -> Logger {
     }))
 }
 
-/// Parses a `level=WARN msg="..." k=v ...` line of the TSDB's logger into level, message and attributes.
-fn parse_tsdb_line(line: &str) -> (discovery::log::Level, String, Vec<(String, String)>) {
-    let mut level = discovery::log::Level::Info;
-    let mut rest = line;
-    if let Some(r) = rest.strip_prefix("level=") {
-        let end = r.find(' ').unwrap_or(r.len());
-        level = match &r[..end] {
+/// The TSDB logger (also used by the agent and the WAL) over the process logger.
+pub fn tsdb_logger(logger: &Logger) -> tsdb::Logger {
+    let l = logger.clone();
+    tsdb::Logger::structured(move |level: &str, msg: &str, kv: &[(&str, &dyn std::fmt::Display)]| {
+        let level = match level {
             "DEBUG" => discovery::log::Level::Debug,
             "WARN" => discovery::log::Level::Warn,
             "ERROR" => discovery::log::Level::Error,
             _ => discovery::log::Level::Info,
         };
-        rest = r[end..].trim_start();
-    }
-    let mut msg = String::new();
-    if let Some(r) = rest.strip_prefix("msg=\"") {
-        // Rust `{:?}` quoting: find the closing quote that is not escaped.
-        let b = r.as_bytes();
-        let mut i = 0;
-        let mut out = String::new();
-        while i < b.len() {
-            match b[i] {
-                b'\\' if i + 1 < b.len() => {
-                    match b[i + 1] {
-                        b'n' => out.push('\n'),
-                        b't' => out.push('\t'),
-                        c => out.push(c as char),
-                    }
-                    i += 2;
-                }
-                b'"' => break,
-                _ => {
-                    let ch = r[i..].chars().next().unwrap_or(' ');
-                    out.push(ch);
-                    i += ch.len_utf8();
-                }
-            }
-        }
-        msg = out;
-        rest = r.get(i + 1..).unwrap_or("").trim_start();
-    }
-    // Attributes: ` key=value` where the value runs to the next ` key=`.
-    let mut attrs = Vec::new();
-    let starts: Vec<usize> = {
-        let mut v = Vec::new();
-        let b = rest.as_bytes();
-        let mut i = 0;
-        while i < b.len() {
-            if (i == 0 || b[i - 1] == b' ') && (b[i].is_ascii_alphabetic() || b[i] == b'_') {
-                let mut j = i;
-                while j < b.len() && (b[j].is_ascii_alphanumeric() || b[j] == b'_') {
-                    j += 1;
-                }
-                if j < b.len() && b[j] == b'=' {
-                    v.push(i);
-                    i = j;
-                    continue;
-                }
-            }
-            i += 1;
-        }
-        v
-    };
-    for (n, &s) in starts.iter().enumerate() {
-        let end = starts.get(n + 1).map(|e| e - 1).unwrap_or(rest.len());
-        let kv = &rest[s..end];
-        if let Some(eq) = kv.find('=') {
-            attrs.push((kv[..eq].to_string(), kv[eq + 1..].trim_end().to_string()));
-        }
-    }
-    (level, msg, attrs)
-}
-
-/// The TSDB logger (its sink gets formatted lines) over the process logger.
-pub fn tsdb_logger(logger: &Logger) -> tsdb::Logger {
-    let l = logger.clone();
-    tsdb::Logger::new(move |line: &str| {
-        let (level, msg, attrs) = parse_tsdb_line(line);
-        let kv: Vec<(&str, &str)> = attrs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-        l.log(level, &msg, &kv);
+        let vals: Vec<String> = kv.iter().map(|(_, v)| v.to_string()).collect();
+        let pairs: Vec<(&str, &str)> = kv.iter().zip(vals.iter()).map(|((k, _), v)| (*k, v.as_str())).collect();
+        l.log(level, msg, &pairs);
     })
 }
 

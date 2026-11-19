@@ -9,9 +9,10 @@ use super::{
     Error, PAGE_SIZE, RECORD_HEADER_SIZE, RecType, Result, SNAPPY_MASK, ZSTD_MASK, validate_record,
 };
 use crate::encoding::crc32c;
+use crate::record::Logger;
 
 /// Go `LiveReaderMetrics`: `prometheus_tsdb_wal_reader_corruption_errors_total{error="record_span_page"}`.
-// TODO(metrics): register with the metrics registry once it exists.
+/// The remote write storage registers it (see `remote::write`).
 #[derive(Debug, Default)]
 pub struct LiveReaderMetrics {
     /// `prometheus_tsdb_wal_reader_corruption_errors_total{error="record_span_page"}`.
@@ -50,11 +51,12 @@ pub struct LiveReader<R: Read> {
     permissive: bool,
 
     metrics: Option<Arc<LiveReaderMetrics>>,
+    logger: Logger,
 }
 
 impl<R: Read> LiveReader<R> {
     /// Go `NewLiveReader`.
-    pub fn new(metrics: Option<Arc<LiveReaderMetrics>>, r: R) -> LiveReader<R> {
+    pub fn new(logger: Logger, metrics: Option<Arc<LiveReaderMetrics>>, r: R) -> LiveReader<R> {
         LiveReader {
             rdr: r,
             err: None,
@@ -72,6 +74,7 @@ impl<R: Read> LiveReader<R> {
             // to records spanning pages.
             permissive: true,
             metrics,
+            logger,
         }
     }
 
@@ -279,8 +282,14 @@ impl<R: Read> LiveReader<R> {
                 m.reader_corruption_errors_record_span_page
                     .fetch_add(1, Ordering::Relaxed);
             }
-            // TODO(log): logger.Warn("Record spans page boundaries", "start", r.readIndex,
-            // "end", recordHeaderSize+length, "pageSize", pageSize)
+            self.logger.warn(
+                "Record spans page boundaries",
+                &[
+                    ("start", &self.read_index),
+                    ("end", &(RECORD_HEADER_SIZE + length)),
+                    ("pageSize", &PAGE_SIZE),
+                ],
+            );
         }
         if RECORD_HEADER_SIZE + length > PAGE_SIZE {
             return Err(Error::Msg(format!(

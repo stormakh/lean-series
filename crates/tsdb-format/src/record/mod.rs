@@ -209,7 +209,10 @@ impl std::error::Error for Error {}
 /// The default logger discards everything (Go `promslog.NewNopLogger()`).
 // TODO(util): use the shared logger after merge.
 #[derive(Clone, Default)]
-pub struct Logger(Option<Arc<dyn Fn(&str) + Send + Sync>>);
+pub struct Logger(Option<Arc<StructuredSink>>);
+
+/// A structured sink: level ("DEBUG", "INFO", "WARN" or "ERROR"), message and attributes.
+pub type StructuredSink = dyn Fn(&str, &str, &[(&str, &dyn fmt::Display)]) + Send + Sync;
 
 impl Logger {
     /// A logger that discards everything.
@@ -219,16 +222,23 @@ impl Logger {
 
     /// A logger that sends each line to `sink`.
     pub fn new(sink: impl Fn(&str) + Send + Sync + 'static) -> Logger {
+        Logger::structured(move |level, msg, kv| {
+            let mut line = format!("level={level} msg={msg:?}");
+            for (k, v) in kv {
+                line.push_str(&format!(" {k}={v}"));
+            }
+            sink(&line);
+        })
+    }
+
+    /// A logger that sends each record (level, message, attributes) to `sink` without formatting it.
+    pub fn structured(sink: impl Fn(&str, &str, &[(&str, &dyn fmt::Display)]) + Send + Sync + 'static) -> Logger {
         Logger(Some(Arc::new(sink)))
     }
 
     fn log(&self, level: &str, msg: &str, kv: &[(&str, &dyn fmt::Display)]) {
         if let Some(s) = &self.0 {
-            let mut line = format!("level={level} msg={msg:?}");
-            for (k, v) in kv {
-                line.push_str(&format!(" {k}={v}"));
-            }
-            s(&line);
+            s(level, msg, kv);
         }
     }
 

@@ -125,7 +125,7 @@ pub fn segment_name(dir: &Path, i: i64) -> PathBuf {
 
 /// Go `OpenWriteSegment`: opens segment `k` in `dir`, ready for new appends. A torn last page is filled with
 /// zeros.
-pub fn open_write_segment(dir: &Path, k: i64) -> Result<Segment> {
+pub fn open_write_segment(logger: &crate::record::Logger, dir: &Path, k: i64) -> Result<Segment> {
     let seg_name = segment_name(dir, k);
     let mut f = OpenOptions::new().append(true).open(&seg_name)?;
     let size = f.metadata()?.len() as usize;
@@ -136,7 +136,10 @@ pub fn open_write_segment(dir: &Path, k: i64) -> Result<Segment> {
     // to ensure integrity) will detect it as a corruption by the end.
     let d = size % PAGE_SIZE;
     if d != 0 {
-        // TODO(log): logger.Warn("Last page of the wlog is torn, filling it with zeros", "segment", segName)
+        logger.warn(
+            "Last page of the wlog is torn, filling it with zeros",
+            &[("segment", &seg_name.display())],
+        );
         let (_, r) = f.write_all_n(&vec![0u8; PAGE_SIZE - d]);
         if let Err(e) = r {
             return Err(Error::from(e).wrap("zero-pad torn page"));

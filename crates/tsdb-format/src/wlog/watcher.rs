@@ -49,10 +49,13 @@ pub trait WriteTo: Send + Sync {
 }
 
 /// Go `WatcherMetrics`, as plain atomics for one watcher (the Go metrics carry the watcher name in the
-/// `consumer` label).
-// TODO(metrics): register with the metrics registry once it exists.
+/// `consumer` label). The remote write storage keeps one per queue name and exposes them.
 #[derive(Debug, Default)]
 pub struct WatcherMetrics {
+    /// The consumer's label values exist (Go: set in `SetMetrics`, deleted in `Stop`).
+    pub active: AtomicBool,
+    /// `SetMetrics` ran at least once (Go never deletes `notifications_skipped_total`).
+    pub ever_started: AtomicBool,
     /// `prometheus_wal_watcher_records_read_total{consumer,type}`, indexed by record type byte (`Unknown` at 0).
     pub records_read: [AtomicU64; 16],
     /// `prometheus_wal_watcher_record_decode_failures_total{consumer}`.
@@ -74,6 +77,73 @@ impl WatcherMetrics {
     /// `records_read_total` for one record type.
     pub fn records_read(&self, t: record::Type) -> u64 {
         self.records_read[type_index(t)].load(Ordering::Relaxed)
+    }
+
+    /// The nonzero `records_read_total` values by record type name (Go creates a type's child on its first
+    /// increment).
+    pub fn records_read_by_type(&self) -> Vec<(&'static str, u64)> {
+        let mut out = Vec::new();
+        for (i, c) in self.records_read.iter().enumerate() {
+            let v = c.load(Ordering::Relaxed);
+            if v > 0 {
+                out.push((record::Type::from_u8(i as u8).as_str(), v));
+            }
+        }
+        out
+    }
+
+    /// Go `Stop`: deletes the consumer's label values (the series and samples children of `records_read_total`,
+    /// and the decode failures, samples sent pre tailing and current segment metrics).
+    fn delete_label_values(&self) {
+        self.records_read[type_index(record::Type::Series)].store(0, Ordering::Relaxed);
+        self.records_read[type_index(record::Type::Samples)].store(0, Ordering::Relaxed);
+        self.record_decode_fails.store(0, Ordering::Relaxed);
+        self.samples_sent_pre_tailing.store(0, Ordering::Relaxed);
+        self.current_segment.store(0, Ordering::Relaxed);
+        self.active.store(false, Ordering::Relaxed);
+    }
+}
+
+/// Go `time.Duration.String`.
+struct GoDuration(Duration);
+
+impl std::fmt::Display for GoDuration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let ns = self.0.as_nanos() as u64;
+        let frac = |v: u64, unit: u64, digits: usize| -> String {
+            let mut s = format!("{}", v / unit);
+            let r = v % unit;
+            if r != 0 {
+                let mut d = format!("{:0digits$}", r, digits = digits);
+                while d.ends_with('0') {
+                    d.pop();
+                }
+                s.push('.');
+                s.push_str(&d);
+            }
+            s
+        };
+        if ns == 0 {
+            return f.write_str("0s");
+        }
+        if ns < 1_000 {
+            return write!(f, "{ns}ns");
+        }
+        if ns < 1_000_000 {
+            return write!(f, "{}µs", frac(ns, 1_000, 3));
+        }
+        if ns < 1_000_000_000 {
+            return write!(f, "{}ms", frac(ns, 1_000_000, 6));
+        }
+        let secs = ns / 1_000_000_000;
+        let (h, m) = (secs / 3600, secs % 3600 / 60);
+        if h > 0 {
+            write!(f, "{h}h")?;
+        }
+        if h > 0 || m > 0 {
+            write!(f, "{m}m")?;
+        }
+        write!(f, "{}s", frac(ns % 60_000_000_000, 1_000_000_000, 9))
     }
 }
 
@@ -107,6 +177,7 @@ pub struct Watcher {
     send_metadata: bool,
     metrics: Option<Arc<WatcherMetrics>>,
     reader_metrics: Option<Arc<LiveReaderMetrics>>,
+    logger: Logger,
 
     start: Mutex<(SystemTime, i64)>, // start time and the same as a Prometheus timestamp
     send_samples: AtomicBool,
@@ -143,6 +214,7 @@ impl Watcher {
     pub fn new(
         metrics: Option<Arc<WatcherMetrics>>,
         reader_metrics: Option<Arc<LiveReaderMetrics>>,
+        logger: Logger,
         name: &str,
         writer: Arc<dyn WriteTo>,
         dir: &Path,
@@ -162,6 +234,7 @@ impl Watcher {
             send_metadata,
             metrics,
             reader_metrics,
+            logger,
             start: Mutex::new((UNIX_EPOCH, 0)),
             send_samples: AtomicBool::new(false),
             read_timeout: Mutex::new(READ_TIMEOUT),
@@ -219,13 +292,18 @@ impl Watcher {
         }
     }
 
-    /// Go `SetMetrics`. The metrics are bound at construction here, so this only exists for parity.
-    pub fn set_metrics(&self) {}
+    /// Go `SetMetrics`: creates the consumer's label values. The metrics are bound at construction here.
+    pub fn set_metrics(&self) {
+        if let Some(m) = &self.metrics {
+            m.active.store(true, Ordering::Relaxed);
+            m.ever_started.store(true, Ordering::Relaxed);
+        }
+    }
 
     /// Go `Start`: runs the watcher loop in a background thread.
     pub fn start(self: &Arc<Self>) {
         self.set_metrics();
-        // TODO(log): logger.Info("Starting WAL watcher", "queue", w.name)
+        self.logger.info("Starting WAL watcher", &[("queue", &self.name)]);
         let w = self.clone();
         let h = std::thread::Builder::new()
             .name(format!("wal-watcher-{}", self.name))
@@ -244,8 +322,11 @@ impl Watcher {
         if let Some(h) = lock(&self.handle).take() {
             let _ = h.join();
         }
-        // TODO(metrics): Go deletes this consumer's label values here.
-        // TODO(log): logger.Info("WAL watcher stopped", "queue", w.name)
+        // Records read metric has series and samples.
+        if let Some(m) = &self.metrics {
+            m.delete_label_values();
+        }
+        self.logger.info("WAL watcher stopped", &[("queue", &self.name)]);
     }
 
     /// Waits until `deadline`, a quit, or (with `accept_notify`) a notification. True if notified.
@@ -279,8 +360,8 @@ impl Watcher {
         // We may encounter failures processing the WAL; we should wait and retry.
         while !self.is_closed() {
             self.set_start_time(SystemTime::now());
-            if let Err(_e) = self.run() {
-                // TODO(log): logger.Error("error tailing WAL", "err", err)
+            if let Err(e) = self.run() {
+                self.logger.error("error tailing WAL", &[("err", &e)]);
             }
             self.wait(Instant::now() + RETRY_PERIOD, false);
         }
@@ -294,7 +375,7 @@ impl Watcher {
         // run will be called again if there was a failure to read the WAL.
         self.send_samples.store(false, Ordering::Relaxed);
 
-        // TODO(log): logger.Info("Replaying WAL", "queue", w.name)
+        self.logger.info("Replaying WAL", &[("queue", &self.name)]);
 
         // Backfill from the checkpoint first if it exists.
         let (last_checkpoint, checkpoint_index) = match last_checkpoint(&self.wal_dir) {
@@ -306,11 +387,21 @@ impl Watcher {
             Err(Error::NotFound) => (PathBuf::new(), 0),
             Err(e) => return Err(e.wrap("tsdb.LastCheckpoint")),
         };
-        *lock(&self.last_checkpoint) = last_checkpoint;
-
         let mut current_segment = self.find_segment_for_index(checkpoint_index)?;
 
+        self.logger.debug(
+            "Tailing WAL",
+            &[
+                ("lastCheckpoint", &last_checkpoint.display()),
+                ("checkpointIndex", &checkpoint_index),
+                ("currentSegment", &current_segment),
+                ("lastSegment", &last_segment),
+            ],
+        );
+        *lock(&self.last_checkpoint) = last_checkpoint;
+
         while !self.is_closed() {
+            self.logger.debug("Processing segment", &[("currentSegment", &current_segment)]);
             if let Some(m) = &self.metrics {
                 m.current_segment.store(current_segment, Ordering::Relaxed);
             }
@@ -358,9 +449,15 @@ impl Watcher {
             if let Err(e) = &err
                 && !e.is_eof()
             {
-                // TODO(log): logger.Warn("Ignoring error reading to end of segment, may have dropped data", ...)
+                self.logger.warn(
+                    "Ignoring error reading to end of segment, may have dropped data",
+                    &[("segment", &segment_num), ("err", e)],
+                );
             } else if r.offset() != size {
-                // TODO(log): logger.Warn("Expected to have read whole segment, may have dropped data", ...)
+                self.logger.warn(
+                    "Expected to have read whole segment, may have dropped data",
+                    &[("segment", &segment_num), ("read", &r.offset()), ("size", &size)],
+                );
             }
             return Err(Error::Ignorable);
         }
@@ -376,7 +473,7 @@ impl Watcher {
     /// is a full segment that is replayed on start to cache the series records.
     fn watch(self: &Arc<Self>, segment_num: i64, only_series: bool) -> Result<()> {
         let segment = open_read_segment(&segment_name(&self.wal_dir, segment_num))?;
-        let mut reader = LiveReader::new(self.reader_metrics.clone(), segment);
+        let mut reader = LiveReader::new(self.logger.clone(), self.reader_metrics.clone(), segment);
 
         let size = i64::MAX;
         if only_series {
@@ -415,8 +512,8 @@ impl Watcher {
                 if !self.gc_running.swap(true, Ordering::AcqRel) {
                     let w = self.clone();
                     std::thread::spawn(move || {
-                        if let Err(_e) = w.garbage_collect_series(segment_num) {
-                            // TODO(log): logger.Warn("Error process checkpoint", "err", err)
+                        if let Err(e) = w.garbage_collect_series(segment_num) {
+                            w.logger.warn("Error process checkpoint", &[("err", &e)]);
                         }
                         w.gc_running.store(false, Ordering::Release);
                     });
@@ -435,7 +532,10 @@ impl Watcher {
 
             // We haven't read due to a notification in quite some time, try reading anyways.
             if now >= next_read {
-                // TODO(log): logger.Debug("Watcher is reading the WAL due to timeout, ...")
+                self.logger.debug(
+                    "Watcher is reading the WAL due to timeout, haven't received any write notifications recently",
+                    &[("timeout", &GoDuration(*lock(&self.read_timeout)))],
+                );
                 self.read_and_handle_error(&mut reader, segment_num, only_series, size)?;
                 // Reset the read timer so we don't read too often.
                 next_read = Instant::now() + *lock(&self.read_timeout);
@@ -460,11 +560,17 @@ impl Watcher {
             checkpoint_num(&dir).map_err(|e| e.wrap("error parsing checkpoint filename"))?;
 
         if index >= segment_num {
-            // TODO(log): logger.Debug("Current segment is behind the checkpoint, skipping reading of checkpoint")
+            self.logger.debug(
+                "Current segment is behind the checkpoint, skipping reading of checkpoint",
+                &[("current", &format_args!("{segment_num:08}")), ("checkpoint", &dir.display())],
+            );
             return Ok(());
         }
 
-        // TODO(log): logger.Debug("New checkpoint detected", "new", dir, "currentSegment", segmentNum)
+        self.logger.debug(
+            "New checkpoint detected",
+            &[("new", &dir.display()), ("currentSegment", &segment_num)],
+        );
 
         self.read_checkpoint(&dir, Watcher::read_segment_for_gc)
             .map_err(|e| e.wrap("readCheckpoint"))?;
@@ -490,7 +596,8 @@ impl Watcher {
     fn mark_sending(&self) {
         if !self.send_samples.load(Ordering::Relaxed) {
             self.send_samples.store(true, Ordering::Relaxed);
-            // TODO(log): logger.Info("Done replaying WAL", "duration", time.Since(w.startTime))
+            let duration = lock(&self.start).0.elapsed().unwrap_or_default();
+            self.logger.info("Done replaying WAL", &[("duration", &GoDuration(duration))]);
         }
     }
 
@@ -544,7 +651,7 @@ impl Watcher {
         metadata: &mut Vec<RefMetadata>,
     ) -> Result<()> {
         let start_timestamp = lock(&self.start).1;
-        let mut dec = Decoder::new(Logger::nop()); // One decoder per WAL segment.
+        let mut dec = Decoder::new(self.logger.clone()); // One decoder per WAL segment.
         while r.next() && !self.is_closed() {
             let rec = r.record();
             let typ = dec.r#type(rec);
@@ -658,7 +765,7 @@ impl Watcher {
     ) -> Result<()> {
         let mut series = self.record_buf.get_ref_series(512);
         let res = (|| {
-            let mut dec = Decoder::new(Logger::nop());
+            let mut dec = Decoder::new(self.logger.clone());
             while r.next() && !self.is_closed() {
                 let rec = r.record();
                 let typ = dec.r#type(rec);
@@ -695,7 +802,7 @@ impl Watcher {
 
     /// Go `readCheckpoint`: reads all the series records from a checkpoint directory.
     pub fn read_checkpoint(&self, checkpoint_dir: &Path, read_fn: SegmentReadFn) -> Result<()> {
-        // TODO(log): logger.Debug("Reading checkpoint", "dir", checkpointDir)
+        self.logger.debug("Reading checkpoint", &[("dir", &checkpoint_dir.display())]);
         let index = checkpoint_num(checkpoint_dir).map_err(|e| e.wrap("checkpointNum"))?;
 
         // Ensure we read the whole contents of every segment in the checkpoint dir.
@@ -708,7 +815,7 @@ impl Watcher {
             let sr = open_read_segment(&segment_name(checkpoint_dir, seg_ref.index))
                 .map_err(|e| e.wrap("unable to open segment"))?;
 
-            let mut r = LiveReader::new(self.reader_metrics.clone(), sr);
+            let mut r = LiveReader::new(self.logger.clone(), self.reader_metrics.clone(), sr);
             let res = read_fn(self, &mut r, index, true);
             if let Err(e) = res
                 && !e.is_eof()
@@ -727,7 +834,10 @@ impl Watcher {
             }
         }
 
-        // TODO(log): logger.Debug("Read series references from checkpoint", "checkpoint", checkpointDir)
+        self.logger.debug(
+            "Read series references from checkpoint",
+            &[("checkpoint", &checkpoint_dir.display())],
+        );
         Ok(())
     }
 }

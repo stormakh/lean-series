@@ -315,7 +315,8 @@ impl QueueManagerMetrics {
         let dropped_exemplars_total = reason_counter("exemplars_dropped_total", "Total number of exemplars which were dropped after being read from the WAL before being sent via remote write, either via relabelling, due to being too old or unintentionally because of an unknown reference ID.");
         let dropped_histograms_total = reason_counter("histograms_dropped_total", "Total number of histograms which were dropped after being read from the WAL before being sent via remote write, either via relabelling, due to being too old or unintentionally because of an unknown reference ID.");
         let enqueue_retries_total = counter("enqueue_retries_total", "Total number of times enqueue has failed because a shards queue was full.");
-        // TODO(metrics): Go also exposes this as a native histogram (factor 1.1, 100 buckets, 1h reset).
+        // Go also exposes this as a native histogram (factor 1.1, 100 buckets, 1h reset); the metrics registry has
+        // no native histograms, so only the classic buckets are exposed (the text format shows only those anyway).
         let sent_batch_duration = MetricVec::new_histogram_vec(
             opts("sent_batch_duration_seconds", "Duration of send calls to the remote storage."),
             &[],
@@ -2029,6 +2030,22 @@ impl<'a> HistArc<'a> {
     }
 }
 
+/// The WAL watcher's logger over a component logger (the watcher logs through the TSDB record logger).
+pub fn wal_logger(l: &Logger) -> tsdb_format::record::Logger {
+    let l = l.clone();
+    tsdb_format::record::Logger::structured(move |level, msg, kv| {
+        let level = match level {
+            "DEBUG" => discovery::log::Level::Debug,
+            "INFO" => discovery::log::Level::Info,
+            "WARN" => discovery::log::Level::Warn,
+            _ => discovery::log::Level::Error,
+        };
+        let vals: Vec<String> = kv.iter().map(|(_, v)| v.to_string()).collect();
+        let attrs: Vec<(&str, &str)> = kv.iter().zip(&vals).map(|((k, _), v)| (*k, v.as_str())).collect();
+        l.log(level, msg, &attrs);
+    })
+}
+
 impl QueueManager {
     /// Go `NewQueueManager`: builds a queue manager and its WAL watcher (of `<dir>/wal`), with the queue
     /// manager as the watcher's `WriteTo`.
@@ -2076,6 +2093,7 @@ impl QueueManager {
             let watcher = Watcher::new(
                 watcher_metrics,
                 reader_metrics,
+                wal_logger(&logger),
                 &name,
                 Arc::new(WalSink(me.clone())),
                 dir,

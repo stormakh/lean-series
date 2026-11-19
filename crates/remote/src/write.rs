@@ -1,7 +1,8 @@
 //! Port of `storage/remote/write.go`: `WriteStorage`, which runs one queue manager per remote write config,
 //! and the timestamp tracking appenders it gives to the fanout storage.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::Ordering;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::thread::JoinHandle;
@@ -9,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use config::{Config, RemoteWriteConfig};
 use discovery::log::Logger;
-use discovery::metrics::{CounterVec, MetricVec, Opts, Registry};
+use discovery::metrics::{Collector, CounterVec, Family, Metric, MetricType, MetricValue, MetricVec, Opts, Registry};
 use model::exemplar::Exemplar;
 use model::histogram::{FloatHistogram, Histogram};
 use model::labels::{self, Labels};
@@ -89,6 +90,101 @@ pub fn default_write_client_factory() -> WriteClientFactory {
     })
 }
 
+/// The WAL watcher metrics of all queues (Go `wlog.WatcherMetrics`, labelled by `consumer`) and the live reader
+/// metrics (Go `wlog.LiveReaderMetrics`), as one collector. A queue name keeps its counters across queue
+/// restarts, as Go's metric vectors do.
+#[derive(Default)]
+pub struct WalWatcherMetrics {
+    consumers: Mutex<BTreeMap<String, Arc<WatcherMetrics>>>,
+    /// The live reader metrics, shared by all watchers.
+    pub reader: Arc<LiveReaderMetrics>,
+}
+
+impl WalWatcherMetrics {
+    /// The metrics of the watcher named `consumer`.
+    pub fn consumer(&self, consumer: &str) -> Arc<WatcherMetrics> {
+        lock(&self.consumers).entry(consumer.to_string()).or_insert_with(WatcherMetrics::new).clone()
+    }
+}
+
+impl Collector for WalWatcherMetrics {
+    fn describe(&self) -> Vec<String> {
+        [
+            "prometheus_wal_watcher_records_read_total",
+            "prometheus_wal_watcher_record_decode_failures_total",
+            "prometheus_wal_watcher_samples_sent_pre_tailing_total",
+            "prometheus_wal_watcher_current_segment",
+            "prometheus_wal_watcher_notifications_skipped_total",
+            "prometheus_tsdb_wal_reader_corruption_errors_total",
+        ]
+        .iter()
+        .map(|n| n.to_string())
+        .collect()
+    }
+
+    fn collect(&self, out: &mut Vec<Family>) {
+        let consumers = lock(&self.consumers);
+        let fam = |name: &str, help: &str, typ: MetricType| Family {
+            name: name.to_string(),
+            help: help.to_string(),
+            typ,
+            metrics: Vec::new(),
+        };
+        let mut records_read = fam(
+            "prometheus_wal_watcher_records_read_total",
+            "Number of records read by the WAL watcher from the WAL.",
+            MetricType::Counter,
+        );
+        let mut decode_fails = fam(
+            "prometheus_wal_watcher_record_decode_failures_total",
+            "Number of records read by the WAL watcher that resulted in an error when decoding.",
+            MetricType::Counter,
+        );
+        let mut pre_tailing = fam(
+            "prometheus_wal_watcher_samples_sent_pre_tailing_total",
+            "Number of sample records read by the WAL watcher and sent to remote write during replay of existing WAL.",
+            MetricType::Counter,
+        );
+        let mut current_segment = fam(
+            "prometheus_wal_watcher_current_segment",
+            "Current segment the WAL watcher is reading records from.",
+            MetricType::Gauge,
+        );
+        let mut skipped = fam(
+            "prometheus_wal_watcher_notifications_skipped_total",
+            "The number of WAL write notifications that the Watcher has skipped due to already being in a WAL read routine.",
+            MetricType::Counter,
+        );
+        let one = |c: &str, v: MetricValue| Metric { labels: vec![("consumer".to_string(), c.to_string())], value: v };
+        for (c, m) in consumers.iter() {
+            for (t, v) in m.records_read_by_type() {
+                records_read.metrics.push(Metric {
+                    labels: vec![("consumer".to_string(), c.clone()), ("type".to_string(), t.to_string())],
+                    value: MetricValue::Counter(v as f64),
+                });
+            }
+            if m.active.load(Ordering::Relaxed) {
+                decode_fails.metrics.push(one(c, MetricValue::Counter(m.record_decode_fails.load(Ordering::Relaxed) as f64)));
+                pre_tailing.metrics.push(one(c, MetricValue::Counter(m.samples_sent_pre_tailing.load(Ordering::Relaxed) as f64)));
+                current_segment.metrics.push(one(c, MetricValue::Gauge(m.current_segment.load(Ordering::Relaxed) as f64)));
+            }
+            if m.ever_started.load(Ordering::Relaxed) {
+                skipped.metrics.push(one(c, MetricValue::Counter(m.notifications_skipped.load(Ordering::Relaxed) as f64)));
+            }
+        }
+        out.extend([records_read, decode_fails, pre_tailing, current_segment, skipped]);
+        let span = self.reader.reader_corruption_errors_record_span_page.load(Ordering::Relaxed);
+        if span > 0 {
+            let mut f = fam("prometheus_tsdb_wal_reader_corruption_errors_total", "Errors encountered when reading the WAL.", MetricType::Counter);
+            f.metrics.push(Metric {
+                labels: vec![("error".to_string(), "record_span_page".to_string())],
+                value: MetricValue::Counter(span as f64),
+            });
+            out.push(f);
+        }
+    }
+}
+
 struct State {
     external_labels: Labels,
     queues: HashMap<String, Arc<QueueManager>>,
@@ -100,8 +196,7 @@ pub struct WriteStorage {
     reg: Option<Arc<Registry>>,
     mtx: Mutex<State>,
 
-    watcher_metrics: Arc<WatcherMetrics>,
-    live_reader_metrics: Arc<LiveReaderMetrics>,
+    wal_metrics: Arc<WalWatcherMetrics>,
     dir: PathBuf,
     pub samples_in: Arc<EwmaRate>,
     flush_deadline: Duration,
@@ -143,12 +238,18 @@ impl WriteStorage {
         {
             panic!("{e}");
         }
+        // Go `wlog.NewWatcherMetrics(reg)` and `wlog.NewLiveReaderMetrics(reg)`.
+        let wal_metrics = Arc::new(WalWatcherMetrics::default());
+        if let Some(r) = &reg
+            && let Err(e) = r.register(wal_metrics.clone())
+        {
+            panic!("{e}");
+        }
         let rws = Arc::new(WriteStorage {
             logger: logger.unwrap_or_default(),
             reg,
             mtx: Mutex::new(State { external_labels: Labels::empty(), queues: HashMap::new() }),
-            watcher_metrics: WatcherMetrics::new(),
-            live_reader_metrics: LiveReaderMetrics::new(),
+            wal_metrics: wal_metrics.clone(),
             dir: dir.to_path_buf(),
             samples_in: Arc::new(EwmaRate::new(EWMA_WEIGHT, SHARD_UPDATE_DURATION)),
             flush_deadline,
@@ -235,8 +336,8 @@ impl WriteStorage {
             let endpoint = rw_conf.url.redacted();
             let q = QueueManager::new(
                 QueueManagerMetrics::new(self.reg.clone(), &name, &endpoint),
-                Some(self.watcher_metrics.clone()),
-                Some(self.live_reader_metrics.clone()),
+                Some(self.wal_metrics.consumer(&name)),
+                Some(self.wal_metrics.reader.clone()),
                 Some(self.logger.clone()),
                 &self.dir,
                 self.samples_in.clone(),
@@ -317,8 +418,10 @@ impl WriteStorage {
         if let Some(h) = lock(&self.run).take() {
             let _ = h.join();
         }
-        // TODO(metrics): Go also unregisters the watcher and live reader metrics (not registered here yet).
         if let Some(r) = &self.reg {
+            // Go `watcherMetrics.Unregister()` and `liveReaderMetrics.Unregister()`.
+            let c: Arc<dyn Collector> = self.wal_metrics.clone();
+            r.unregister(&c);
             r.unregister(&self.highest_timestamp.collector());
         }
         Ok(())

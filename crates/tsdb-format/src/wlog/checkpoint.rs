@@ -105,13 +105,13 @@ fn remove_all(p: &Path) -> io::Result<()> {
 pub const CHECKPOINT_TEMP_FILE_SUFFIX: &str = ".tmp";
 
 /// Go `DeleteTempCheckpoints`: deletes all temporary checkpoint directories in the given directory.
-pub fn delete_temp_checkpoints(dir: &Path) -> Result<()> {
-    remove_tmp_dirs(dir)
+pub fn delete_temp_checkpoints(logger: &Logger, dir: &Path) -> Result<()> {
+    remove_tmp_dirs(logger, dir)
         .map_err(|e| Error::from(e).wrap("remove previous temporary checkpoint dirs"))
 }
 
 /// Go `tsdbutil.RemoveTmpDirs` with `isTempDir`.
-fn remove_tmp_dirs(dir: &Path) -> io::Result<()> {
+fn remove_tmp_dirs(logger: &Logger, dir: &Path) -> io::Result<()> {
     let files = match fs::read_dir(dir) {
         Ok(f) => f,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -122,10 +122,12 @@ fn remove_tmp_dirs(dir: &Path) -> io::Result<()> {
         let name = f.file_name();
         let Some(name) = name.to_str() else { continue };
         if is_temp_dir(name) {
-            // Go logs and continues on error ("failed to delete tmp dir"), and logs
-            // "Found and deleted tmp dir" on success.
-            // TODO(log): log both.
-            let _ = remove_all(&dir.join(name));
+            let p = dir.join(name);
+            if let Err(e) = remove_all(&p) {
+                logger.error("failed to delete tmp dir", &[("dir", &p.display()), ("err", &e)]);
+                continue;
+            }
+            logger.info("Found and deleted tmp dir", &[("dir", &p.display())]);
         }
     }
     Ok(())
@@ -182,7 +184,11 @@ pub fn checkpoint(
 ) -> Result<CheckpointStats> {
     let mut stats = CheckpointStats::default();
 
-    // TODO(log): logger.Info("Creating checkpoint", "from_segment", from, "to_segment", to, "mint", mint)
+    let logger = w.logger();
+    logger.info(
+        "Creating checkpoint",
+        &[("from_segment", &from), ("to_segment", &to), ("mint", &mint)],
+    );
 
     let sgm_reader = {
         let mut sgm_range = Vec::new();
@@ -215,7 +221,7 @@ pub fn checkpoint(
         new_segments_range_reader(&sgm_range).map_err(|e| e.wrap("create segment reader"))?
     };
 
-    delete_temp_checkpoints(w.dir())?;
+    delete_temp_checkpoints(logger, w.dir())?;
 
     let cpdir = checkpoint_dir(w.dir(), to);
     let mut cpdirtmp = cpdir.clone().into_os_string();
@@ -258,7 +264,7 @@ pub fn checkpoint(
     let mut tstones = Vec::new();
     let mut exemplars = Vec::new();
     let mut metadata: Vec<RefMetadata> = Vec::new();
-    let mut dec = Decoder::new(Logger::nop());
+    let mut dec = Decoder::new(logger.clone());
     let enc = Encoder { enable_st_storage };
     let mut buf: Vec<u8> = Vec::new();
     // Records waiting in `buf`, as byte ranges (Go keeps sub-slices of buf).
