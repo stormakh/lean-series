@@ -1,13 +1,12 @@
 //! Port of `promql/query_logger.go`: the active query tracker, which writes running queries to
 //! `queries.active` so that queries that crashed Prometheus are logged at the next start.
 //!
-//! Go maps the file into memory; here the tracker keeps the bytes in memory and writes every change through to
-//! the file at the same offsets (`unsafe` is not allowed outside the TSDB). The file content is the same.
+//! As in Go, the file is mapped into memory (through `util::runtime::SharedMap`), so tracking a query costs no
+//! system call.
 
 use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::os::unix::fs::FileExt;
 use std::path::Path;
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -134,53 +133,63 @@ pub fn new_json_entry(query: &[u8]) -> Vec<u8> {
     json_entry(q, ts)
 }
 
-/// A file with an in-memory copy of its bytes; writes go to both (Go maps the file).
+/// The bytes of the active query file: memory only (tests), or the file mapped shared as Go does, so that a write
+/// is a memory copy without a system call.
+enum Mem {
+    Bytes(Vec<u8>),
+    Map(util::runtime::SharedMap),
+    /// After `close` (Go unmaps the file; later writes are dropped here).
+    Closed,
+}
+
+/// The active query file (Go `mmappedFile`).
 pub struct MappedFile {
-    pub bytes: Vec<u8>,
-    file: Option<File>,
+    mem: Mem,
 }
 
 impl MappedFile {
     /// In-memory bytes without a file.
     pub fn from_bytes(bytes: Vec<u8>) -> MappedFile {
-        MappedFile { bytes, file: None }
+        MappedFile { mem: Mem::Bytes(bytes) }
     }
 
-    /// Writes `data` at `at` in memory only (clipped to the size); the caller writes the file.
-    fn write_mem(&mut self, at: usize, data: &[u8]) {
-        let end = (at + data.len()).min(self.bytes.len());
-        if at < end {
-            self.bytes[at..end].copy_from_slice(&data[..end - at]);
+    /// The current bytes (empty after `close`).
+    pub fn bytes(&self) -> &[u8] {
+        match &self.mem {
+            Mem::Bytes(b) => b,
+            Mem::Map(m) => m.as_slice(),
+            Mem::Closed => &[],
         }
     }
 
     /// Writes `data` at `at` (clipped to the file size), like Go's `copy` into the mapping.
     pub fn write(&mut self, at: usize, data: &[u8]) {
-        let end = (at + data.len()).min(self.bytes.len());
-        if at >= end {
-            return;
-        }
-        let n = end - at;
-        self.bytes[at..end].copy_from_slice(&data[..n]);
-        if let Some(f) = &self.file {
-            let _ = f.write_at(&data[..n], at as u64);
+        let b: &mut [u8] = match &mut self.mem {
+            Mem::Bytes(b) => b,
+            Mem::Map(m) => m.as_mut_slice(),
+            Mem::Closed => return,
+        };
+        let end = (at + data.len()).min(b.len());
+        if at < end {
+            b[at..end].copy_from_slice(&data[..end - at]);
         }
     }
 
-    /// Go `mmappedFile.Close`.
+    /// Go `mmappedFile.Close`: writes the mapped pages to the file and unmaps it.
     pub fn close(&mut self) -> io::Result<()> {
-        if let Some(f) = self.file.take() {
-            f.sync_all()?;
+        if let Mem::Map(m) = std::mem::replace(&mut self.mem, Mem::Closed) {
+            m.sync()?;
         }
         Ok(())
     }
 }
 
-/// Go `getMMappedFile`: creates the file with `filesize` zero bytes.
+/// Go `getMMappedFile`: creates the file with `filesize` zero bytes and maps it.
 pub fn get_mapped_file(filename: &Path, filesize: usize) -> io::Result<MappedFile> {
     let mut file = OpenOptions::new().create(true).read(true).write(true).truncate(true).open(filename)?;
     allocate_query_log_file(&mut file, filesize)?;
-    Ok(MappedFile { bytes: vec![0u8; filesize], file: Some(file) })
+    let m = util::runtime::SharedMap::new(&file, filesize)?;
+    Ok(MappedFile { mem: Mem::Map(m) })
 }
 
 /// Go `logUnfinishedQueries` without the logger: the unfinished queries of the file, if any.
@@ -204,11 +213,6 @@ pub struct ActiveQueryTracker {
     state: Mutex<TrackerState>,
     free: Condvar,
     max_concurrent: usize,
-    /// The file (a clone of the handle in `state`), written outside the lock: a slot belongs to one query
-    /// between its insert and its delete, so positioned writes to it need no lock. One write per insert and
-    /// per delete, each of the whole slot.
-    out: Option<File>,
-    closed: std::sync::atomic::AtomicBool,
 }
 
 struct TrackerState {
@@ -223,8 +227,6 @@ impl ActiveQueryTracker {
             state: Mutex::new(TrackerState { file: MappedFile::from_bytes(bytes), free_indices: VecDeque::new() }),
             free: Condvar::new(),
             max_concurrent,
-            out: None,
-            closed: std::sync::atomic::AtomicBool::new(false),
         };
         t.generate_indices(max_concurrent);
         t
@@ -246,17 +248,10 @@ impl ActiveQueryTracker {
             Err(e) => return Err(Error::msg(format!("create mmap-ed active query log: {}", e))),
         };
         file.write(0, b"[");
-        let out = match file.file.as_ref().map(|f| f.try_clone()) {
-            Some(Ok(f)) => Some(f),
-            Some(Err(e)) => return Err(Error::msg(format!("create mmap-ed active query log: {}", e))),
-            None => None,
-        };
         let t = ActiveQueryTracker {
             state: Mutex::new(TrackerState { file, free_indices: VecDeque::new() }),
             free: Condvar::new(),
             max_concurrent,
-            out,
-            closed: std::sync::atomic::AtomicBool::new(false),
         };
         t.generate_indices(max_concurrent);
         Ok(t)
@@ -269,22 +264,9 @@ impl ActiveQueryTracker {
         }
     }
 
-    /// Writes `data` at `at` (clipped to the file size) to the file, if any and not closed.
-    fn write_file(&self, at: usize, data: &[u8]) {
-        let Some(f) = &self.out else { return };
-        if self.closed.load(std::sync::atomic::Ordering::Relaxed) {
-            return;
-        }
-        let len = 1 + self.max_concurrent * ENTRY_SIZE;
-        let end = (at + data.len()).min(len);
-        if at < end {
-            let _ = f.write_at(&data[..end - at], at as u64);
-        }
-    }
-
     /// A copy of the file bytes.
     pub fn bytes(&self) -> Vec<u8> {
-        self.state.lock().unwrap().file.bytes.clone()
+        self.state.lock().unwrap().file.bytes().to_vec()
     }
 }
 
@@ -298,15 +280,8 @@ impl QueryTracker for ActiveQueryTracker {
         let mut st = self.state.lock().unwrap();
         loop {
             if let Some(i) = st.free_indices.pop_front() {
-                st.file.write_mem(i, &entry);
-                st.file.write_mem(i + ENTRY_SIZE - 1, b",");
-                drop(st);
-                // The same bytes as the two writes above (the rest of a free slot is zero).
-                let mut slot = [0u8; ENTRY_SIZE];
-                let n = entry.len().min(ENTRY_SIZE);
-                slot[..n].copy_from_slice(&entry[..n]);
-                slot[ENTRY_SIZE - 1] = b',';
-                self.write_file(i, &slot);
+                st.file.write(i, &entry);
+                st.file.write(i + ENTRY_SIZE - 1, b",");
                 return Ok(i);
             }
             if let Some(e) = ctx.err() {
@@ -318,17 +293,14 @@ impl QueryTracker for ActiveQueryTracker {
     }
 
     fn delete(&self, insert_index: usize) {
-        // Clear the slot in the file before it can be given out again.
-        self.write_file(insert_index, &[0u8; ENTRY_SIZE]);
         let mut st = self.state.lock().unwrap();
-        st.file.write_mem(insert_index, &[0u8; ENTRY_SIZE]);
+        st.file.write(insert_index, &[0u8; ENTRY_SIZE]);
         st.free_indices.push_back(insert_index);
         drop(st);
         self.free.notify_one();
     }
 
     fn close(&self) -> Result<(), Error> {
-        self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
         let mut st = self.state.lock().unwrap();
         if let Err(e) = st.file.close() {
             return Err(Error::msg(format!("close ActiveQueryTracker.closer: {}", e)));
