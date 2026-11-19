@@ -3,6 +3,29 @@
 
 mod common;
 
+#[test]
+fn test_decode_otlp_write_request_gzip_size_limit() {
+    use remote::otlptranslator::pdata::{AppendEmpty, Metrics};
+    use remote::write_otlp_handler::{DECODE_READ_LIMIT, PB_CONTENT_TYPE, decode_otlp_write_request};
+    // A valid OTLP request whose protobuf form exceeds decodeReadLimit. A description of repeated characters
+    // compresses well, so the gzip payload is small while the decompressed form is larger than 32 MiB.
+    let mut d = Metrics::new();
+    let m = d.resource_metrics.append_empty().scope_metrics.append_empty().metrics.append_empty();
+    m.name = "test_metric".into();
+    m.description = "a".repeat(DECODE_READ_LIMIT + 1);
+    m.set_empty_gauge();
+    let proto = remote::otlptranslator::pdata_proto::marshal_export_request(&d);
+    let req = http::Request {
+        method: "POST".into(),
+        path: "/".into(),
+        headers: vec![("Content-Type".into(), PB_CONTENT_TYPE.into()), ("Content-Encoding".into(), "gzip".into())],
+        body: http::gzip::gzip_vec(&proto),
+        ..Default::default()
+    };
+    // The decompressed payload exceeds decodeReadLimit and is truncated, so it does not parse.
+    assert!(decode_otlp_write_request(&req).is_err());
+}
+
 use std::io::{self, Cursor, Read, Write};
 use std::sync::{Arc, Mutex};
 
