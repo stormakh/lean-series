@@ -449,6 +449,22 @@ pub fn main() {
         tsdb_wal_compression = compression_type(cfg.agent_wal_compression, &cfg.agent_wal_compression_type);
     }
 
+    // Go builds the flags map of the status API from the flag variables after main changed them.
+    {
+        let d = |ns: i64| yaml::types::Duration(ns).go_string();
+        let fv = &mut cfg.flag_values;
+        fv.insert("config.auto-reload".into(), cfg.enable_auto_reload.to_string());
+        fv.insert("config.auto-reload-interval".into(), d(cfg.auto_reload_interval));
+        fv.insert("storage.tsdb.block-reload-interval".into(), d(cfg.tsdb.block_reload_interval));
+        fv.insert("web.route-prefix".into(), route_prefix.clone());
+        if !agent_mode {
+            fv.insert("storage.tsdb.retention.time".into(), d(retention_duration));
+            fv.insert("storage.tsdb.retention.size".into(), yaml::types::Base2Bytes(max_bytes).go_string());
+            fv.insert("storage.tsdb.max-block-duration".into(), d(max_block_duration));
+            fv.insert("storage.tsdb.delayed-compaction.max-percent".into(), compaction_delay_max_percent.to_string());
+        }
+    }
+
     let no_step = Arc::new(SafeNoStepSubqueryInterval::default());
     no_step.set(config::default_global_config().evaluation_interval.0);
 
@@ -890,6 +906,9 @@ pub fn main() {
         }
     }
     let _ = reg.register(Arc::new(reload::GoGcCollector));
+    if let Err(e) = crate::metrics::register(&reg, &notifs) {
+        panic!("{e}");
+    }
 
     let reloading = Arc::new(Reloading {
         rls,

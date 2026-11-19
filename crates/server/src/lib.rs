@@ -6,6 +6,7 @@ pub mod features;
 pub mod flags;
 pub mod helpers;
 pub use kingpin;
+pub mod metrics;
 pub mod ready;
 pub mod reload;
 pub mod run;

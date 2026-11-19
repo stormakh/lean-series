@@ -42,7 +42,7 @@ impl Group {
             // TSDB open, rule evaluation, scraping) run on their own threads with their own stacks.
             std::thread::Builder::new()
                 .name(name)
-                .stack_size(1 << 20)
+                .stack_size(crate::run::QUERY_STACK_SIZE)
                 .spawn(move || {
                     let _ = tx.send(execute());
                 })

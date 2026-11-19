@@ -65,6 +65,14 @@ pub fn random_port() -> u16 {
     panic!("no free port in 9972-9999");
 }
 
+/// Makes a port from [`random_port`] available again (call it only after the server that used it has exited).
+pub fn release_port(p: u16) {
+    let mut used = USED_PORTS.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(u) = used.as_mut() {
+        u.remove(&p);
+    }
+}
+
 /// A temporary directory under the agent's bench/tmp folder (/tmp has a small quota), removed on drop.
 pub struct TempDir(pub PathBuf);
 

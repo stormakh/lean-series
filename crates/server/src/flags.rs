@@ -341,7 +341,8 @@ fn flag_value_string(p: &Parsed, f: &Flag) -> String {
             match &f.kind {
                 // Go `rwProtoMsgFlagParser.String()` joins with ","; kingpin's strings value prints `[a b]`.
                 Kind::Custom(..) => v.join(","),
-                _ => format!("[{}]", v.join(" ")),
+                // kingpin `stringsValue.String()` joins with ",".
+                _ => v.join(","),
             }
         }
         Kind::Bool => {
