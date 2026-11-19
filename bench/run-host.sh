@@ -6,7 +6,7 @@
 # Writes bench/results/host-<label>/: samples.csv (epoch,phase,rss_kb,pss_kb,cpu_ticks,procs), req.jsonl, startup.txt
 set -u; R=$(cd "$(dirname "$0")/.." && pwd); L=$1; B=$2; V=${3:-20}; M=${4:-10}
 # One benchmark at a time (fixed ports 9100, 9390, 9001-9010); waits for the lock of another run.
-mkdir -p "$R/bench/tmp"; exec 9>"$R/bench/tmp/bench.lock"; flock 9
+mkdir -p "$HOME/code/prometheus-rs/bench/tmp"; exec 9>"$HOME/code/prometheus-rs/bench/tmp/bench.lock"; flock 9  # one lock for all worktrees
 O=$R/bench/results/host-$L; D=$R/bench/tmp/host-$L; rm -rf -- "$D"; mkdir -p "$O" "$D"
 NE=$R/upstream-bin/node_exporter-1.12.1.linux-amd64/node_exporter
 setsid nohup "$NE" --web.listen-address=127.0.0.1:9100 > "$D/ne.log" 2>&1 & ne=$!
