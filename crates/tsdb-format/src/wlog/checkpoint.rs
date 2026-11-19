@@ -513,7 +513,16 @@ struct CheckpointRef {
 
 fn list_checkpoints(dir: &Path) -> Result<Vec<CheckpointRef>> {
     let mut refs = Vec::new();
-    for fi in fs::read_dir(dir)? {
+    // Go `os.ReadDir` error text: "open <dir>: no such file or directory" (Rust prints "No such file or
+    // directory (os error 2)" without the operation and path). The error kind is kept.
+    let entries = fs::read_dir(dir).map_err(|e| {
+        let s = e.to_string();
+        let msg = s.find(" (os error ").map_or(s.as_str(), |i| &s[..i]);
+        let mut c = msg.chars();
+        let msg: String = c.next().map(|f| f.to_lowercase().chain(c).collect()).unwrap_or_default();
+        Error::from(io::Error::new(e.kind(), format!("open {}: {}", dir.display(), msg)))
+    })?;
+    for fi in entries {
         let fi = fi?;
         let name = fi.file_name();
         let Some(name) = name.to_str() else { continue };
