@@ -93,7 +93,8 @@ Crate names in `tests-data/ledger.json` (`crate` field) say where each upstream 
 - No async runtime. Blocking I/O, plain threads, `std::sync`. No timers that wake when idle.
 - Memory and CPU are the goal: no per-sample allocation on hot paths (scrape, append, query), no `format!` on hot
   paths, no needless clones. Prefer compact forms (one byte buffer for labels, `u32` references, delta encoding).
-- `unsafe` only in `tsdb` (mmap through `memmap2`) and only where needed, with a `// SAFETY:` comment.
+- `unsafe` only in `tsdb`/`tsdb-format` (mmap through `memmap2`) and in `util::runtime` / `server` for libc system
+  calls that std does not offer (getrlimit, uname, statfs, malloc tuning), only where needed, with a `// SAFETY:` comment.
 - Allowed crates: `regex`, `memmap2`, `snap`, `yaml-rust2`, `rustls` + `rustls-native-certs` + `webpki-roots`,
   `flate2`, `zstd` (only for zstd WAL/remote compression). Any other crate needs a reason in your report.
 - Lust: crates marked (lust) must pass `LUST_DAEMON_IDLE=600 lust check <crate>/src/lib.rs --manifest-path

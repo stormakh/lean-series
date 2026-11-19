@@ -3,9 +3,6 @@
 //! Units: times are milliseconds, durations nanoseconds (see `promql::estimate`). Go's type assertion
 //! `q.(storage.CostSamplingQueryable)` is the explicit `sampling` argument: a store passes itself, a wrapper
 //! without that method passes `None`.
-//!
-//! Waiting: `test_estimate_cost_sparse_series` needs the TSDB (`CompactHead`, `RangeHead`, multi-block cost
-//! sampling); it is ported and ignored until the `tsdb` crate exists.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -384,13 +381,13 @@ load 10s
     assert_eq!(est.series_touched, est.samples_read);
 }
 
-/// Go `CompactHead(tsdb.NewRangeHead(...))`: needs the TSDB.
-fn compact_head(_s: &TestStorage, _mint: i64, _maxt: i64) {
-    panic!("waiting for TSDB: CompactHead and RangeHead are not ported");
+/// Go `s.CompactHead(tsdb.NewRangeHead(s.Head(), mint, maxt))`.
+fn compact_head(s: &TestStorage, mint: i64, maxt: i64) {
+    let rh = tsdb::head::RangeHead::new(s.head().clone(), mint, maxt);
+    s.db().compact_head(&rh).expect("compact head");
 }
 
 #[test]
-#[ignore = "waiting for TSDB: CompactHead, RangeHead and multi-block cost sampling"]
 fn test_estimate_cost_sparse_series() {
     struct Case {
         name: &'static str,

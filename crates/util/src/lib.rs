@@ -10,3 +10,20 @@ pub mod annotations {
 }
 
 pub mod teststorage;
+
+pub mod compression;
+pub mod httputil;
+pub mod junitxml;
+pub mod logging;
+pub mod netconnlimit;
+pub mod notifications;
+pub mod runtime;
+pub mod tracing;
+pub mod almost;
+pub mod convertnhcb;
+pub mod fmtutil;
+pub mod kahansum;
+pub mod namevalidationutil;
+pub mod pool;
+pub mod strutil;
+pub mod zeropool;

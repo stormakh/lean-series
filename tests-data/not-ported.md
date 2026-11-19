@@ -22,10 +22,6 @@
   deadline shared by construction and execution, rejection attribution, stop on interrupted reads) is covered by the
   ported `test_query_cost_max_duration*`, `test_query_cost_max_samples_read_matrix` (cancellation part) and
   `test_query_cost_reject_metric_reason`.
-- `estimate_test` `TestEstimateCost_SparseSeries`: needs the real TSDB (head compaction into blocks, multi-block
-  sampling). Waits for the TSDB crate.
-- `estimate_resource_test` `TestEstimateCost_RemoteSamplingFallback`: needs `storage/remote` (prompb, remote read
-  client). Waits for the remote crate.
 
 ## tsdb
 
@@ -34,6 +30,27 @@
   `crates/tsdb/examples/tsdb_interop.rs`.
 - `tsdb/goversion` `Test`: an empty Go test that only checks that the package builds with Go 1.12 or newer (build
   tags). No Rust equivalent; its ledger entry also has `file: ""`.
+
+## util (logging, httputil, netconnlimit, notifications, runtime, compression, junitxml, fuzzing) and tracing
+
+All ledger tests of these packages are ported. Go-only facts and parts left out:
+
+- `util/fuzzing`: `go test` runs each fuzz target once per seed; the Rust tests do the same. Random fuzzing
+  (`go test -fuzz`) and `GetDictForFuzzParseExpr` (a libFuzzer dictionary, used by no test) are not ported. The
+  `FuzzParseProtobuf` seeds are built by Go code with gogo/protobuf; `scripts/gen/fuzzing` writes them to
+  `tests-data/fuzzing/protobuf_corpus.bin`. The chunk fuzz seeds use Go `math/rand` (v1), ported in
+  `crates/util/tests/common/gorand.rs` (checked against Go for seeds 0, 42, 1234567890, -5).
+- `tracing`: OTLP export is out of scope (PORTING.md). Not ported: the gRPC and HTTP OTLP clients (endpoint,
+  compression, headers, timeout), the batcher, the sampler (`sampling_fraction`), the resource attributes, the W3C
+  trace-context propagator and the OpenTelemetry error handler of `Run`. Kept: when `ApplyConfig` reinstalls or
+  uninstalls, the TLS check on install, the log lines, and `Stop`. Go reads the global `otel.GetTracerProvider()`;
+  the Rust manager owns its provider, because Rust tests run in parallel in one process.
+- `util/logging` `Deduper`: Go cleans old entries in a goroutine every 10s and has `Stop`; Rust cleans them on the
+  next logging call after 10s (no idle timer), so there is nothing to stop. promslog's `go-kit` log style and slog
+  groups (`WithGroup`) are not ported (Prometheus uses neither).
+- `util/logging` `TestJSONFileLogger_basic`: the `source` field is a `.rs` file, so the regex expects `\w+\.rs`.
+- `util/httputil` `BenchmarkNewCompressionHandler_MaliciousAcceptEncoding` and `util/compression` `BenchmarkEncode`,
+  `BenchmarkDecode`: Go benchmarks, not tests.
 
 ## remote (read/write handlers, codec)
 

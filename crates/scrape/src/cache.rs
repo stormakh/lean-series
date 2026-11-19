@@ -183,6 +183,14 @@ impl SeriesCache {
     pub fn series_prev_entry(&self, r: SeriesRef) -> Option<&CacheEntry> {
         self.series_prev.get(&r).map(|&id| &self.entries[id as usize])
     }
+    /// Calls `f` with every cached series entry (Go `for _, v := range c.series`), for tests that change
+    /// references.
+    pub fn for_each_series_entry_mut(&mut self, mut f: impl FnMut(&mut CacheEntry)) {
+        let entries = &mut self.entries;
+        for &id in self.series.values() {
+            f(&mut entries[id as usize]);
+        }
+    }
     /// All cached series texts and their entries.
     pub fn series_iter(&self) -> impl Iterator<Item = (&[u8], &CacheEntry)> {
         self.series.iter().map(|(k, &id)| (&**k, &self.entries[id as usize]))

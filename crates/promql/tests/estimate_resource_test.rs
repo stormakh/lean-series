@@ -2,11 +2,8 @@
 //!
 //! Units: times are milliseconds, durations nanoseconds. Go's type assertion `q.(storage.CostSamplingQueryable)`
 //! is the explicit `sampling` argument of `estimate_cost`.
-//!
-//! Waiting: `test_estimate_cost_remote_sampling_fallback` needs `storage/remote` (`NewSampleAndChunkQueryableClient`,
-//! `FromQueryResult`, prompb), which is not ported yet; it is ignored until the remote crate exists.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use chunkenc::{AnyIterator, new_nop_iterator};
@@ -15,6 +12,7 @@ use model::matcher::Matcher;
 use promql::estimate::{CostEstimate, ExprParser, estimate_cost};
 use promql::parser::{self, Expr, Parser};
 use promql::promqltest::{self, TestStorage};
+use remote::prompb;
 use storage::{
     Annotations, BoxChunkQuerier, BoxChunkSeriesSet, BoxMetaIterator, BoxQuerier, BoxSeriesSet, CancelToken,
     ChunkQuerier, ChunkQueryable, ChunkSeriesArc, ChunkSeriesEntry, ChunkSeriesSet, Context, CostSamplingQueryable,
@@ -31,9 +29,149 @@ fn estimate_test_parser() -> Parser {
 }
 
 #[test]
-#[ignore = "waiting for storage/remote: NewSampleAndChunkQueryableClient, FromQueryResult and prompb are not ported"]
 fn test_estimate_cost_remote_sampling_fallback() {
-    panic!("waiting for storage/remote");
+    for kind in ["float", "histogram"] {
+        const POINTS: usize = 200_000;
+        let series: SeriesArc = if kind == "float" {
+            let timestamps: Vec<i64> = (0..POINTS as i64).collect();
+            let values: Vec<f64> = (0..POINTS).map(|i| i as f64).collect();
+            Arc::new(SeriesEntry {
+                lset: labels::from_strings(&["__name__", "metric"]),
+                data: (timestamps, values),
+                sample_iterator_fn: |d, _| {
+                    AnyIterator::Other(Box::new(chunkenc::mock_series_iterator(Vec::new(), d.0.clone(), d.1.clone())))
+                },
+            })
+        } else {
+            let hs = storage::tsdbutil::generate_test_histograms(1000);
+            let histograms: Vec<prompb::Histogram> =
+                hs.iter().enumerate().map(|(i, h)| prompb::from_int_histogram(i as i64, h)).collect();
+            let mut set = remote::codec::from_query_result(
+                false,
+                prompb::QueryResult {
+                    timeseries: vec![prompb::TimeSeries {
+                        labels: vec![prompb::Label::new("__name__", "metric")],
+                        histograms,
+                        ..Default::default()
+                    }],
+                },
+            );
+            assert!(set.next(), "{kind}");
+            set.at().clone()
+        };
+        let counted = Arc::new(AtomicUsize::new(0));
+        let client = Arc::new(CostProbeReadClient {
+            series: Arc::new(SampleReadSeries { inner: series, owner: counted.clone() }),
+            requests: Mutex::new(Vec::new()),
+        });
+        let q = remote::read::new_sample_and_chunk_queryable_client(
+            client.clone(),
+            labels::Labels::default(),
+            Vec::new(),
+            true,
+            None,
+        );
+        let ts = 200_000;
+        // Go's type assertion q.(storage.CostSamplingQueryable) fails for the remote client: no sampling source.
+        let (estimate, annos, err) = estimate_cost(
+            &Context::background(),
+            &q,
+            None,
+            &estimate_test_parser(),
+            "sum_over_time(metric[200s]) + sum_over_time(metric[200s])",
+            ts,
+            ts,
+            0,
+            MINUTE,
+            MINUTE,
+            MS,
+        );
+        assert!(err.is_none(), "{kind}: {err:?}");
+        assert_eq!(2, estimate.series_touched, "{kind}");
+        assert_eq!((2 * (POINTS + 1)) as i64, estimate.samples_read, "{kind}");
+        let requests = client.requests.lock().unwrap();
+        assert_eq!(2, requests.len(), "{kind}: one enumeration request per selector; no sampling requests");
+        for req in requests.iter() {
+            assert_eq!("series", req.hints.as_ref().unwrap().func, "{kind}");
+        }
+        assert_eq!(
+            0,
+            counted.load(Ordering::SeqCst),
+            "{kind}: remote adapter must never decode and re-encode a whole series"
+        );
+        assert_eq!(1, annos.as_errors().len(), "{kind}: fallback warning is deduplicated");
+        assert!(annos.as_errors()[0].to_string().contains("bounded storage sampling is unavailable"), "{kind}");
+    }
+}
+
+/// Go `costProbeReadClient`.
+struct CostProbeReadClient {
+    series: SeriesArc,
+    requests: Mutex<Vec<prompb::Query>>,
+}
+
+impl remote::client::ReadClient for CostProbeReadClient {
+    fn read(&self, _: &Context, query: &prompb::Query, _: bool) -> Result<BoxSeriesSet, Error> {
+        self.requests.lock().unwrap().push(query.clone());
+        Ok(Box::new(CostProbeSeriesSet { series: self.series.clone(), limit: 1, position: 0, on_done: None, on_next: None }))
+    }
+    fn read_multiple(&self, ctx: &Context, queries: &[prompb::Query], sorted: bool) -> Result<BoxSeriesSet, Error> {
+        self.read(ctx, &queries[0], sorted)
+    }
+}
+
+/// Go `sampleReadSeries` (engine_test.go): counts sample accesses through the series' iterators.
+struct SampleReadSeries {
+    inner: SeriesArc,
+    owner: Arc<AtomicUsize>,
+}
+
+impl storage::Series for SampleReadSeries {
+    fn labels(&self) -> &labels::Labels {
+        self.inner.labels()
+    }
+    fn iterator<'a>(&'a self, _reuse: Option<AnyIterator<'a>>) -> AnyIterator<'a> {
+        AnyIterator::Other(Box::new(SampleReadIterator { inner: self.inner.iterator(None), owner: &self.owner }))
+    }
+}
+
+/// Go `sampleReadIterator`.
+struct SampleReadIterator<'a> {
+    inner: AnyIterator<'a>,
+    owner: &'a AtomicUsize,
+}
+
+impl chunkenc::ChunkIterator for SampleReadIterator<'_> {
+    fn next(&mut self) -> chunkenc::ValueType {
+        self.inner.next()
+    }
+    fn seek(&mut self, t: i64) -> chunkenc::ValueType {
+        self.inner.seek(t)
+    }
+    fn at(&self) -> (i64, f64) {
+        self.owner.fetch_add(1, Ordering::SeqCst);
+        self.inner.at()
+    }
+    fn at_histogram(&self, h: Option<model::histogram::Histogram>) -> (i64, model::histogram::Histogram) {
+        self.owner.fetch_add(1, Ordering::SeqCst);
+        self.inner.at_histogram(h)
+    }
+    fn at_float_histogram(
+        &self,
+        h: Option<model::histogram::FloatHistogram>,
+    ) -> (i64, model::histogram::FloatHistogram) {
+        self.owner.fetch_add(1, Ordering::SeqCst);
+        self.inner.at_float_histogram(h)
+    }
+    fn at_t(&self) -> i64 {
+        self.inner.at_t()
+    }
+    fn at_st(&self) -> i64 {
+        self.inner.at_st()
+    }
+    fn err(&self) -> Option<&chunkenc::Error> {
+        self.inner.err()
+    }
 }
 
 type Hook = Arc<dyn Fn() + Send + Sync>;

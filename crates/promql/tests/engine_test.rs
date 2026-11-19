@@ -1109,7 +1109,6 @@ fn test_query_cost_limit_resolution() {
 // @ modifier.
 
 use model::labels::{Labels, from_strings};
-use storage::{AppenderTransaction, AppenderV2};
 use promql::{FPoint, Sample, Scalar, Series, Value};
 
 fn new_test_engine() -> Engine {
@@ -1778,13 +1777,13 @@ fn test_query_cost_max_samples_read_matrix() {
             };
             let mut point_cost = 1i64;
             let r = if kind == "float" || (kind == "mixed" && i % 2 == 0) {
-                storage::Appender::append(&mut app, 0, &metric, ts, i as f64)
+                storage::Appender::append(&mut *app, 0, &metric, ts, i as f64)
             } else if kind == "stale" {
                 point_cost = 0;
-                storage::Appender::append(&mut app, 0, &metric, ts, model::value::stale_nan())
+                storage::Appender::append(&mut *app, 0, &metric, ts, model::value::stale_nan())
             } else if kind == "histogram" {
                 point_cost = ((h.to_float().size() + 8) / 16) as i64;
-                storage::Appender::append_histogram(&mut app, 0, &metric, ts, Some(&h), None)
+                storage::Appender::append_histogram(&mut *app, 0, &metric, ts, Some(&h), None)
             } else {
                 let mut fh = h.to_float();
                 if kind == "custom histogram" {
@@ -1792,14 +1791,14 @@ fn test_query_cost_max_samples_read_matrix() {
                     fh.custom_values = custom_values(&[1.0, 2.0]);
                 }
                 point_cost = ((fh.size() + 8) / 16) as i64;
-                storage::Appender::append_histogram(&mut app, 0, &metric, ts, None, Some(&fh))
+                storage::Appender::append_histogram(&mut *app, 0, &metric, ts, None, Some(&fh))
             };
             r.unwrap();
             if i > 0 && i <= 10 {
                 interrupted_cost += point_cost;
             }
         }
-        assert!(storage::AppenderTransaction::commit(&mut app).is_none());
+        assert!(storage::AppenderTransaction::commit(&mut *app).is_none());
         let queryable: Arc<dyn storage::Queryable> = Arc::new(st.clone());
         let engine = new_query_cost_engine();
         for expr in [

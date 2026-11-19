@@ -912,7 +912,7 @@ impl<'a> OpenMetrics2Parser<'a> {
                     if lef == f64::INFINITY {
                         has_pos_inf = true;
                     }
-                    tmp.set_bucket_count(lef, count)
+                    tmp.set_bucket_count(lef, count).map_err(String::from)
                 })?;
                 if !has_pos_inf {
                     return Err("classic histogram buckets must include a +Inf threshold".to_string());

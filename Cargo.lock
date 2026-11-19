@@ -9,6 +9,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "agent"
+version = "0.1.0"
+dependencies = [
+ "crypto",
+ "model",
+ "storage",
+ "tsdb",
+ "tsdb-format",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -306,7 +317,9 @@ dependencies = [
  "chunkenc",
  "json",
  "model",
+ "remote",
  "storage",
+ "tsdb",
  "util",
 ]
 
@@ -489,6 +502,7 @@ dependencies = [
 name = "scrape"
 version = "0.1.0"
 dependencies = [
+ "chunkenc",
  "config",
  "crypto",
  "discovery",
@@ -500,6 +514,7 @@ dependencies = [
  "rustls",
  "storage",
  "textparse",
+ "tsdb",
  "util",
  "yaml",
  "zstd",
@@ -644,10 +659,22 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 name = "util"
 version = "0.1.0"
 dependencies = [
+ "chunkenc",
+ "config",
+ "flate2",
+ "http",
  "json",
+ "libc",
  "model",
+ "net",
+ "promql",
  "regex",
+ "snap",
  "storage",
+ "textparse",
+ "tsdb-format",
+ "yaml",
+ "zstd",
 ]
 
 [[package]]

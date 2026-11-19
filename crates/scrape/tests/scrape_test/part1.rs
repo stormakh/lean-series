@@ -1,8 +1,6 @@
 //! scrape_test.go part 1 (Go lines 1-2299).
 //!
-//! Not written here (they need the real TSDB, `teststorage.New`): TestStorageHandlesOutOfOrderTimestamps,
-//! TestScrapeLoopAppend_WithStorage, TestScrapeLoopAppend_StartTimeSynthesis,
-//! TestScrapeLoopAppend_StartTimeSynthesis_WithSTStorage, TestScrapeLoopAppend_StartTimeSynthesis_OutOfOrder.
+//! The tests of this range that query the real TSDB (`teststorage.New`) are in part5.rs.
 
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, channel, sync_channel};

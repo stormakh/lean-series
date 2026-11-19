@@ -33,6 +33,7 @@ pub mod querier;
 pub mod query_cost;
 pub mod reader;
 pub mod repair;
+pub mod teststorage;
 pub mod tsdbblockutil;
 pub mod tsdbutil;
 

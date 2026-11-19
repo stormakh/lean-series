@@ -974,3 +974,56 @@ fn test_regexp_should_marshal_and_unmarshal_zero_value() {
     let unmarshalled = Regexp::unmarshal_yaml(&marshalled).unwrap();
     assert!(unmarshalled.0.is_none());
 }
+
+#[test]
+fn test_config_unmarshal_then_marshal() {
+    let tests = [
+        (
+            "Values provided",
+            r"source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_port]
+separator: ;
+regex: \\d+
+target_label: __meta_kubernetes_pod_container_port_number
+replacement: $1
+action: replace
+",
+        ),
+        (
+            "No regex provided",
+            r"source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_port]
+separator: ;
+target_label: __meta_kubernetes_pod_container_port_number
+replacement: $1
+action: keepequal
+",
+        ),
+        (
+            "Default regex provided",
+            r"source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_port]
+separator: ;
+regex: (.*)
+target_label: __meta_kubernetes_pod_container_port_number
+replacement: $1
+action: replace
+",
+        ),
+        (
+            // https://github.com/prometheus/prometheus/issues/18652:
+            // explicit empty separator/replacement/regex must survive a YAML round-trip
+            // because they are distinct from the defaults (";", "$1", "(.*)").
+            "Explicit empty separator and replacement",
+            r#"source_labels: [namespace, k8s_app]
+separator: ""
+regex: ""
+target_label: target_cluster
+replacement: ""
+action: replace
+"#,
+        ),
+    ];
+    for (name, input_yaml) in tests {
+        let unmarshalled: Config = yaml::unmarshal(input_yaml).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let marshalled = yaml::marshal(&unmarshalled).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(input_yaml, marshalled, "{name}");
+    }
+}
