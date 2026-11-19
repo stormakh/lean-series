@@ -313,6 +313,11 @@ impl Manager {
         }
     }
 
+    /// The signal that lets groups start evaluating (Go `m.block`).
+    pub fn block(&self) -> &Arc<Signal> {
+        &self.block
+    }
+
     /// The options with defaults filled in.
     pub fn opts(&self) -> &Arc<ManagerOptions> {
         &self.opts

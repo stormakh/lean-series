@@ -207,6 +207,10 @@ impl Group {
     pub fn series_in_previous_eval(&self) -> Vec<HashMap<Vec<u8>, Labels>> {
         self.series_in_previous_eval.lock().unwrap().clone()
     }
+    /// Sets the series of the last evaluation (Go tests set `g.seriesInPreviousEval`).
+    pub fn set_series_in_previous_eval(&self, v: Vec<HashMap<Vec<u8>, Labels>>) {
+        *self.series_in_previous_eval.lock().unwrap() = v;
+    }
     /// The series to mark stale at the next evaluation (Go `g.staleSeries`).
     pub fn stale_series(&self) -> Vec<Labels> {
         self.stale_series.lock().unwrap().clone()
@@ -306,7 +310,7 @@ impl Group {
     pub fn get_evaluation_time(&self) -> Duration {
         self.times.lock().unwrap().evaluation_time
     }
-    pub(crate) fn set_evaluation_time(&self, dur: Duration) {
+    pub fn set_evaluation_time(&self, dur: Duration) {
         self.metrics.group_last_duration.with_label_values(&[&group_key(&self.file, &self.name)]).set(dur.as_secs_f64());
         self.times.lock().unwrap().evaluation_time = dur;
     }
@@ -323,7 +327,7 @@ impl Group {
     pub fn get_last_evaluation(&self) -> Time {
         self.times.lock().unwrap().last_evaluation
     }
-    pub(crate) fn set_last_evaluation(&self, ts: Time) {
+    pub fn set_last_evaluation(&self, ts: Time) {
         self.metrics.group_last_eval_time.with_label_values(&[&group_key(&self.file, &self.name)]).set(ts.unix_nano() as f64 / 1e9);
         self.times.lock().unwrap().last_evaluation = ts;
     }

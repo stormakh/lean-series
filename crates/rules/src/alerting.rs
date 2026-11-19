@@ -144,6 +144,15 @@ impl AlertingRule {
         }
     }
 
+    /// Sets the hold duration (Go tests set `r.holdDuration`).
+    pub fn set_hold_duration(&mut self, d: Duration) {
+        self.hold_duration = d;
+    }
+    /// Sets the expression (Go tests set `r.vector`).
+    pub fn set_vector(&mut self, e: Option<Expr>) {
+        self.vector = e;
+    }
+
     /// Go `HoldDuration`.
     pub fn hold_duration(&self) -> Duration {
         self.hold_duration
