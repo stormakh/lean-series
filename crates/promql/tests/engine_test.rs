@@ -2839,3 +2839,40 @@ load 6m
 eval_fail range from 0 to 12m step 6m sum_over_time({__name__=~".*_metric"}[5m])
 
 "#;
+
+#[test]
+fn test_extended_range_selectors() {
+    let st = promqltest::loaded_storage(
+        "\n\tload 10s\n\t\tmetric 1+1x10\n\t\twithreset 1+1x4 1+1x5\n\t\tnotregular 0 5 100 2 8\n\t",
+    )
+    .unwrap();
+    let mut failures = Vec::new();
+    for (query, t, want) in extended_range_cases() {
+        let engine = promqltest::new_test_engine(false, Duration::ZERO, 100);
+        let ctx = Context::background();
+        let mut q = engine.new_instant_query(&ctx, Arc::new(st.clone()), None, query, t).unwrap();
+        let r = q.exec(&ctx);
+        match (r.err, r.value) {
+            (None, Some(v)) if v == want => {}
+            (e, v) => failures.push(format!("{} at {}:\n  want {:?}\n  got {:?} {:?}", query, t, want, e, v)),
+        }
+    }
+    assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.join("\n"));
+}
+
+fn extended_range_cases() -> Vec<(&'static str, i64, Value)> {
+    vec![
+        ("metric[10s] smoothed", 10000, Value::Matrix(vec![Series { floats: vec![FPoint { f: 1.0, t: 0 }, FPoint { f: 2.0, t: 10000 }], metric: from_strings(&["__name__", "metric"]), ..Default::default() }])),
+        ("metric[10s] smoothed", 15000, Value::Matrix(vec![Series { floats: vec![FPoint { f: (1.5) as f64, t: 5000 }, FPoint { f: 2.0, t: 10000 }, FPoint { f: (2.5) as f64, t: 15000 }], metric: from_strings(&["__name__", "metric"]), ..Default::default() }])),
+        ("metric[10s] smoothed", 5000, Value::Matrix(vec![Series { floats: vec![FPoint { f: 1.0, t: - 5000 }, FPoint { f: 1.0, t: 0 }, FPoint { f: (1.5) as f64, t: 5000 }], metric: from_strings(&["__name__", "metric"]), ..Default::default() }])),
+        ("metric[10s] smoothed", 105000, Value::Matrix(vec![Series { floats: vec![FPoint { f: (10.5) as f64, t: 95000 }, FPoint { f: 11.0, t: 100000 }, FPoint { f: 11.0, t: 105000 }], metric: from_strings(&["__name__", "metric"]), ..Default::default() }])),
+        ("withreset[10s] smoothed", 45000, Value::Matrix(vec![Series { floats: vec![FPoint { f: (4.5) as f64, t: 35000 }, FPoint { f: 5.0, t: 40000 }, FPoint { f: 3.0, t: 45000 }], metric: from_strings(&["__name__", "withreset"]), ..Default::default() }])),
+        ("metric[10s] anchored", 10000, Value::Matrix(vec![Series { floats: vec![FPoint { f: 1.0, t: 0 }, FPoint { f: 2.0, t: 10000 }], metric: from_strings(&["__name__", "metric"]), ..Default::default() }])),
+        ("metric[10s] anchored", 15000, Value::Matrix(vec![Series { floats: vec![FPoint { f: 1.0, t: 5000 }, FPoint { f: 2.0, t: 10000 }, FPoint { f: 2.0, t: 15000 }], metric: from_strings(&["__name__", "metric"]), ..Default::default() }])),
+        ("metric[10s] anchored", 5000, Value::Matrix(vec![Series { floats: vec![FPoint { f: 1.0, t: - 5000 }, FPoint { f: 1.0, t: 0 }, FPoint { f: 1.0, t: 5000 }], metric: from_strings(&["__name__", "metric"]), ..Default::default() }])),
+        ("metric[10s] anchored", 105000, Value::Matrix(vec![Series { floats: vec![FPoint { f: 10.0, t: 95000 }, FPoint { f: 11.0, t: 100000 }, FPoint { f: 11.0, t: 105000 }], metric: from_strings(&["__name__", "metric"]), ..Default::default() }])),
+        ("withreset[10s] anchored", 45000, Value::Matrix(vec![Series { floats: vec![FPoint { f: 4.0, t: 35000 }, FPoint { f: 5.0, t: 40000 }, FPoint { f: 5.0, t: 45000 }], metric: from_strings(&["__name__", "withreset"]), ..Default::default() }])),
+        ("notregular[20s] smoothed", 30000, Value::Matrix(vec![Series { floats: vec![FPoint { f: 5.0, t: 10000 }, FPoint { f: 100.0, t: 20000 }, FPoint { f: 2.0, t: 30000 }], metric: from_strings(&["__name__", "notregular"]), ..Default::default() }])),
+        ("notregular[20s] anchored", 30000, Value::Matrix(vec![Series { floats: vec![FPoint { f: 5.0, t: 10000 }, FPoint { f: 100.0, t: 20000 }, FPoint { f: 2.0, t: 30000 }], metric: from_strings(&["__name__", "notregular"]), ..Default::default() }])),
+    ]
+}
