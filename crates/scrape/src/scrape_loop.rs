@@ -1172,9 +1172,24 @@ impl ScrapeLoop {
             app: base,
             limits: Limits::new(self.runtime.wall(), self.sample_limit, self.bucket_limit, self.max_schema),
         };
+        // Lines that repeat the previous scrape are found by position (start timestamps need the parsed labels).
+        let predict = !self.enable_st_zero_ingestion;
+        s.begin_order(p.kind());
 
         loop {
-            let et = match p.next() {
+            let mut predicted: Option<EntryId> = None;
+            let next = match if predict { s.predicted() } else { None } {
+                Some((id, key)) => match p.next_if_series(key) {
+                    Ok(true) => {
+                        predicted = Some(id);
+                        Ok(Entry::Series)
+                    }
+                    Ok(false) => p.next(),
+                    Err(x) => Err(x),
+                },
+                None => p.next(),
+            };
+            let et = match next {
                 Ok(et) => et,
                 Err(x) if x.is_eof() => break,
                 Err(x) => {
@@ -1239,7 +1254,10 @@ impl ScrapeLoop {
             if s.get_dropped(met) {
                 continue;
             }
-            let (mut ce, already) = s.get(met);
+            let (mut ce, already) = match predicted {
+                Some(id) => s.get_predicted(id),
+                None => s.get(met),
+            };
             let series_cached = ce.is_some();
             let mut r: SeriesRef = 0;
             if let Some(id) = ce {
@@ -1352,6 +1370,9 @@ impl ScrapeLoop {
                     stats.series_added += 1;
                 }
             }
+            if let Some(id) = ce {
+                s.note_order(id);
+            }
             stats.added += 1;
 
             exemplars.clear();
@@ -1447,9 +1468,24 @@ impl ScrapeLoop {
         };
         // ST synthesis needs the metadata even without metadata appends.
         let want_meta = self.append_metadata_to_wal;
+        // Lines that repeat the previous scrape are found by position (start timestamps need the parsed labels).
+        let predict = !self.parse_st;
+        s.begin_order(p.kind());
 
         loop {
-            let et = match p.next() {
+            let mut predicted: Option<EntryId> = None;
+            let next = match if predict { s.predicted() } else { None } {
+                Some((id, key)) => match p.next_if_series(key) {
+                    Ok(true) => {
+                        predicted = Some(id);
+                        Ok(Entry::Series)
+                    }
+                    Ok(false) => p.next(),
+                    Err(x) => Err(x),
+                },
+                None => p.next(),
+            };
+            let et = match next {
                 Ok(et) => et,
                 Err(x) if x.is_eof() => break,
                 Err(x) => {
@@ -1514,7 +1550,10 @@ impl ScrapeLoop {
             if s.get_dropped(met) {
                 continue;
             }
-            let (mut ce, already) = s.get(met);
+            let (mut ce, already) = match predicted {
+                Some(id) => s.get_predicted(id),
+                None => s.get(met),
+            };
             let series_cached = ce.is_some();
             let mut r: SeriesRef = 0;
             if let Some(id) = ce {
@@ -1689,6 +1728,7 @@ impl ScrapeLoop {
                 if er != 0 && track && sample_added {
                     s.track_staleness(er, id);
                 }
+                s.note_order(id);
             }
             stats.added += 1;
         }

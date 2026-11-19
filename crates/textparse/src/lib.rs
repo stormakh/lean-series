@@ -137,6 +137,15 @@ pub trait Parser {
     /// Advances to the next entry. Returns `Err(Error::Eof)` at the end of the input.
     fn next(&mut self) -> Result<Entry, Error>;
 
+    /// A fast path of [`Parser::next`] for a scrape that repeats the previous one. If the next entry is a float
+    /// sample whose series text (as [`Parser::series`] returns it) is exactly `series`, a text that this kind of
+    /// parser returned for an earlier input, it parses that entry as `next` would (`Entry::Series`) and returns
+    /// `Ok(true)`, without lexing the labels. Otherwise it returns `Ok(false)` and changes nothing. After
+    /// `Ok(true)` the caller must not call `labels` or `start_timestamp` for this entry: it knows the labels.
+    fn next_if_series(&mut self, _series: &[u8]) -> Result<bool, Error> {
+        Ok(false)
+    }
+
     /// The concrete parser type.
     fn kind(&self) -> ParserKind;
 }
