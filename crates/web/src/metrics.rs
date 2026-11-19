@@ -352,10 +352,8 @@ pub fn serve_metrics(g: &dyn Gatherer, req: &http::Request, accepted: &[&str]) -
     resp.headers.push(("Vary".to_string(), "Accept".to_string()));
     resp.headers.push(("Vary".to_string(), "Accept-Encoding".to_string()));
     if negotiate_gzip(req) {
-        use std::io::Write;
-        let mut w = flate2::write::GzEncoder::new(Vec::with_capacity(body.len() / 4 + 64), flate2::Compression::default());
-        let _ = w.write_all(&body);
-        body = w.finish().unwrap_or_default();
+        // The small encoder of the http crate: its state is sized to the body (flate2 allocates ~160 KB per call).
+        body = http::gzip::gzip_vec(&body);
         resp.headers.push(("Content-Encoding".to_string(), "gzip".to_string()));
     }
     resp.body = http::Body::Bytes(body);
