@@ -116,6 +116,11 @@ fn main() {
         },
         gatherer: Some(web::metrics::default_gatherer()),
         lookback_delta: 300_000_000_000,
+        openapi_options: web::api::openapi::OpenApiOptions {
+            external_url: format!("http://{}", listen),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            ..Default::default()
+        },
         ..Default::default()
     }));
     let router = Arc::new(api.router("/api/v1"));
