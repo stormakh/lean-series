@@ -218,13 +218,15 @@ pub struct ActiveQueryTracker {
 struct TrackerState {
     file: MappedFile,
     free_indices: VecDeque<usize>,
+    /// Inserts waiting for a free slot; `delete` wakes one only then (a futex wake is a system call).
+    waiters: usize,
 }
 
 impl ActiveQueryTracker {
     /// A tracker over in-memory bytes only (Go tests build the struct with a byte slice).
     pub fn with_bytes(bytes: Vec<u8>, max_concurrent: usize) -> ActiveQueryTracker {
         let t = ActiveQueryTracker {
-            state: Mutex::new(TrackerState { file: MappedFile::from_bytes(bytes), free_indices: VecDeque::new() }),
+            state: Mutex::new(TrackerState { file: MappedFile::from_bytes(bytes), free_indices: VecDeque::new(), waiters: 0 }),
             free: Condvar::new(),
             max_concurrent,
         };
@@ -249,7 +251,7 @@ impl ActiveQueryTracker {
         };
         file.write(0, b"[");
         let t = ActiveQueryTracker {
-            state: Mutex::new(TrackerState { file, free_indices: VecDeque::new() }),
+            state: Mutex::new(TrackerState { file, free_indices: VecDeque::new(), waiters: 0 }),
             free: Condvar::new(),
             max_concurrent,
         };
@@ -288,7 +290,9 @@ impl QueryTracker for ActiveQueryTracker {
                 return Err(e);
             }
             // Wake up regularly to notice a cancelled or expired context.
+            st.waiters += 1;
             st = self.free.wait_timeout(st, Duration::from_millis(10)).unwrap().0;
+            st.waiters -= 1;
         }
     }
 
@@ -296,8 +300,11 @@ impl QueryTracker for ActiveQueryTracker {
         let mut st = self.state.lock().unwrap();
         st.file.write(insert_index, &[0u8; ENTRY_SIZE]);
         st.free_indices.push_back(insert_index);
+        let wake = st.waiters > 0;
         drop(st);
-        self.free.notify_one();
+        if wake {
+            self.free.notify_one();
+        }
     }
 
     fn close(&self) -> Result<(), Error> {
