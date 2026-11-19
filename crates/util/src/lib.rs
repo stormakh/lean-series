@@ -9,3 +9,12 @@ pub mod annotations {
 }
 
 pub mod teststorage;
+
+pub mod almost;
+pub mod convertnhcb;
+pub mod fmtutil;
+pub mod kahansum;
+pub mod namevalidationutil;
+pub mod pool;
+pub mod strutil;
+pub mod zeropool;

@@ -23,7 +23,6 @@ use std::time::Duration;
 use model::histogram::{FloatHistogram, Span, custom_bucket_bounds_match};
 use model::labels::{self, Labels};
 use model::regexp::Regexp;
-use model::value::is_stale_nan;
 use storage::annotations::{PROMQL_INFO, PROMQL_WARNING};
 use storage::{
     Annotations, AppendV2Options, AppenderTransaction, AppenderV2, Context, Error as StorageError,
@@ -1907,26 +1906,8 @@ fn parse_eval(lines: &[String], mut i: usize) -> Result<(usize, EvalCmd), String
 // ---------------------------------------------------------------------------------------------------------------
 // Result comparison helpers.
 
-/// Go `almost.Equal`: true if a and b differ by less than their sum times epsilon, or if both are StaleNaN, or
-/// both are any other NaN.
-pub fn almost_equal(a: f64, b: f64, epsilon: f64) -> bool {
-    let min_normal = f64::from_bits(0x0010000000000000);
-    if is_stale_nan(a) || is_stale_nan(b) {
-        return is_stale_nan(a) && is_stale_nan(b);
-    }
-    if a.is_nan() && b.is_nan() {
-        return true;
-    }
-    if a == b {
-        return true;
-    }
-    let abs_sum = a.abs() + b.abs();
-    let diff = (a - b).abs();
-    if a == 0.0 || b == 0.0 || abs_sum < min_normal {
-        return diff < epsilon * min_normal;
-    }
-    diff / abs_sum.min(f64::MAX) < epsilon
-}
+/// Go `util/almost.Equal` (the code lives in `util::almost`).
+pub use util::almost::equal as almost_equal;
 
 /// Go `compareNativeHistogram`: compares two histograms with a tolerance for float fields; the counter reset hint
 /// only counts when it was set explicitly in the expectation.

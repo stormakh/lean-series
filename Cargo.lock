@@ -516,6 +516,9 @@ dependencies = [
  "model",
  "regex",
  "storage",
+ "textparse",
+ "tsdb-format",
+ "yaml",
 ]
 
 [[package]]

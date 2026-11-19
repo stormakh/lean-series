@@ -8,6 +8,10 @@ license.workspace = true
 storage = { path = "../storage" }
 model = { path = "../model" }
 json = { path = "../json" }
+textparse = { path = "../textparse" }
+yaml = { path = "../yaml" }
 
 [dev-dependencies]
 regex = "1.13"
+# Generated WAL records (util/testwal) for records_test.
+tsdb-format = { path = "../tsdb-format" }

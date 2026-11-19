@@ -21,6 +21,7 @@
 
 pub mod client_pb;
 pub mod convertnhcb;
+pub mod expfmt;
 pub mod mime;
 mod lexutil;
 mod nhcbparse;
