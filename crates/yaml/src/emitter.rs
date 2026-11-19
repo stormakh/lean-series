@@ -15,6 +15,8 @@ pub enum Style {
 pub enum Ev {
     Scalar(String, Style),
     Seq(Vec<Ev>),
+    /// A sequence in flow style even inside block collections.
+    FlowSeq(Vec<Ev>),
     Map(Vec<(Ev, Ev)>),
 }
 
@@ -326,7 +328,7 @@ impl Emitter {
                 let d = analyze_scalar(v.as_bytes());
                 !d.multiline && v.len() <= 128
             }
-            Ev::Seq(items) => items.is_empty(),
+            Ev::Seq(items) | Ev::FlowSeq(items) => items.is_empty(),
             Ev::Map(pairs) => pairs.is_empty(),
         }
     }
@@ -345,6 +347,7 @@ impl Emitter {
                     self.block_sequence(items);
                 }
             }
+            Ev::FlowSeq(items) => self.flow_sequence(items),
             Ev::Map(pairs) => {
                 if self.flow_level > 0 || pairs.is_empty() {
                     self.flow_mapping(pairs);

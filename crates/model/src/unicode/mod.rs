@@ -261,6 +261,13 @@ fn append_escaped_rune(dst: &mut String, r: char) {
         dst.push(r);
         return;
     }
+    // a byte of invalid UTF-8 kept by the YAML decoder (yaml::rawbytes): Go prints the byte
+    if let Some(b) = yaml::rawbytes::raw_byte(r) {
+        dst.push_str("\\x");
+        dst.push(HEX[(b >> 4) as usize] as char);
+        dst.push(HEX[(b & 0xF) as usize] as char);
+        return;
+    }
     if is_print(r) {
         dst.push(r);
         return;

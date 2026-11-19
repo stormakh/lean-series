@@ -104,6 +104,7 @@ fn to_ev(v: &Value) -> Ev {
             Ev::Scalar(s.clone(), style)
         }
         Value::Seq(items) => Ev::Seq(items.iter().map(to_ev).collect()),
+        Value::FlowSeq(items) => Ev::FlowSeq(items.iter().map(to_ev).collect()),
         Value::Map(pairs) => Ev::Map(pairs.iter().map(|(k, v)| (to_ev(k), to_ev(v))).collect()),
     }
 }
