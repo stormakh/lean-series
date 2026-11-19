@@ -53,3 +53,15 @@ All ledger tests of these packages are ported. Go-only facts and parts left out:
 - `util/logging` `TestJSONFileLogger_basic`: the `source` field is a `.rs` file, so the regex expects `\w+\.rs`.
 - `util/httputil` `BenchmarkNewCompressionHandler_MaliciousAcceptEncoding` and `util/compression` `BenchmarkEncode`,
   `BenchmarkDecode`: Go benchmarks, not tests.
+
+## remote (read/write handlers, codec)
+
+- `codec_test` `TestValidateLabelsAndMetricName`: 3 of 9 rows ("label name with \xff", "label value is an invalid
+  UTF-8 value", "metric name has invalid utf8") cannot be built: Rust strings are always valid UTF-8, and the prompb
+  decoder replaces invalid bytes with U+FFFD. The other 6 rows are ported.
+- `read_handler_test` `TestStreamReadEndpoint` "write errors": checks the handler against a failing
+  `http.ResponseWriter` (zero and partial writes). The Rust handler builds the body in memory and writes nothing
+  itself. "storage errors" runs each case once by calling the handler directly (no HTTP/2, TLS or otelhttp); a
+  stream that fails after its first frame aborts the whole response.
+- `read_handler_test` `TestRemoteReadGateWaitDurationObserved`: Go uses the synctest fake clock (exact waits); the
+  port uses real time and checks each wait within 50ms above the expected value.

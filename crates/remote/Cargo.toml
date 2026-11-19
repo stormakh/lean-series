@@ -1,0 +1,34 @@
+[package]
+name = "remote"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+model = { path = "../model" }
+chunkenc = { path = "../chunkenc" }
+storage = { path = "../storage" }
+tsdb-format = { path = "../tsdb-format" }
+config = { path = "../config" }
+net = { path = "../net" }
+http = { path = "../http" }
+json = { path = "../json" }
+yaml = { path = "../yaml" }
+textparse = { path = "../textparse" }
+discovery = { path = "../discovery" }
+# md5 of config YAML (Go toHash) in storage.rs and write.rs.
+crypto = { path = "../crypto" }
+# go_duration_string for error texts.
+util = { path = "../util" }
+# Remote write/read bodies are Snappy block format.
+snap = "1"
+# Queue manager: scrape.MetricMetadata and scrape.Target for the metadata watcher.
+scrape = { path = "../scrape" }
+# OTLP write requests may be gzip-compressed (same pin as the http crate).
+flate2 = "=1.1.10"
+
+[dev-dependencies]
+# Test storage (promqltest.LoadedStorage) for the read handler tests.
+promql = { path = "../promql" }
+# The real TSDB for tests that use tsdb.Open / teststorage.New, and the e2e example (writes a WAL).
+tsdb = { path = "../tsdb" }
