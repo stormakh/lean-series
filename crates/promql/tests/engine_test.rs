@@ -2545,3 +2545,105 @@ fn test_invalid_histogram_bucket_layout_fails_query() {
     assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.join("\n"));
 }
 
+
+#[test]
+fn test_inconsistent_histogram_count() {
+    use model::histogram::{Histogram, Span};
+    // adapted: Go appends to a TSDB head; the in-memory test storage ports the head's append path.
+    let st = TestStorage::new();
+    let mut app = st.appender_v2();
+    let l = from_strings(&["__name__", "series_1"]);
+    let mint = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64 - 3_600_000;
+    let mut maxt = mint;
+    let dt = 15_000;
+    let in_hs = [
+        Histogram { count: 2, sum: 100.0, positive_spans: vec![Span::new(0, 1)], positive_buckets: vec![2], ..Default::default() },
+        Histogram { count: 4, sum: 200.0, positive_spans: vec![Span::new(0, 1)], positive_buckets: vec![4], ..Default::default() },
+        Histogram::default(),
+    ];
+    let opts = storage::AppendV2Options::default();
+    for (i, h) in in_hs.iter().enumerate() {
+        maxt = mint + dt * i as i64;
+        app.append(0, &l, 0, maxt, 0.0, Some(h), None, &opts).unwrap();
+    }
+    assert!(app.commit().is_none());
+    let engine = Engine::new(EngineOpts {
+        max_samples: 1_000_000,
+        timeout: Duration::from_secs(10),
+        lookback_delta: Duration::from_secs(300),
+        ..Default::default()
+    });
+    let ctx = Context::background();
+    let mut q = engine.new_instant_query(&ctx, Arc::new(st.clone()), None, "(rate(series_1[1m]))", maxt).unwrap();
+    let r = q.exec(&ctx);
+    let v = r.vector().unwrap();
+    assert_eq!(1, v.len());
+    let count_from_histogram = v[0].h.as_ref().expect("histogram").count;
+    assert!(count_from_histogram > 0.0);
+    let mut q =
+        engine.new_instant_query(&ctx, Arc::new(st.clone()), None, "histogram_count((rate(series_1[1m])))", maxt).unwrap();
+    let r = q.exec(&ctx);
+    let v = r.vector().unwrap();
+    assert_eq!(1, v.len());
+    assert!(v[0].h.is_none());
+    assert_eq!(count_from_histogram, v[0].f, "histogram_count function should return the same count as the histogram itself");
+}
+
+#[test]
+fn test_sub_query_histograms_copy() {
+    let load = "load 2m
+			http_request_duration_seconds{pod=\"nginx-1\"} {{schema:0 count:110 sum:818.00 buckets:[1 14 95]}}+{{schema:0 count:110 buckets:[1 14 95]}}x20
+			http_request_duration_seconds{pod=\"nginx-2\"} {{schema:0 count:210 sum:1598.00 buckets:[1 19 190]}}+{{schema:0 count:210 buckets:[1 19 190]}}x30";
+    let sub_query = r#"min_over_time({__name__="http_request_duration_seconds"}[1h:1m])"#;
+    let test_query = r#"rate({__name__="http_request_duration_seconds"}[3m])"#;
+    let ctx = Context::background();
+    for _ in 0..100 {
+        let st = promqltest::loaded_storage(load).unwrap();
+        let engine = promqltest::new_test_engine(false, Duration::ZERO, promqltest::DEFAULT_MAX_SAMPLES_PER_QUERY);
+        let mut q = engine.new_range_query(&ctx, Arc::new(st), None, sub_query, 0, 144_000, 3000).unwrap();
+        q.exec(&ctx);
+    }
+    for _ in 0..100 {
+        let st = promqltest::loaded_storage(load).unwrap();
+        let engine = promqltest::new_test_engine(false, Duration::ZERO, promqltest::DEFAULT_MAX_SAMPLES_PER_QUERY);
+        let mut q = engine.new_range_query(&ctx, Arc::new(st), None, test_query, 0, 144_000, 3000).unwrap();
+        let r = q.exec(&ctx);
+        for s in r.matrix().unwrap() {
+            for h in &s.histograms {
+                assert!(!h.h.positive_buckets.is_empty());
+            }
+        }
+    }
+}
+
+#[test]
+fn test_histogram_counter_reset_hint() {
+    use model::histogram::CounterResetHint::{GaugeType, NotCounterReset};
+    let st = promqltest::loaded_storage("\n\t\tload 2m\n\t\ttest_histogram {{count:0}}+{{count:1}}x4\n\t").unwrap();
+    let engine = promqltest::new_test_engine(false, Duration::ZERO, promqltest::DEFAULT_MAX_SAMPLES_PER_QUERY);
+    for (name, query, want) in [
+        ("adding histograms", "test_histogram + test_histogram", NotCounterReset),
+        ("subtraction", "test_histogram - test_histogram", GaugeType),
+        ("negated addition", "test_histogram + (-test_histogram)", GaugeType),
+        ("negated subtraction", "test_histogram - (-test_histogram)", GaugeType),
+        ("unary negation", "-test_histogram", GaugeType),
+        ("repeated unary negation", "-(-test_histogram)", GaugeType),
+        ("multiplication", "2 * test_histogram", NotCounterReset),
+        ("negative multiplication", "-1 * test_histogram", GaugeType),
+        ("division", "test_histogram / 2", NotCounterReset),
+        ("negative division", "test_histogram / -1", GaugeType),
+        ("equality (not counter reset)", "test_histogram == test_histogram", NotCounterReset),
+        ("equality (gauge)", "-test_histogram == -test_histogram", GaugeType),
+        ("unequality (not counter reset)", "test_histogram != -test_histogram", NotCounterReset),
+        ("unequality (gauge)", "-test_histogram != test_histogram", GaugeType),
+    ] {
+        let ctx = Context::background();
+        let mut q = engine.new_instant_query(&ctx, Arc::new(st.clone()), None, query, 120_000).unwrap();
+        let r = q.exec(&ctx);
+        assert!(r.err.is_none(), "{}: {:?}", name, r.err);
+        let v = r.vector().unwrap();
+        assert_eq!(1, v.len(), "{}", name);
+        assert_eq!(want, v[0].h.as_ref().expect(name).counter_reset_hint, "{}", name);
+    }
+}
+
