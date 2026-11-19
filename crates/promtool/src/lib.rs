@@ -22,6 +22,12 @@ pub mod rules_cmd;
 pub mod tsdb_cmd;
 pub mod unittest;
 
+pub mod check_metrics;
+pub mod expfmt;
+pub mod metrics;
+pub mod promlint;
+pub mod web_config;
+
 pub mod app;
 
 use std::io::{Read, Write};
