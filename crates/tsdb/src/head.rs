@@ -2011,7 +2011,7 @@ impl Head {
     }
 
     /// Go `isWBLPinnedSeriesRef`.
-    pub(crate) fn is_wbl_pinned_series_ref(&self, id: HeadSeriesRef) -> bool {
+    pub fn is_wbl_pinned_series_ref(&self, id: HeadSeriesRef) -> bool {
         lock(&self.wbl_pinned_series_refs).contains(&id)
     }
 
