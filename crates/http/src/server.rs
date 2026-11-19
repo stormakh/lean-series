@@ -4,7 +4,7 @@ use crate::util::{http_date, now_unix};
 use crate::{Body, Request, Response, compressible, reason};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -27,8 +27,8 @@ pub struct ServerConfig {
     pub gzip_min_bytes: usize,
     /// gzip files up to this size (bigger ones stream as they are).
     pub gzip_max_file_bytes: u64,
-    /// Called on the connection thread when the last live connection closes (for example to return free memory
-    /// to the OS). Never called on a timer.
+    /// Called on the connection thread when a response is written and no other request is in flight (for example
+    /// to return free memory to the OS; keep-alive connections stay open while idle). Never called on a timer.
     pub on_idle: Option<fn()>,
 }
 impl Default for ServerConfig {
@@ -57,26 +57,20 @@ struct Slots {
     used: Mutex<usize>,
     cv: Condvar,
 }
-struct SlotGuard(Arc<Slots>, Option<fn()>);
+struct SlotGuard(Arc<Slots>);
 impl Drop for SlotGuard {
     fn drop(&mut self) {
-        let left = {
-            let mut n = match self.0.used.lock() {
-                Ok(g) => g,
-                Err(p) => p.into_inner(),
-            };
-            *n -= 1;
-            self.0.cv.notify_one();
-            *n
+        let mut n = match self.0.used.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
         };
-        // the accept loop holds one slot while it waits, so 1 left means no live connection
-        if left <= 1 {
-            if let Some(f) = self.1 {
-                f();
-            }
-        }
+        *n -= 1;
+        self.0.cv.notify_one();
     }
 }
+
+/// Requests being handled, over all connections (for `on_idle`).
+static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 
 impl Server {
     pub fn bind(addr: &str, cfg: ServerConfig) -> std::io::Result<Server> {
@@ -118,7 +112,7 @@ impl Server {
                 }
                 *n += 1;
             }
-            let guard = SlotGuard(slots.clone(), cfg.on_idle);
+            let guard = SlotGuard(slots.clone());
             let stream = match self.listener.accept() {
                 Ok((s, _)) => s,
                 Err(_) => {
@@ -182,8 +176,15 @@ fn serve_conn(stream: TcpStream, cfg: &ServerConfig, svc: &dyn Service) {
         let keep = keep_alive(&req);
         let head = req.method == "HEAD";
         let gz = cfg.gzip && req.accepts_gzip();
+        IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
         let resp = svc.handle(req);
-        if write_response(&mut w, resp, head, !keep, gz, cfg, date.get()).is_err() || !keep {
+        let res = write_response(&mut w, resp, head, !keep, gz, cfg, date.get());
+        if IN_FLIGHT.fetch_sub(1, Ordering::SeqCst) == 1 {
+            if let Some(f) = cfg.on_idle {
+                f();
+            }
+        }
+        if res.is_err() || !keep {
             return;
         }
         // do not keep a big line buffer around between requests

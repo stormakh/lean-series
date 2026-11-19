@@ -85,8 +85,11 @@ pub fn tune_malloc() {
 static IDLE: Mutex<u64> = Mutex::new(0);
 static WAKE: Condvar = Condvar::new();
 
-/// Called by the HTTP server when its last connection closes: the trim thread gives free heap pages back to the
-/// OS one second later (once per burst of idle signals).
+/// Shortest time between two trims: each trim makes the next requests fault their code and heap pages in again.
+const TRIM_INTERVAL: Duration = Duration::from_secs(10);
+
+/// Called by the HTTP server when no request is in flight: the trim thread gives free memory back to the OS once
+/// no request came for one second (at most every [`TRIM_INTERVAL`]).
 pub fn on_idle() {
     let mut n = IDLE.lock().unwrap_or_else(|p| p.into_inner());
     *n += 1;
@@ -112,6 +115,7 @@ pub fn start_trim_thread() {
                 *n = 0;
             }
             trim();
+            std::thread::sleep(TRIM_INTERVAL);
         }
     });
 }
@@ -127,12 +131,25 @@ pub fn trim() {
 }
 
 /// Unmaps the pages of the binary's read-only file mappings (code, constants) from this process. They stay in the
-/// page cache and come back on the next use without I/O. The kernel maps code in large blocks (fault-around and large
-/// folios), so after startup most of the 13 MB of code is mapped although little of it runs again; this keeps only
-/// the code that the server runs from now on. Mappings with private (relocated) pages are left alone.
+/// page cache and come back on the next use without I/O. The kernel maps code in 64 KB blocks (fault-around), so
+/// after startup most of the 13 MB of code is mapped although little of it runs again; this keeps only the code
+/// that the server runs from now on. Mappings with private (relocated) pages are left alone.
 pub fn release_binary_pages() {
-    let Ok(exe) = std::fs::read_link("/proc/self/exe") else { return };
-    let Ok(smaps) = std::fs::read_to_string("/proc/self/smaps") else { return };
+    static RANGES: std::sync::OnceLock<Vec<(usize, usize)>> = std::sync::OnceLock::new();
+    for &(a, len) in RANGES.get_or_init(binary_ranges) {
+        // SAFETY: a read-only private file mapping of the executable with no private pages (see
+        // `binary_ranges`): dropping its pages loses nothing, the next access maps the same file contents again.
+        unsafe {
+            libc::madvise(a as *mut libc::c_void, len, libc::MADV_DONTNEED);
+        }
+    }
+}
+
+/// The read-only mappings of the executable that have no private pages: (address, length).
+fn binary_ranges() -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let Ok(exe) = std::fs::read_link("/proc/self/exe") else { return out };
+    let Ok(smaps) = std::fs::read_to_string("/proc/self/smaps") else { return out };
     let exe = exe.to_string_lossy();
     let mut cur: Option<(usize, usize)> = None;
     for line in smaps.lines() {
@@ -143,18 +160,15 @@ pub fn release_binary_pages() {
         {
             let perms = f.next().unwrap_or("");
             let path = f.nth(3).unwrap_or("");
-            cur = (path == exe && perms.starts_with('r') && perms.as_bytes().get(1) == Some(&b'-')).then_some((a, b));
+            cur = (path == exe && perms.starts_with('r') && perms.as_bytes().get(1) == Some(&b'-')).then_some((a, b - a));
         } else if first == "Anonymous:"
-            && let Some((a, b)) = cur.take()
+            && let Some(r) = cur.take()
             && f.next() == Some("0")
         {
-            // SAFETY: (a, b) is a read-only private file mapping of the executable with no private pages, so
-            // dropping its pages loses nothing: the next access maps the same file contents again.
-            unsafe {
-                libc::madvise(a as *mut libc::c_void, b - a, libc::MADV_DONTNEED);
-            }
+            out.push(r);
         }
     }
+    out
 }
 
 // ---------------------------------------------------------------------------------------------------------------

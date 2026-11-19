@@ -196,7 +196,7 @@ pub struct Options {
     pub now: Option<Arc<dyn Fn() -> i64 + Send + Sync>>,
     /// Stack size of the connection threads (0: 4 MiB). Queries run on these threads.
     pub stack_size: usize,
-    /// Called when the last connection of a listener closes (for example to give memory back to the OS).
+    /// Called when no request is in flight any more (for example to give memory back to the OS).
     pub on_idle: Option<fn()>,
 }
 
