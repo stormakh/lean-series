@@ -1,0 +1,2 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<DescribeAvailabilityZonesResponse xmlns="http://ec2.amazonaws.com/doc/2016-11-15/"><requestId>req-azs</requestId><availabilityZoneInfo><item><zoneState>available</zoneState><regionName>us-east-1</regionName><zoneName>us-east-1a</zoneName><zoneId>use1-az1</zoneId><zoneType>availability-zone</zoneType></item><item><zoneState>available</zoneState><regionName>us-east-1</regionName><zoneName>us-east-1b</zoneName><zoneId>use1-az2</zoneId><zoneType>availability-zone</zoneType></item></availabilityZoneInfo></DescribeAvailabilityZonesResponse>

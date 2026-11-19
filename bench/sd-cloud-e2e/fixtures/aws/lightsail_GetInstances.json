@@ -1,0 +1,4 @@
+{"instances":[
+ {"name":"instance-1","supportCode":"support-code-1","location":{"availabilityZone":"us-east-1a","regionName":"us-east-1"},"blueprintId":"ubuntu_22_04","bundleId":"nano_2_0","privateIpAddress":"10.0.0.1","publicIpAddress":"3.3.3.3","ipv6Addresses":["2001:db8::5","2001:db8::6"],"state":{"code":16,"name":"running"},"tags":[{"key":"env","value":"prod"},{"key":"novalue"}]},
+ {"name":"instance-2","location":{"availabilityZone":"us-east-1b","regionName":"us-east-1"},"blueprintId":"debian_12","bundleId":"micro_2_0","privateIpAddress":"10.0.0.2","state":{"code":80,"name":"stopped"}}
+]}

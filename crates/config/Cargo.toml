@@ -1,0 +1,15 @@
+[package]
+name = "config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+yaml = { path = "../yaml" }
+model = { path = "../model" }
+net = { path = "../net" }
+discovery = { path = "../discovery" }
+crypto = { path = "../crypto" }
+
+[dev-dependencies]
+json = { path = "../json" }

@@ -11,6 +11,8 @@ pub enum Value {
     Float(f64),
     Str(String),
     Seq(Vec<Value>),
+    /// A sequence written in flow style (`[a, b]`), as a Go `yaml:",flow"` field.
+    FlowSeq(Vec<Value>),
     /// Pairs in emit order. Decoded Go maps are sorted with go-yaml's key order.
     Map(Vec<(Value, Value)>),
 }
@@ -54,7 +56,7 @@ fn kind_rank(v: &Value) -> u8 {
         Value::Float(_) => 14,
         Value::Null => 20, // interface
         Value::Map(_) => 21,
-        Value::Seq(_) => 23,
+        Value::Seq(_) | Value::FlowSeq(_) => 23,
         Value::Str(_) => 24,
     }
 }

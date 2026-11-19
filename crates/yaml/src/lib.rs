@@ -14,6 +14,7 @@ pub mod decode;
 pub mod emitter;
 pub mod encode;
 pub mod node;
+pub mod rawbytes;
 pub mod resolve;
 pub mod types;
 pub mod url;
@@ -52,6 +53,8 @@ pub fn unmarshal_into<T: Unmarshal + Default>(text: &str, out: &mut T, strict: b
 ///     (password: "password", omitempty)
 ///     (inline proxy)            // a `yaml:",inline"` struct field (must implement Struct)
 ///     (follow_redirects: "follow_redirects")
+///     (ptrs rules: "rules" as "[]*relabel.Config", omitempty)  // a Go `[]*T` field as Vec<T> (see
+///                                                              // `Decoder::decode_ptr_vec`)
 /// ]);
 /// ```
 #[macro_export]
@@ -79,6 +82,11 @@ macro_rules! yaml_struct {
             fn fields_zero(&self) -> bool {
                 $( $crate::__yaml_zero!(self, $entry); )*
                 true
+            }
+            #[allow(unused_variables)]
+            fn decode_key(&mut self, k: &str, n: &$crate::Node, d: &mut $crate::Decoder) -> Option<$crate::Result<bool>> {
+                $( $crate::__yaml_decode_key!(self, k, n, d, $entry); )*
+                None
             }
         }
     };
@@ -110,7 +118,29 @@ macro_rules! impl_plain_struct {
 
 #[doc(hidden)]
 #[macro_export]
+macro_rules! __yaml_decode_key {
+    ($s:ident, $k:ident, $n:ident, $d:ident, (ptrs $f:ident : $key:literal as $gt:literal $(, $o:ident)?)) => {
+        if $k == $key {
+            return Some($d.decode_ptr_vec($n, &mut $s.$f, $key, $gt));
+        }
+    };
+    ($s:ident, $k:ident, $n:ident, $d:ident, ($f:ident : $key:literal $(, $o:ident)?)) => {};
+    ($s:ident, $k:ident, $n:ident, $d:ident, (inline $f:ident)) => {
+        if $crate::Struct::has_field(&$s.$f, $k) {
+            if let Some(r) = $crate::Struct::decode_key(&mut $s.$f, $k, $n, $d) {
+                return Some(r);
+            }
+        }
+    };
+}
+#[doc(hidden)]
+#[macro_export]
 macro_rules! __yaml_has {
+    ($s:ident, $k:ident, (ptrs $f:ident : $key:literal as $gt:literal $(, $o:ident)?)) => {
+        if $k == $key {
+            return true;
+        }
+    };
     ($s:ident, $k:ident, ($f:ident : $key:literal $(, $o:ident)?)) => {
         if $k == $key {
             return true;
@@ -125,6 +155,7 @@ macro_rules! __yaml_has {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __yaml_field {
+    ($s:ident, $k:ident, (ptrs $f:ident : $key:literal as $gt:literal $(, $o:ident)?)) => {};
     ($s:ident, $k:ident, ($f:ident : $key:literal $(, $o:ident)?)) => {
         if $k == $key {
             return Some(&mut $s.$f as &mut dyn $crate::Field);
@@ -139,6 +170,12 @@ macro_rules! __yaml_field {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __yaml_marshal {
+    ($s:ident, $out:ident, (ptrs $f:ident : $key:literal as $gt:literal, omitempty)) => {
+        $crate::push_field($out, $key, &$s.$f, true)?;
+    };
+    ($s:ident, $out:ident, (ptrs $f:ident : $key:literal as $gt:literal)) => {
+        $crate::push_field($out, $key, &$s.$f, false)?;
+    };
     ($s:ident, $out:ident, ($f:ident : $key:literal, omitempty)) => {
         $crate::push_field($out, $key, &$s.$f, true)?;
     };
@@ -152,6 +189,11 @@ macro_rules! __yaml_marshal {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __yaml_zero {
+    ($s:ident, (ptrs $f:ident : $key:literal as $gt:literal $(, $o:ident)?)) => {
+        if !$crate::Marshal::is_zero(&$s.$f) {
+            return false;
+        }
+    };
     ($s:ident, ($f:ident : $key:literal $(, $o:ident)?)) => {
         if !$crate::Marshal::is_zero(&$s.$f) {
             return false;

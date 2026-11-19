@@ -147,7 +147,7 @@ fn value_to_json(v: &Value) -> Json {
         Value::Uint(u) => Json::Float(*u as f64),
         Value::Float(f) => Json::Float(*f),
         Value::Str(s) => Json::Str(s.clone()),
-        Value::Seq(items) => Json::Arr(items.iter().map(value_to_json).collect()),
+        Value::Seq(items) | Value::FlowSeq(items) => Json::Arr(items.iter().map(value_to_json).collect()),
         Value::Map(pairs) => {
             let mut o: Vec<(String, Json)> = pairs.iter().map(|(k, v)| (k.as_str().map(|s| s.to_string()).unwrap_or_else(|| format!("{k:?}")), value_to_json(v))).collect();
             o.sort_by(|a, b| a.0.cmp(&b.0));

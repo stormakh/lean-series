@@ -83,15 +83,16 @@ impl fmt::Display for Action {
     }
 }
 
-/// An anchored regexp (`^(?s:...)$`); `None` is Go's nil regexp. Equality is identity of the compiled object, as
-/// Go compares the pointers.
+/// An anchored regexp (`^(?s:...)$`); `None` is Go's nil regexp. `==` compares the patterns (Go
+/// `reflect.DeepEqual`, used to compare configs); `same_object` is Go's `==` on the struct (pointer identity),
+/// which relabeling and validation use against the default regexp.
 #[derive(Clone, Debug, Default)]
 pub struct Regexp(pub Option<regexp::Regexp>);
 
 impl PartialEq for Regexp {
     fn eq(&self, o: &Regexp) -> bool {
         match (&self.0, &o.0) {
-            (Some(a), Some(b)) => regexp::Regexp::ptr_eq(a, b),
+            (Some(a), Some(b)) => regexp::Regexp::ptr_eq(a, b) || a.as_str() == b.as_str(),
             (None, None) => true,
             _ => false,
         }
@@ -99,6 +100,15 @@ impl PartialEq for Regexp {
 }
 
 impl Regexp {
+    /// Go `==` on two Regexp values: the same compiled object (or both nil).
+    pub fn same_object(&self, o: &Regexp) -> bool {
+        match (&self.0, &o.0) {
+            (Some(a), Some(b)) => regexp::Regexp::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+
     /// Go `NewRegexp`: compiles `^(?s:<s>)$`.
     pub fn new(s: &str) -> Result<Regexp, Error> {
         Ok(Regexp(Some(regexp::Regexp::compile(&format!("^(?s:{})$", s))?)))
@@ -291,7 +301,7 @@ impl Config {
             return Err(format!("{} is invalid 'target_label' for {} action", unicode::quote(tl), a));
         }
         if (*a == Action::DropEqual || *a == Action::KeepEqual)
-            && (self.regex != def.regex
+            && (!self.regex.same_object(&def.regex)
                 || self.modulus != def.modulus
                 || self.separator != def.separator
                 || self.replacement != def.replacement)
@@ -427,7 +437,7 @@ pub fn relabel(cfg: &Config, lb: &mut Builder) -> bool {
         }
         Action::Replace => {
             if val.is_empty()
-                && cfg.regex == *default_regex()
+                && cfg.regex.same_object(default_regex())
                 && !var_in_regex_template(&cfg.target_label)
                 && !var_in_regex_template(&cfg.replacement)
             {

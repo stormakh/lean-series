@@ -1,0 +1,65 @@
+[
+ {
+  "path": "/api/v1/query",
+  "body": "query=count({__name__=~\".+\"})&time=NOW",
+  "status": 200,
+  "bytes": 106,
+  "median_ms": 313.19
+ },
+ {
+  "path": "/api/v1/query_range",
+  "body": "query=sum by (series_id) (rate(avalanche_counter_metric_mmmmm_0_1[5m]))&start=NOW-3600&end=NOW&step=60",
+  "status": 200,
+  "bytes": 63,
+  "median_ms": 0.5
+ },
+ {
+  "path": "/api/v1/query_range",
+  "body": "query=histogram_quantile(0.99, sum by (le) (rate(avalanche_histogram_metric_mmmmm_0_0_bucket[5m])))&start=NOW-3600&end=NOW&step=60",
+  "status": 200,
+  "bytes": 1072,
+  "median_ms": 114.15
+ },
+ {
+  "path": "/api/v1/query",
+  "body": "query=topk(10, avalanche_gauge_metric_mmmmm_0_0)&time=NOW",
+  "status": 200,
+  "bytes": 5692,
+  "median_ms": 3.78
+ },
+ {
+  "path": "/api/v1/query",
+  "body": "query=avg_over_time(avalanche_gauge_metric_mmmmm_0_1[30m])&time=NOW",
+  "status": 200,
+  "bytes": 528074,
+  "median_ms": 10.21
+ },
+ {
+  "path": "/api/v1/query",
+  "body": "query=count by (instance) ({__name__=~\"avalanche_counter_metric_mmmmm_0_.*\"})&time=NOW",
+  "status": 200,
+  "bytes": 752,
+  "median_ms": 105.69
+ },
+ {
+  "path": "/api/v1/labels",
+  "body": "start=NOW-3600&end=NOW",
+  "status": 200,
+  "bytes": 519,
+  "median_ms": 0.37
+ },
+ {
+  "path": "/api/v1/label/__name__/values",
+  "body": "start=NOW-3600&end=NOW",
+  "status": 200,
+  "bytes": 17180,
+  "median_ms": 0.38
+ },
+ {
+  "path": "/api/v1/series",
+  "body": "match[]=avalanche_gauge_metric_mmmmm_0_2&start=NOW-3600&end=NOW",
+  "status": 200,
+  "bytes": 525929,
+  "median_ms": 1.75
+ }
+]
