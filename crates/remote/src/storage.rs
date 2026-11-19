@@ -62,7 +62,8 @@ pub struct RemoteQueryable {
 
 /// Go `Storage`: all remote read and write endpoints; a `storage::Storage`.
 pub struct Storage {
-    rws: Arc<dyn RemoteWriteStorage>,
+    /// `None` only for read-only storages made by [`Storage::for_reads`].
+    rws: Option<Arc<dyn RemoteWriteStorage>>,
     read_client_factory: ReadClientFactory,
     // For reads.
     queryables: Mutex<Arc<Vec<RemoteQueryable>>>,
@@ -79,7 +80,7 @@ impl Storage {
         read_client_factory: ReadClientFactory,
     ) -> Storage {
         Storage {
-            rws,
+            rws: Some(rws),
             read_client_factory,
             queryables: Mutex::new(Arc::new(Vec::new())),
             local_start_time_callback: st_callback,
@@ -87,14 +88,30 @@ impl Storage {
         }
     }
 
+    /// A storage with only the given read endpoints and no write storage (Go tests build
+    /// `&Storage{queryables: ...}`). Write calls and `apply_config` panic, as Go's nil `rws` would.
+    pub fn for_reads(queryables: Vec<RemoteQueryable>) -> Storage {
+        Storage {
+            rws: None,
+            read_client_factory: default_read_client_factory(),
+            queryables: Mutex::new(Arc::new(queryables)),
+            local_start_time_callback: None,
+            mtx: Mutex::new(()),
+        }
+    }
+
+    fn rws(&self) -> &Arc<dyn RemoteWriteStorage> {
+        self.rws.as_ref().expect("remote storage without a write storage")
+    }
+
     /// Go `Notify`.
     pub fn notify(&self) {
-        self.rws.notify();
+        self.rws().notify();
     }
 
     /// The write storage.
     pub fn write_storage(&self) -> &Arc<dyn RemoteWriteStorage> {
-        &self.rws
+        self.rws()
     }
 
     /// The configured read endpoints (Go `s.queryables`, for tests).
@@ -102,15 +119,10 @@ impl Storage {
         self.queryables.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
 
-    /// Sets the read endpoints directly (Go tests build `&Storage{queryables: ...}`).
-    pub fn set_queryables(&self, q: Vec<RemoteQueryable>) {
-        *self.queryables.lock().unwrap_or_else(|p| p.into_inner()) = Arc::new(q);
-    }
-
     /// Go `ApplyConfig`.
     pub fn apply_config(&self, conf: &Config) -> Result<(), Error> {
         let _g = self.mtx.lock().unwrap_or_else(|p| p.into_inner());
-        self.rws.apply_config(conf)?;
+        self.rws().apply_config(conf)?;
 
         // Update the read clients.
         let mut read_hashes = std::collections::HashSet::new();
@@ -145,7 +157,7 @@ impl Storage {
 
     /// Go `LowestSentTimestamp`.
     pub fn lowest_sent_timestamp(&self) -> i64 {
-        self.rws.lowest_sent_timestamp()
+        self.rws().lowest_sent_timestamp()
     }
 }
 
@@ -186,13 +198,13 @@ impl CostSamplingQueryable for Storage {
 
 impl Appendable for Storage {
     fn appender(&self, ctx: &Context) -> Box<dyn Appender> {
-        self.rws.appender(ctx)
+        self.rws().appender(ctx)
     }
 }
 
 impl AppendableV2 for Storage {
     fn appender_v2(&self, ctx: &Context) -> Box<dyn AppenderV2> {
-        self.rws.appender_v2(ctx)
+        self.rws().appender_v2(ctx)
     }
 }
 
@@ -205,7 +217,10 @@ impl storage::Storage for Storage {
     /// Go `Close`: stops the write queues.
     fn close(&self) -> Option<Error> {
         let _g = self.mtx.lock().unwrap_or_else(|p| p.into_inner());
-        self.rws.close()
+        match &self.rws {
+            Some(r) => r.close(),
+            None => None,
+        }
     }
 
     fn as_cost_sampling_queryable(&self) -> Option<&dyn CostSamplingQueryable> {
