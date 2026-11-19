@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use model::labels::{self, Label, Labels, ScratchBuilder, read_labels, stable_hash};
 use tsdb_format::SeriesRef;
 use tsdb_format::chunks::Meta;
-use tsdb_format::context::Context;
+use storage::Context;
 use tsdb_format::encoding::{Decbuf, Encbuf, crc32c};
 use tsdb_format::index::{
     BoxPostings, Ctx, Decoder, Error, FORMAT_V2, INDEX_FILENAME, MemPostings, Postings, Reader,
@@ -88,7 +88,7 @@ fn iws(labels: Labels) -> IndexWriterSeries {
 
 fn meta(r: u64, mint: i64, maxt: i64) -> Meta {
     Meta {
-        r#ref: r,
+        chunk_ref: r,
         chunk: None,
         min_time: mint,
         max_time: maxt,
@@ -97,7 +97,7 @@ fn meta(r: u64, mint: i64, maxt: i64) -> Meta {
 
 fn metas_eq(a: &[Meta]) -> Vec<(u64, i64, i64)> {
     a.iter()
-        .map(|m| (m.r#ref, m.min_time, m.max_time))
+        .map(|m| (m.chunk_ref, m.min_time, m.max_time))
         .collect()
 }
 
@@ -392,8 +392,8 @@ fn test_persistence_index_e2e() {
         for j in 0..=(i % 20) as i64 {
             r += 1;
             metas.push(Meta {
-                r#ref: r,
-                chunk: Some(Box::new(chunkenc::xor::XorChunk::new())),
+                chunk_ref: r,
+                chunk: Some(std::sync::Arc::new(chunkenc::xor::XorChunk::new())),
                 min_time: j * 10000,
                 max_time: (j + 1) * 10000 - 1,
             });

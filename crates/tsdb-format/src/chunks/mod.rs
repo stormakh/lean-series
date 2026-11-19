@@ -84,23 +84,8 @@ pub fn unpack_block_chunk_ref(b: BlockChunkRef) -> (usize, usize) {
     ((b >> 32) as usize, ((b << 32) >> 32) as usize)
 }
 
-/// Go `Meta`: information about one or more chunks. `chunk` holds the data, or is `None` and `ref` is used
-/// to read it. When `max_time == i64::MAX` the chunk is still open.
-#[derive(Debug, Default)]
-pub struct Meta {
-    pub r#ref: ChunkRef,
-    pub chunk: Option<Box<dyn Chunk>>,
-    /// Time range the data covers.
-    pub min_time: i64,
-    pub max_time: i64,
-}
-
-impl Meta {
-    /// Go `OverlapsClosedInterval`: true if the chunk overlaps [mint, maxt].
-    pub fn overlaps_closed_interval(&self, mint: i64, maxt: i64) -> bool {
-        self.min_time <= maxt && mint <= self.max_time
-    }
-}
+/// Go `Meta`: information about one or more chunks (shared with the storage crate).
+pub use storage::chunks::Meta;
 
 /// Go `chunks.Iterator`: iterates over the chunks of a single time series.
 pub trait Iterator {
