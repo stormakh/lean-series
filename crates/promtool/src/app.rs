@@ -408,7 +408,7 @@ pub fn run_with(args: &[String], io: &mut Io) -> i32 {
     let max_block_duration = parsed.duration("max-block-duration");
     let mut block_duration_ns = max_block_duration;
     if cmd.starts_with("tsdb create-blocks-from") {
-        let compatible = crate::pending::backfill::get_compatible_block_duration(max_block_duration / 1_000_000) * 1_000_000;
+        let compatible = crate::backfill::get_compatible_block_duration(max_block_duration / 1_000_000) * 1_000_000;
         if compatible != max_block_duration {
             if parsed.bool("allow-incompatible-block-duration") && max_block_duration / 1_000_000 > 0 {
                 let logger = crate::promslog::stderr_logger();
@@ -572,21 +572,23 @@ pub fn run_with(args: &[String], io: &mut Io) -> i32 {
                 io.stderr,
             )
         }
-        "tsdb bench write" => crate::check_err(
-            crate::pending::tsdb_cmd::benchmark_write(
+        "tsdb bench write" => {
+            let r = crate::tsdb_cmd::benchmark_write(
                 &parsed.str("out"),
                 &parsed.str("file"),
-                parsed.int("metrics") as i64,
-                parsed.int("scrapes") as i64,
+                parsed.int("metrics").max(0) as usize,
+                parsed.int("scrapes").max(0) as usize,
                 io.stdout,
-            ),
-            io.stderr,
-        ),
+                io.stderr,
+            );
+            crate::check_err(r, io.stderr)
+        }
         "tsdb analyze" => crate::check_err(
-            crate::pending::tsdb_cmd::analyze_block(
+            crate::tsdb_cmd::analyze_block(
+                &storage::Context::background(),
                 &parsed.str("db path"),
                 &parsed.str("block id"),
-                parsed.int("limit") as i64,
+                parsed.int("limit"),
                 parsed.bool("extended"),
                 &parsed.str("match"),
                 &p,
@@ -595,19 +597,20 @@ pub fn run_with(args: &[String], io: &mut Io) -> i32 {
             io.stderr,
         ),
         "tsdb list" => crate::check_err(
-            crate::pending::tsdb_cmd::list_blocks(&parsed.str("db path"), parsed.bool("human-readable"), io.stdout),
+            crate::tsdb_cmd::list_blocks(&parsed.str("db path"), parsed.bool("human-readable"), io.stdout),
             io.stderr,
         ),
         "tsdb dump" | "tsdb dump-openmetrics" => {
-            let format = if cmd == "tsdb dump-openmetrics" {
-                crate::pending::tsdb_cmd::SeriesSetFormatter::OpenMetrics
+            let format: crate::tsdb_cmd::SeriesSetFormatter = if cmd == "tsdb dump-openmetrics" {
+                crate::tsdb_cmd::format_series_set_open_metrics
             } else if parsed.str("format") == "seriesjson" {
-                crate::pending::tsdb_cmd::SeriesSetFormatter::LabelsToJson
+                crate::tsdb_cmd::format_series_set_labels_to_json
             } else {
-                crate::pending::tsdb_cmd::SeriesSetFormatter::SeriesSet
+                crate::tsdb_cmd::format_series_set
             };
             crate::check_err(
-                crate::pending::tsdb_cmd::dump_tsdb_data(
+                crate::tsdb_cmd::dump_tsdb_data(
+                    &storage::Context::background(),
                     &parsed.str("db path"),
                     &parsed.str("sandbox-dir-root"),
                     parsed.int64("min-time"),
@@ -620,16 +623,19 @@ pub fn run_with(args: &[String], io: &mut Io) -> i32 {
                 io.stderr,
             )
         }
-        "tsdb create-blocks-from openmetrics" => crate::pending::tsdb_cmd::backfill_open_metrics(
-            &parsed.str("input file"),
-            &parsed.str("output directory"),
-            parsed.bool("human-readable"),
-            parsed.bool("quiet"),
-            block_duration_ns,
-            &parsed.map("label"),
-            io.stdout,
-            io.stderr,
-        ),
+        "tsdb create-blocks-from openmetrics" => {
+            let labels: std::collections::HashMap<String, String> = parsed.map("label").into_iter().collect();
+            crate::tsdb_cmd::backfill_open_metrics(
+                &parsed.str("input file"),
+                &parsed.str("output directory"),
+                parsed.bool("human-readable"),
+                parsed.bool("quiet"),
+                std::time::Duration::from_nanos(block_duration_ns.max(0) as u64),
+                &labels,
+                io.stdout,
+                io.stderr,
+            )
+        }
         "tsdb create-blocks-from rules" => crate::check_err(
             import_rules(
                 &server_url.unwrap_or_default(),

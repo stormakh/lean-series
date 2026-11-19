@@ -2,6 +2,7 @@
 
 | crate | file | test | reason |
 |---|---|---|---|
+| promtool | tsdb_test | test_format_series_set_rejects_unknown_sample_type | Go passes an iterator that returns `chunkenc.ValueType(255)` to reach the `default` branch ("unknown sample type unknown"). The Rust `chunkenc::ValueType` is a closed enum, so no such value exists and the branch cannot be written; a Go-only fact. |
 | scrape | scrape_test | test_request_traceparent_header | Needs OpenTelemetry tracing (a TracerProvider and the W3C trace context propagator); tracing export is out of scope (PORTING.md). Ported and `#[ignore]`d. |
 
 ## Go-only test facts (not ledger tests)
