@@ -1,20 +1,19 @@
-//! End-to-end check of rules and notifier: loads a Prometheus config, scrapes its targets into the in-memory
-//! test storage (promqltest `TestStorage`), evaluates the rule files with the PromQL engine, and sends alerts to
+//! End-to-end check of rules and notifier: loads a Prometheus config, scrapes its targets into the TSDB (opened
+//! in <data-dir> with the server's default options), evaluates the rule files with the PromQL engine, and sends alerts to
 //! the Alertmanagers of the config, as the Prometheus server wires these parts.
 //!
-//! Usage: rules_e2e <prometheus.yml> <external-url> <seconds>
+//! Usage: rules_e2e <prometheus.yml> <external-url> <seconds> <data-dir>
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use promql::promqltest::TestStorage;
 use storage::{AppendableV2, Queryable};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    if args.len() < 4 {
-        eprintln!("usage: rules_e2e <prometheus.yml> <external-url> <seconds>");
+    if args.len() < 5 {
+        eprintln!("usage: rules_e2e <prometheus.yml> <external-url> <seconds> <data-dir>");
         std::process::exit(2);
     }
     let external_url = args[2].clone();
@@ -48,7 +47,7 @@ fn main() {
         });
     }
 
-    let st = Arc::new(TestStorage::new());
+    let st = tsdb::db::open(std::path::Path::new(&args[4]), None, Some(tsdb::db::prometheus_options(15 * 24 * 3600 * 1000, false)), None).expect("open tsdb");
 
     // Notifier.
     let nm = Arc::new(notifier::Manager::new(
@@ -122,4 +121,5 @@ fn main() {
     nm.stop();
     let _ = notifier_thread.join();
     ctx.cancel();
+    st.close().expect("close tsdb");
 }

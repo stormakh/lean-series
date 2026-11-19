@@ -10,7 +10,7 @@ T=$R/bench/tmp/w3-rules/e2e
 SECS=${1:-15}
 mkdir -p "$T/www"
 rm -f "$T"/*.log "$T"/*.yml "$T"/*.pid
-rm -rf "$T/prom-data"
+rm -rf "$T/prom-data" "$T/rs-data"
 cp "$S/metrics.txt" "$T/www/metrics"
 cp "$S/rules.yml" "$T/rules.yml"
 for side in go rs; do
@@ -33,7 +33,7 @@ sleep 0.5
   --storage.tsdb.path="$T/prom-data" --web.listen-address=127.0.0.1:9903 \
   --web.external-url=http://127.0.0.1:9903/ > "$T/prometheus.log" 2>&1 & echo $! > "$T/prom.pid"
 
-"$R/target/debug/examples/rules_e2e" "$T/prometheus-rs.yml" http://127.0.0.1:9903 "$SECS" > "$T/rs.out" 2> "$T/rs.log"
+"$R/target/debug/examples/rules_e2e" "$T/prometheus-rs.yml" http://127.0.0.1:9903 "$SECS" "$T/rs-data" > "$T/rs.out" 2> "$T/rs.log"
 
 kill "$(cat "$T/prom.pid")" 2>/dev/null || true
 sleep 1
