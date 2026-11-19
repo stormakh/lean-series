@@ -330,11 +330,13 @@ version = "0.1.0"
 dependencies = [
  "chunkenc",
  "config",
+ "crypto",
  "discovery",
  "http",
  "json",
  "model",
  "net",
+ "scrape",
  "snap",
  "storage",
  "textparse",
