@@ -15,3 +15,4 @@ notifier = { path = "../notifier" }
 template = { path = "../template" }
 json = { path = "../json" }
 util = { path = "../util" }
+chunkenc = { path = "../chunkenc" }

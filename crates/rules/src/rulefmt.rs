@@ -293,7 +293,7 @@ fn test_template_parsing(rl: &Rule) -> Vec<BoxError> {
         return errs;
     }
     let defs = "{{$labels := .Labels}}{{$externalLabels := .ExternalLabels}}{{$externalURL := .ExternalURL}}{{$value := .Value}}";
-    let parse_test = |text: &str| -> Result<(), String> { crate::template_check::parse_test(&format!("{defs}{text}"), &format!("__alert_{}", rl.alert)) };
+    let parse_test = |text: &str| -> Result<(), String> { crate::tmpl::parse_test(&format!("{defs}{text}"), &format!("__alert_{}", rl.alert)) };
     for (k, val) in &rl.labels {
         if let Err(e) = parse_test(val) {
             errs.push(wrap(format!("label {}", go_quote(k)), msg(e)));
@@ -713,118 +713,35 @@ fn parse_yaml_int(s: &str) -> Option<i64> {
     Some(if neg { -v } else { v })
 }
 
-// ---------------- YAML (v3) marshaling of a rule, as Go `yaml.Marshal(rulefmt.Rule{...})` ----------------
-
-fn v3_scalar(out: &mut String, s: &str, indent: usize) {
-    yaml_v3_scalar(out, s, indent);
-}
-
-/// Writes `s` as go-yaml v3 would write a string scalar value (plain when it reads back as the same string,
-/// otherwise quoted; multi-line strings as literal blocks).
-pub fn yaml_v3_scalar(out: &mut String, s: &str, indent: usize) {
-    if s.contains('\n') && !s.chars().any(|c| c != '\n' && c != '\t' && c.is_control()) && !s.starts_with(' ') && !s.contains(" \n") {
-        // literal block style
-        let keep = if s.ends_with("\n\n") || s.ends_with("\n \n") {
-            "+"
-        } else if s.ends_with('\n') {
-            ""
-        } else {
-            "-"
-        };
-        out.push('|');
-        out.push_str(keep);
-        out.push('\n');
-        let body = s.strip_suffix('\n').unwrap_or(s);
-        for line in body.split('\n') {
-            if !line.is_empty() {
-                for _ in 0..indent {
-                    out.push(' ');
-                }
-                out.push_str(line);
-            }
-            out.push('\n');
-        }
-        return;
-    }
-    let plain_ok = !s.is_empty()
-        && yaml::resolve::plain_is_str(s)
-        && plain_allowed(s);
-    if plain_ok {
-        out.push_str(s);
-    } else if !s.contains('\n') && !s.chars().any(|c| c.is_control()) && !s.contains('\'') && !s.is_empty() || s.is_empty() {
-        out.push('"');
-        out.push_str(&s.replace('\\', "\\\\").replace('"', "\\\""));
-        out.push('"');
-    } else {
-        out.push('"');
-        for c in s.chars() {
-            match c {
-                '"' => out.push_str("\\\""),
-                '\\' => out.push_str("\\\\"),
-                '\n' => out.push_str("\\n"),
-                '\t' => out.push_str("\\t"),
-                '\r' => out.push_str("\\r"),
-                c if c.is_control() => out.push_str(&format!("\\x{:02X}", c as u32)),
-                c => out.push(c),
-            }
-        }
-        out.push('"');
-    }
-    out.push('\n');
-}
+// ---------------- YAML marshaling of a rule ----------------
 
 impl Rule {
-    /// Go `yaml.Marshal(rule)` (go-yaml v3, 4-space indent), used by `Rule.String()` of the rules package.
+    /// Go `yaml.Marshal(rule)` with go-yaml v2 (as `rules.RecordingRule.String` and `AlertingRule.String` do).
     pub fn to_yaml(&self) -> String {
-        let mut out = String::new();
-        let field = |out: &mut String, k: &str, v: &str| {
-            out.push_str(k);
-            out.push_str(": ");
-            v3_scalar(out, v, 4);
-        };
+        use yaml::Value as V;
+        let mut m: Vec<(V, V)> = Vec::new();
+        let s = |x: &str| V::Str(x.to_string());
         if !self.record.is_empty() {
-            field(&mut out, "record", &self.record);
+            m.push((s("record"), s(&self.record)));
         }
         if !self.alert.is_empty() {
-            field(&mut out, "alert", &self.alert);
+            m.push((s("alert"), s(&self.alert)));
         }
-        field(&mut out, "expr", &self.expr);
+        m.push((s("expr"), s(&self.expr)));
         if self.r#for.0 != 0 {
-            field(&mut out, "for", &self.r#for.to_string());
+            m.push((s("for"), s(&self.r#for.to_string())));
         }
         if self.keep_firing_for.0 != 0 {
-            field(&mut out, "keep_firing_for", &self.keep_firing_for.to_string());
+            m.push((s("keep_firing_for"), s(&self.keep_firing_for.to_string())));
         }
-        for (name, m) in [("labels", &self.labels), ("annotations", &self.annotations)] {
-            if m.is_empty() {
+        for (name, map) in [("labels", &self.labels), ("annotations", &self.annotations)] {
+            if map.is_empty() {
                 continue;
             }
-            out.push_str(name);
-            out.push_str(":\n");
-            for (k, v) in m {
-                out.push_str("    ");
-                let mut key = String::new();
-                v3_scalar(&mut key, k, 8);
-                out.push_str(key.trim_end_matches('\n'));
-                out.push_str(": ");
-                v3_scalar(&mut out, v, 8);
-            }
+            let mut pairs: Vec<(V, V)> = map.iter().map(|(k, v)| (s(k), s(v))).collect();
+            yaml::value::sort_pairs(&mut pairs);
+            m.push((s(name), V::Map(pairs)));
         }
-        out
+        yaml::emit(&V::Map(m))
     }
-}
-
-/// Whether libyaml may write `s` as a plain scalar (block context, single line).
-fn plain_allowed(s: &str) -> bool {
-    let b = s.as_bytes();
-    if b[0] == b' ' || b[b.len() - 1] == b' ' || s.starts_with("---") || s.starts_with("...") {
-        return false;
-    }
-    if matches!(b[0], b'-' | b'?' | b':') && (b.len() == 1 || b[1] == b' ') {
-        return false;
-    }
-    if matches!(b[0], b',' | b'[' | b']' | b'{' | b'}' | b'#' | b'&' | b'*' | b'!' | b'|' | b'>' | b'\'' | b'"' | b'%' | b'@' | b'`') {
-        return false;
-    }
-    !s.contains(": ") && !s.contains(" #") && !s.ends_with(':') && !s.chars().any(|c| c.is_control() || c == '\u{feff}')
 }
