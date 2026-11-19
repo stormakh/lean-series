@@ -335,6 +335,7 @@ dependencies = [
  "json",
  "model",
  "net",
+ "promql",
  "snap",
  "storage",
  "textparse",
