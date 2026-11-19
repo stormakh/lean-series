@@ -144,6 +144,29 @@ pub trait TsdbAdminStats: Send + Sync {
     fn block_metas(&self) -> Result<Vec<BlockMeta>, Error>;
 }
 
+/// The TSDB as the admin and status endpoints use it (Go's `readyStorage` methods over `*tsdb.DB`).
+impl TsdbAdminStats for tsdb::db::DB {
+    fn clean_tombstones(&self) -> Result<(), Error> {
+        tsdb::db::DB::clean_tombstones(self)
+    }
+    fn delete(&self, ctx: &Context, mint: i64, maxt: i64, ms: &[Matcher]) -> Result<(), Error> {
+        tsdb::db::DB::delete(self, ctx, mint, maxt, ms)
+    }
+    fn snapshot(&self, dir: &std::path::Path, with_head: bool) -> Result<(), Error> {
+        tsdb::db::DB::snapshot(self, dir, with_head)
+    }
+    fn stats(&self, stats_by_label_name: &str, limit: usize) -> Result<tsdb::head::Stats, Error> {
+        Ok(self.head().stats(stats_by_label_name, limit))
+    }
+    fn wal_replay_status(&self) -> Result<WalReplayStatus, Error> {
+        let s = self.head().stats.get_wal_replay_status();
+        Ok(WalReplayStatus { min: s.min, max: s.max, current: s.current })
+    }
+    fn block_metas(&self) -> Result<Vec<BlockMeta>, Error> {
+        Ok(tsdb::db::DB::block_metas(self))
+    }
+}
+
 /// A query built by a [`QueryEngine`] (Go `promql.Query`).
 pub trait ApiQuery: Send {
     fn exec(&mut self, ctx: &Context) -> QueryResult;

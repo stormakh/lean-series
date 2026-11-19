@@ -775,12 +775,13 @@ impl Data {
                         if j > 0 {
                             out.push(',');
                         }
+                        // Go `metadata.Metadata` field order: type, unit, help.
                         out.push_str("{\"type\":");
                         wstr(&md.typ, out);
-                        out.push_str(",\"help\":");
-                        wstr(&md.help, out);
                         out.push_str(",\"unit\":");
                         wstr(&md.unit, out);
+                        out.push_str(",\"help\":");
+                        wstr(&md.help, out);
                         out.push('}');
                     }
                     out.push(']');
