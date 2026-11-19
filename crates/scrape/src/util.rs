@@ -167,6 +167,10 @@ pub struct BufPool {
 
 /// Buffers kept per size class.
 const POOL_KEEP: usize = 8;
+/// Bytes kept per size class: large classes keep fewer buffers. Go's sync.Pool frees idle buffers at each GC;
+/// a pool that never frees would keep the peak of concurrent scrapes (for example all targets at startup)
+/// forever.
+const POOL_KEEP_BYTES: usize = 16 << 20;
 
 impl BufPool {
     /// Size classes from `min` to `max`, each `factor` times the previous.
@@ -201,7 +205,7 @@ impl BufPool {
         // The largest class that the buffer can serve.
         let Some(i) = self.sizes.iter().rposition(|&s| s <= cap) else { return };
         let mut g = self.buckets.lock().unwrap();
-        if g[i].len() < POOL_KEEP {
+        if g[i].len() < POOL_KEEP.min((POOL_KEEP_BYTES / self.sizes[i]).max(1)) {
             b.clear();
             g[i].push(b);
         }
