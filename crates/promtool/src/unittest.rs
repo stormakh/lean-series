@@ -973,7 +973,7 @@ fn query(ctx: &Context, qs: &str, t: i64, engine: &Engine, qu: Arc<dyn Queryable
 // Small Go helpers.
 
 /// Go `parseTime` of query.go: a Unix timestamp (float seconds) or an RFC 3339 time, in nanoseconds.
-fn parse_time(s: &str) -> Result<i64, String> {
+pub(crate) fn parse_time(s: &str) -> Result<i64, String> {
     if let Some(t) = go_parse_float(s) {
         let sec = t.trunc();
         let frac = t - sec;
@@ -987,7 +987,6 @@ fn parse_time(s: &str) -> Result<i64, String> {
 
 /// Go `strconv.ParseFloat(s, 64)` for the decimal forms (and Inf/NaN); out of range values are errors.
 fn go_parse_float(s: &str) -> Option<f64> {
-    let b = s.as_bytes();
     let body = s.trim_start_matches(['+', '-']);
     if s.len() - body.len() > 1 {
         return None;
@@ -1000,7 +999,6 @@ fn go_parse_float(s: &str) -> Option<f64> {
     if body.is_empty() || !body.bytes().all(|c| c.is_ascii_digit() || matches!(c, b'.' | b'e' | b'E' | b'+' | b'-')) {
         return None;
     }
-    let _ = b;
     let f = s.parse::<f64>().ok()?;
     if f.is_infinite() {
         return None;
