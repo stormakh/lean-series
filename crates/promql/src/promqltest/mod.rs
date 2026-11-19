@@ -719,9 +719,9 @@ impl LoadCmd {
     /// Go `set`: stores the samples of a metric, with optional start timestamps (same length as `vals`).
     fn set(&mut self, m: Labels, vals: &[SequenceValue], st_vals: Option<&[SequenceValue]>) {
         let mut samples = Vec::with_capacity(vals.len());
-        let mut ts_ns = self.start_time * MS;
+        let mut ts_ns = self.start_time as i128 * MS as i128;
         for (i, v) in vals.iter().enumerate() {
-            let ts_ms = ts_ns / MS;
+            let ts_ms = (ts_ns / MS as i128) as i64;
             if !v.omitted {
                 let mut s = SampleSt {
                     t: ts_ms,
@@ -736,7 +736,7 @@ impl LoadCmd {
                 }
                 samples.push(s);
             }
-            ts_ns += self.gap;
+            ts_ns += self.gap as i128;
         }
         let h = m.hash();
         match self.pos.get(&h) {
