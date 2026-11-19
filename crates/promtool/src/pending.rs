@@ -38,37 +38,6 @@ pub mod tsdb_cmd {
     }
 }
 
-pub mod unittest {
-    use super::*;
-    pub fn run_from_cli(junit: &str, o: promql::promqltest::LazyLoaderOpts, p: &promql::parser::Parser, run: &[String], diff: bool, debug: bool, ign: bool, files: &[String], io: &mut crate::Io) -> i32 {
-        1
-    }
-}
-
-pub mod rules_cmd {
-    use super::*;
-    pub struct RuleImporterConfig {
-        pub output_dir: String,
-        pub start: crate::api::Time,
-        pub end: crate::api::Time,
-        pub eval_interval: i64,
-        pub block_duration: i64,
-        pub name_validation_scheme: model::labels::ValidationScheme,
-    }
-    pub struct RuleImporter;
-    impl RuleImporter {
-        pub fn new(l: discovery::Logger, c: RuleImporterConfig, a: Box<dyn crate::api::QueryRangeApi>) -> RuleImporter {
-            RuleImporter
-        }
-        pub fn load_groups(&mut self, f: &[String]) -> Vec<crate::Error> {
-            vec![missing()]
-        }
-        pub fn import_all(&mut self) -> Vec<crate::Error> {
-            Vec::new()
-        }
-    }
-}
-
 pub mod check_metrics {
     pub fn check_metrics(e: bool, l: &str, io: &mut crate::Io) -> i32 {
         1

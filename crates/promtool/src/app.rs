@@ -546,16 +546,30 @@ pub fn run_with(args: &[String], io: &mut Io) -> i32 {
                 enable_delayed_name_removal: delayed_name_removal,
                 ..Default::default()
             };
-            crate::pending::unittest::run_from_cli(
-                &junit,
+            let run = parsed.strings("run");
+            let run_strings = if parsed.is_set("run") { Some(run.as_slice()) } else { None };
+            let mut sink = std::io::sink();
+            let mut junit_file = if junit.is_empty() {
+                None
+            } else {
+                use std::os::unix::fs::OpenOptionsExt;
+                std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o644).open(&junit).ok()
+            };
+            let results: &mut dyn Write = match junit_file.as_mut() {
+                Some(f) => f,
+                None => &mut sink,
+            };
+            crate::unittest::rules_unit_test_result(
+                results,
                 lazy_opts,
-                &p,
-                &parsed.strings("run"),
+                p.clone(),
+                run_strings,
                 parsed.bool("diff"),
                 parsed.bool("debug"),
                 parsed.bool("ignore-unknown-fields"),
                 &parsed.strings("test-rule-file"),
-                io,
+                io.stdout,
+                io.stderr,
             )
         }
         "tsdb bench write" => crate::check_err(
@@ -1178,38 +1192,21 @@ pub fn import_rules(
     logger: &discovery::Logger,
     err: &mut dyn Write,
 ) -> Result<(), crate::Error> {
-    let etime = if end.is_empty() {
-        crate::api::Time::now().add_nanos(-3 * 3600 * 1_000_000_000)
-    } else {
-        crate::query::parse_time(end).map_err(|e| format!("error parsing end time: {e}"))?
-    };
-    let stime = crate::query::parse_time(start).map_err(|e| format!("error parsing start time: {e}"))?;
-    if stime >= etime {
-        return Err("start time is not before end time".into());
-    }
-    let cfg = crate::pending::rules_cmd::RuleImporterConfig {
-        output_dir: output_dir.to_string(),
-        start: stime,
-        end: etime,
-        eval_interval,
-        block_duration,
-        name_validation_scheme: ValidationScheme::Utf8,
-    };
     let mut u = url.clone();
     let api = crate::api::new_api(&mut u, rt, &BTreeMap::new()).map_err(|e| format!("new api client error: {e}"))?;
-    let mut importer = crate::pending::rules_cmd::RuleImporter::new(logger.clone(), cfg, Box::new(api));
-    let errs = importer.load_groups(files);
-    if let Some(e) = errs.into_iter().next() {
-        return Err(format!("rule importer parse error: {e}").into());
-    }
-    let errs = importer.import_all();
-    for e in errs.iter() {
-        let _ = writeln!(err, "rule importer error: {e}");
-    }
-    if !errs.is_empty() {
-        return Err("error importing rules".into());
-    }
-    Ok(())
+    let d = |n: i64| std::time::Duration::from_nanos(n.max(0) as u64);
+    crate::rules_cmd::import_rules(
+        logger.clone(),
+        Box::new(api),
+        start,
+        end,
+        output_dir,
+        d(eval_interval),
+        d(block_duration),
+        ValidationScheme::Utf8,
+        files,
+        err,
+    )
 }
 
 /// Go `formatPromQL`.
