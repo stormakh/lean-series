@@ -6,6 +6,7 @@ pub mod encoding;
 pub mod fileutil;
 pub mod index;
 pub mod record;
+pub mod testwal;
 pub mod tombstones;
 pub mod wlog;
 

@@ -1,4 +1,4 @@
-//! Go `strconv` and `fmt` helpers that the parser's texts depend on, and `util/strutil.Unquote`.
+//! Go `strconv` and `fmt` helpers that the parser's texts depend on, and a re-export of `util/strutil.Unquote`.
 
 use std::fmt::Write;
 
@@ -40,16 +40,8 @@ pub fn go_unicode_sharp(r: char) -> String {
     s
 }
 
-/// The error of `unquote` (Go `strutil.ErrSyntax`).
-pub const ERR_SYNTAX: &str = "invalid syntax";
-
-/// Go `util/strutil.Unquote`: interprets a single-quoted, double-quoted or backquoted string literal.
-///
-/// Go strings may hold any bytes; a Rust `String` holds UTF-8. Escapes such as `\xff` that produce invalid
-/// UTF-8 are replaced with U+FFFD (as `String::from_utf8_lossy` does).
-pub fn unquote(s: &str) -> Result<String, &'static str> {
-    unquote_checked(s).map(|(s, _)| s)
-}
+/// Go `util/strutil.Unquote` and its error (the code lives in `util::strutil`).
+pub use util::strutil::{ERR_SYNTAX, unquote, unquote_checked, unquote_invalid_bytes};
 
 /// Go `strconv.Quote` of a byte string that may not be valid UTF-8 (invalid bytes become `\xNN`).
 pub fn go_quote_bytes(b: &[u8]) -> String {
@@ -63,174 +55,6 @@ pub fn go_quote_bytes(b: &[u8]) -> String {
     }
     out.push('"');
     out
-}
-
-/// The bytes of a quoted Go string literal that is not valid UTF-8, or `None` when it is valid.
-pub fn unquote_invalid_bytes(s: &str) -> Option<Vec<u8>> {
-    match unquote_raw(s) {
-        Ok(b) if std::str::from_utf8(&b).is_err() => Some(b),
-        _ => None,
-    }
-}
-
-/// Like [`unquote`], also telling whether the Go string would not be valid UTF-8 (the result then holds
-/// U+FFFD in place of the invalid bytes).
-pub fn unquote_checked(s: &str) -> Result<(String, bool), &'static str> {
-    let b = s.as_bytes();
-    let n = b.len();
-    if n < 2 {
-        return Err(ERR_SYNTAX);
-    }
-    let quote = b[0];
-    if quote != b[n - 1] {
-        return Err(ERR_SYNTAX);
-    }
-    let inner = &s[1..n - 1];
-    if quote == b'`' {
-        if inner.contains('`') {
-            return Err(ERR_SYNTAX);
-        }
-        return Ok((inner.to_string(), false));
-    }
-    if quote != b'"' && quote != b'\'' {
-        return Err(ERR_SYNTAX);
-    }
-    if inner.contains('\n') {
-        return Err(ERR_SYNTAX);
-    }
-    if !inner.contains('\\') && !inner.as_bytes().contains(&quote) {
-        return Ok((inner.to_string(), false));
-    }
-
-    let mut buf: Vec<u8> = Vec::with_capacity(3 * inner.len() / 2);
-    let mut rest = inner.as_bytes();
-    while !rest.is_empty() {
-        let (c, multibyte, tail) = unquote_char(rest, quote)?;
-        rest = tail;
-        if c < 0x80 || !multibyte {
-            buf.push(c as u8);
-        } else {
-            // Go utf8.EncodeRune writes U+FFFD for surrogates and invalid code points.
-            let ch = char::from_u32(c).unwrap_or('\u{FFFD}');
-            buf.extend_from_slice(ch.encode_utf8(&mut [0u8; 4]).as_bytes());
-        }
-    }
-    match String::from_utf8(buf) {
-        Ok(s) => Ok((s, false)),
-        Err(e) => Ok((String::from_utf8_lossy(e.as_bytes()).into_owned(), true)),
-    }
-}
-
-/// The bytes of an escaped quoted string (no backquotes).
-fn unquote_raw(s: &str) -> Result<Vec<u8>, &'static str> {
-    let b = s.as_bytes();
-    let n = b.len();
-    if n < 2 || (b[0] != b'"' && b[0] != b'\'') || b[0] != b[n - 1] {
-        return Err(ERR_SYNTAX);
-    }
-    let quote = b[0];
-    let mut buf: Vec<u8> = Vec::new();
-    let mut rest = &b[1..n - 1];
-    while !rest.is_empty() {
-        let (c, multibyte, tail) = unquote_char(rest, quote)?;
-        rest = tail;
-        if c < 0x80 || !multibyte {
-            buf.push(c as u8);
-        } else {
-            let ch = char::from_u32(c).unwrap_or('\u{FFFD}');
-            buf.extend_from_slice(ch.encode_utf8(&mut [0u8; 4]).as_bytes());
-        }
-    }
-    Ok(buf)
-}
-
-fn unhex(b: u8) -> Option<u32> {
-    match b {
-        b'0'..=b'9' => Some((b - b'0') as u32),
-        b'a'..=b'f' => Some((b - b'a' + 10) as u32),
-        b'A'..=b'F' => Some((b - b'A' + 10) as u32),
-        _ => None,
-    }
-}
-
-fn unquote_char(s: &[u8], quote: u8) -> Result<(u32, bool, &[u8]), &'static str> {
-    let c = s[0];
-    if c == quote && (quote == b'\'' || quote == b'"') {
-        return Err(ERR_SYNTAX);
-    }
-    if c >= 0x80 {
-        // The input is valid UTF-8.
-        let st = std::str::from_utf8(&s[..s.len().min(4)]).or_else(|e| std::str::from_utf8(&s[..e.valid_up_to()]));
-        let ch = st.ok().and_then(|t| t.chars().next()).unwrap_or('\u{FFFD}');
-        let size = ch.len_utf8();
-        return Ok((ch as u32, true, &s[size..]));
-    }
-    if c != b'\\' {
-        return Ok((c as u32, false, &s[1..]));
-    }
-    if s.len() <= 1 {
-        return Err(ERR_SYNTAX);
-    }
-    let c = s[1];
-    let mut s = &s[2..];
-    let mut multibyte = false;
-    let value: u32 = match c {
-        b'a' => 7,
-        b'b' => 8,
-        b'f' => 12,
-        b'n' => 10,
-        b'r' => 13,
-        b't' => 9,
-        b'v' => 11,
-        b'x' | b'u' | b'U' => {
-            let n = match c {
-                b'x' => 2,
-                b'u' => 4,
-                _ => 8,
-            };
-            if s.len() < n {
-                return Err(ERR_SYNTAX);
-            }
-            let mut v: u32 = 0;
-            for &d in &s[..n] {
-                v = (v << 4) | unhex(d).ok_or(ERR_SYNTAX)?;
-            }
-            s = &s[n..];
-            if c != b'x' {
-                if v > 0x10FFFF {
-                    return Err(ERR_SYNTAX);
-                }
-                multibyte = true;
-            }
-            v
-        }
-        b'0'..=b'7' => {
-            let mut v = (c - b'0') as u32;
-            if s.len() < 2 {
-                return Err(ERR_SYNTAX);
-            }
-            for &d in &s[..2] {
-                if !(b'0'..=b'7').contains(&d) {
-                    return Err(ERR_SYNTAX);
-                }
-                v = (v << 3) | (d - b'0') as u32;
-            }
-            s = &s[2..];
-            if v > 255 {
-                return Err(ERR_SYNTAX);
-            }
-            v
-        }
-        b'\\' => b'\\' as u32,
-        b'\'' | b'"' => {
-            if c != quote {
-                return Err(ERR_SYNTAX);
-            }
-            c as u32
-        }
-        _ => return Err(ERR_SYNTAX),
-    };
-    Ok((value, multibyte, s))
 }
 
 /// The error of the Go `strconv` number parsers, formatted as Go's `*NumError`.

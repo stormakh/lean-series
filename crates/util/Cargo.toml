@@ -17,12 +17,15 @@ snap = "1"
 zstd = { version = "0.13", default-features = false }
 # runtime: getrlimit, uname, statfs (already used by tsdb-format).
 libc = "0.2"
+textparse = { path = "../textparse" }
+yaml = { path = "../yaml" }
 
 [dev-dependencies]
 # decoding compressed test responses
 flate2 = "=1.1.10"
 config = { path = "../config" }
 net = { path = "../net" }
-textparse = { path = "../textparse" }
 promql = { path = "../promql" }
 chunkenc = { path = "../chunkenc" }
+# Generated WAL records (util/testwal) for records_test.
+tsdb-format = { path = "../tsdb-format" }

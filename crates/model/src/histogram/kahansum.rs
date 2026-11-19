@@ -1,8 +1,9 @@
 //! Kahan-Neumaier summation (port of `util/kahansum`). Rust never fuses float operations into FMA, so no explicit
 //! rounding is needed (Go needs casts for that).
 
+/// Go `isInf`: whether f is positive or negative infinity.
 #[inline]
-fn is_inf(f: f64) -> bool {
+pub fn is_inf(f: f64) -> bool {
     f > f64::MAX || f < -f64::MAX
 }
 

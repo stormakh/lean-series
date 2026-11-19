@@ -561,6 +561,8 @@ dependencies = [
  "snap",
  "storage",
  "textparse",
+ "tsdb-format",
+ "yaml",
  "zstd",
 ]
 
