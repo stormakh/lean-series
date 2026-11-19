@@ -15,7 +15,7 @@ use tsdb_format::record;
 use tsdb_format::tombstones::Interval;
 use tsdb_format::wlog;
 
-use crate::common::{create_block, fs, gen_series, new_test_db, query, with_dir, with_opts, with_rngs, TempDir};
+use crate::common::{create_block, fs, gen_series, new_test_db, query, with_dir, with_opts, with_rngs, TempDir, TestDb};
 
 // ---------------------------------------------------------------------------------------------------------------
 // Helpers.
@@ -2038,5 +2038,600 @@ fn test_compact_head_with_deletion_append_v2() {
 
     // This recreates the bug.
     db.compact_head(&tsdb::head::RangeHead::new(db.head().clone(), 0, 100)).unwrap();
+    db.close().unwrap();
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Tests (third group).
+
+#[test]
+fn test_one_checkpoint_per_compact_call_append_v2() {
+    let block_range = 1000i64;
+    let opts = || {
+        let mut o = db::zero_options();
+        o.retention_duration = block_range * 1000;
+        o.no_lockfile = true;
+        o.min_block_duration = block_range;
+        o.max_block_duration = block_range;
+        o
+    };
+
+    let db = new_test_db(vec![with_opts(opts())]);
+    db.disable_compactions();
+
+    // Case 1: Lot's of uncompacted data in Head.
+
+    let lbls = ls(&["foo_d", "choco_bar"]);
+    // Append samples spanning 59 block ranges.
+    let mut app = db.appender_v2(&ctx());
+    let wal = db.head().wal().unwrap().clone();
+    for i in 0..60i64 {
+        app_f(&mut *app, &lbls, block_range * i, rand_f64()).unwrap();
+        app_f(&mut *app, &lbls, block_range * i + block_range / 2, rand_f64()).unwrap();
+        // Rotate the WAL file so that there is >3 files for checkpoint to happen.
+        wal.next_segment().unwrap();
+    }
+    assert!(app.commit().is_none());
+
+    // Check the existing WAL files.
+    let (first, last) = wlog::segments(wal.dir()).unwrap();
+    assert_eq!(0, first);
+    assert_eq!(60, last);
+
+    assert_eq!(0.0, db.head().metrics.checkpoint_creation_total.get());
+    db.compact(&ctx()).unwrap();
+    assert_eq!(1.0, db.head().metrics.checkpoint_creation_total.get());
+
+    // As the data spans for 59 blocks, 58 go to disk and 1 remains in Head.
+    assert_eq!(58, db.blocks().len());
+    // Though WAL was truncated only once, head should be truncated after each compaction.
+    assert_eq!(58.0, db.head().metrics.head_truncate_total.get());
+
+    // The compaction should have only truncated first 2/3 of WAL (while also rotating the files).
+    let (first, last) = wlog::segments(wal.dir()).unwrap();
+    assert_eq!(40, first);
+    assert_eq!(61, last);
+
+    // The first checkpoint would be for first 2/3rd of WAL, hence till 39. That should be the last checkpoint.
+    let (_, cno) = wlog::last_checkpoint(wal.dir()).unwrap();
+    assert_eq!(39, cno);
+
+    // Case 2: Old blocks on disk.
+    // The above blocks will act as old blocks.
+
+    // Creating a block to cover the data in the Head so that Head will skip the data during replay and start
+    // fresh.
+    let blocks = db.blocks();
+    let new_block_mint = blocks[blocks.len() - 1].max_time();
+    let new_block_maxt = db.head().max_time() + 1;
+    drop(blocks);
+    drop(wal);
+    db.close().unwrap();
+
+    create_block(db.dir(), &gen_series(1, 1, new_block_mint, new_block_maxt));
+
+    let db = new_test_db(vec![with_dir(db.dir()), with_opts(opts())]);
+    db.disable_compactions();
+    let wal = db.head().wal().unwrap().clone();
+
+    // 1 block more.
+    assert_eq!(59, db.blocks().len());
+    // No series in Head because of this new block.
+    assert_eq!(0, db.head().num_series());
+
+    // Adding sample way into the future.
+    let mut app = db.appender_v2(&ctx());
+    app_f(&mut *app, &lbls, block_range * 120, rand_f64()).unwrap();
+    assert!(app.commit().is_none());
+
+    // The mint of head is the last block maxt, that means the gap between mint and maxt of Head is too large.
+    // This will trigger many compactions.
+    assert_eq!(new_block_maxt, db.head().min_time());
+
+    // Another WAL file was rotated.
+    let (first, last) = wlog::segments(wal.dir()).unwrap();
+    assert_eq!(40, first);
+    assert_eq!(62, last);
+
+    assert_eq!(0.0, db.head().metrics.checkpoint_creation_total.get());
+    db.compact(&ctx()).unwrap();
+    assert_eq!(1.0, db.head().metrics.checkpoint_creation_total.get());
+
+    // No new blocks should be created as there was not data in between the new samples and the blocks.
+    assert_eq!(59, db.blocks().len());
+
+    // The compaction should have only truncated first 2/3 of WAL (while also rotating the files).
+    let (first, last) = wlog::segments(wal.dir()).unwrap();
+    assert_eq!(55, first);
+    assert_eq!(63, last);
+
+    // The first checkpoint would be for first 2/3rd of WAL, hence till 54. That should be the last checkpoint.
+    let (_, cno) = wlog::last_checkpoint(wal.dir()).unwrap();
+    assert_eq!(54, cno);
+}
+
+/// The common setup of the `TestQuerierShouldNotFailIfOOOCompactionOccurs*` tests: a DB with in-order samples
+/// and a single OOO sample. Returns the DB, the number of samples written and the interval.
+fn ooo_compaction_querier_setup() -> (TestDb, usize, i64) {
+    let mut opts = db::default_options();
+    opts.out_of_order_time_window = 3 * crate::common::DEFAULT_BLOCK_DURATION;
+    let db = new_test_db(vec![with_opts(opts)]);
+
+    // Disable compactions so we can control it.
+    db.disable_compactions();
+
+    let metric = ls(&["__name__", "test_metric"]);
+    let interval = 15 * 1000i64;
+    let mut ts = 0i64;
+    let mut samples_written = 0;
+
+    // Capture the first timestamp - this will be the timestamp of the OOO sample we'll append below.
+    let ooo_ts = ts;
+    ts += interval;
+
+    // Push samples after the OOO sample we'll write below.
+    while ts < 10 * interval {
+        let mut app = db.appender_v2(&ctx());
+        app_f(&mut *app, &metric, ts, ts as f64).unwrap();
+        assert!(app.commit().is_none());
+        samples_written += 1;
+        ts += interval;
+    }
+
+    // Push a single OOO sample.
+    let mut app = db.appender_v2(&ctx());
+    app_f(&mut *app, &metric, ooo_ts, ts as f64).unwrap();
+    assert!(app.commit().is_none());
+    samples_written += 1;
+
+    (db, samples_written, interval)
+}
+
+/// Starts `CompactOOOHead` in a thread. Returns the completion flag and the result receiver.
+fn start_ooo_compaction(
+    db: &TestDb,
+) -> (Arc<std::sync::atomic::AtomicBool>, std::sync::mpsc::Receiver<Result<(), storage::Error>>) {
+    let complete = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    let dbc = db.db.clone();
+    let c = complete.clone();
+    std::thread::spawn(move || {
+        let r = dbc.compact_ooo_head(&ctx());
+        tx.send(r).unwrap();
+        c.store(true, Ordering::SeqCst);
+    });
+    (complete, rx)
+}
+
+fn eventually(f: impl Fn() -> bool, timeout: std::time::Duration, tick: std::time::Duration, msg: &str) {
+    let start = std::time::Instant::now();
+    loop {
+        if f() {
+            return;
+        }
+        assert!(start.elapsed() < timeout, "{msg}");
+        std::thread::sleep(tick);
+    }
+}
+
+fn select_test_metric(q: &dyn storage::ChunkQuerier, interval: i64) -> storage::BoxChunkSeriesSet {
+    let hints = storage::SelectHints { start: 0, end: i64::MAX, step: interval, ..Default::default() };
+    q.select(&ctx(), true, Some(&hints), &[meq("__name__", "test_metric")])
+}
+
+/// Collects the series of the set (Go collects their chunk iterators); exactly one is expected.
+fn collect_one_series(series_set: &mut storage::BoxChunkSeriesSet) -> storage::ChunkSeriesArc {
+    let mut series = Vec::new();
+    while series_set.next() {
+        series.push(series_set.at().clone());
+    }
+    assert!(series_set.err().is_none());
+    assert_eq!(1, series.len());
+    series.pop().unwrap()
+}
+
+fn count_samples(it: &mut storage::BoxMetaIterator<'_>) -> usize {
+    let mut samples_read = 0;
+    while it.next() {
+        samples_read += it.at().chunk.as_ref().unwrap().num_samples();
+    }
+    assert!(it.err().is_none());
+    samples_read
+}
+
+#[test]
+fn test_querier_should_not_fail_if_ooo_compaction_occurs_after_retrieving_querier_append_v2() {
+    let (db, samples_written, interval) = ooo_compaction_querier_setup();
+
+    // Get a querier.
+    let mut querier_created_before_compaction = db.chunk_querier(0, i64::MAX).unwrap();
+
+    // Start OOO head compaction.
+    let (compaction_complete, compaction_err) = start_ooo_compaction(&db);
+
+    // Wait until CompactOOOHead has written the OOO block, reloaded, and published lastGarbageCollectedMmapRef
+    // before creating the second querier below.
+    eventually(
+        || {
+            if compaction_complete.load(Ordering::SeqCst) {
+                return true;
+            }
+            db.mtx.read().unwrap().last_garbage_collected_mmap_ref.0 != 0
+        },
+        std::time::Duration::from_secs(60),
+        std::time::Duration::from_millis(10),
+        "CompactOOOHead did not reach the reader-wait phase",
+    );
+    if compaction_complete.load(Ordering::SeqCst) {
+        compaction_err.recv().unwrap().unwrap();
+    }
+    // The compaction must still be waiting for querierCreatedBeforeCompaction to be closed. If it does not wait,
+    // then the query will return incorrect results or fail.
+    assert!(
+        !compaction_complete.load(Ordering::SeqCst),
+        "compaction completed before reading chunks or closing querier created before compaction"
+    );
+
+    // Get another querier. This one should only use the compacted blocks from disk and ignore the chunks that will
+    // be garbage collected.
+    let mut querier_created_after_compaction = db.chunk_querier(0, i64::MAX).unwrap();
+
+    let test_querier = |q: &dyn storage::ChunkQuerier| {
+        // Query back the series.
+        let mut series_set = select_test_metric(q, interval);
+        let series = collect_one_series(&mut series_set);
+        let mut iterator = series.iterator(None);
+        // Check that we can still successfully read all samples.
+        assert_eq!(samples_written, count_samples(&mut iterator));
+    };
+
+    test_querier(&*querier_created_before_compaction);
+
+    assert!(
+        !compaction_complete.load(Ordering::SeqCst),
+        "compaction completed before closing querier created before compaction"
+    );
+    assert!(querier_created_before_compaction.close().is_none());
+    eventually(
+        || compaction_complete.load(Ordering::SeqCst),
+        std::time::Duration::from_secs(60),
+        std::time::Duration::from_millis(10),
+        "compaction should complete after querier created before compaction was closed, and not wait for querier created after compaction",
+    );
+    compaction_err.recv().unwrap().unwrap();
+    assert_eq!(1.0, db.head().metrics.chunks_removed.get());
+
+    // Use the querier created after compaction and confirm it returns the expected results (ie. from the disk
+    // block created from OOO head and in-order head) without error.
+    test_querier(&*querier_created_after_compaction);
+    assert!(querier_created_after_compaction.close().is_none());
+}
+
+#[test]
+fn test_querier_should_not_fail_if_ooo_compaction_occurs_after_selecting_append_v2() {
+    let (db, samples_written, interval) = ooo_compaction_querier_setup();
+
+    // Get a querier.
+    let mut querier = db.chunk_querier(0, i64::MAX).unwrap();
+
+    // Query back the series.
+    let mut series_set = select_test_metric(&*querier, interval);
+
+    // Start OOO head compaction.
+    let (compaction_complete, compaction_err) = start_ooo_compaction(&db);
+
+    // Give CompactOOOHead time to start work.
+    // If it does not wait for the querier to be closed, then the query will return incorrect results or fail.
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    assert!(!compaction_complete.load(Ordering::SeqCst), "compaction completed before reading chunks or closing querier");
+
+    // Collect the iterator for the series.
+    let series = collect_one_series(&mut series_set);
+    let mut iterator = series.iterator(None);
+
+    // Check that we can still successfully read all samples.
+    assert_eq!(samples_written, count_samples(&mut iterator));
+
+    assert!(!compaction_complete.load(Ordering::SeqCst), "compaction completed before closing querier");
+    assert!(querier.close().is_none());
+    eventually(
+        || compaction_complete.load(Ordering::SeqCst),
+        std::time::Duration::from_secs(60),
+        std::time::Duration::from_millis(10),
+        "compaction should complete after querier was closed",
+    );
+    compaction_err.recv().unwrap().unwrap();
+    assert_eq!(1.0, db.head().metrics.chunks_removed.get());
+}
+
+#[test]
+fn test_querier_should_not_fail_if_ooo_compaction_occurs_after_retrieving_iterators_append_v2() {
+    let (db, samples_written, interval) = ooo_compaction_querier_setup();
+
+    // Get a querier.
+    let mut querier = db.chunk_querier(0, i64::MAX).unwrap();
+
+    // Query back the series.
+    let mut series_set = select_test_metric(&*querier, interval);
+
+    // Collect the iterator for the series.
+    let series = collect_one_series(&mut series_set);
+    let mut iterator = series.iterator(None);
+
+    // Start OOO head compaction.
+    let (compaction_complete, compaction_err) = start_ooo_compaction(&db);
+
+    // Give CompactOOOHead time to start work.
+    // If it does not wait for the querier to be closed, then the query will return incorrect results or fail.
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    assert!(!compaction_complete.load(Ordering::SeqCst), "compaction completed before reading chunks or closing querier");
+
+    // Check that we can still successfully read all samples.
+    assert_eq!(samples_written, count_samples(&mut iterator));
+
+    assert!(!compaction_complete.load(Ordering::SeqCst), "compaction completed before closing querier");
+    assert!(querier.close().is_none());
+    eventually(
+        || compaction_complete.load(Ordering::SeqCst),
+        std::time::Duration::from_secs(60),
+        std::time::Duration::from_millis(10),
+        "compaction should complete after querier was closed",
+    );
+    compaction_err.recv().unwrap().unwrap();
+    assert_eq!(1.0, db.head().metrics.chunks_removed.get());
+}
+
+/// A WAL/WBL record (Go `[]any` of record slices).
+#[derive(Debug, PartialEq)]
+enum WalRec {
+    Series(Vec<record::RefSeries>),
+    Samples(Vec<record::RefSample>),
+    Markers(Vec<record::RefMmapMarker>),
+    Histograms(Vec<record::RefHistogramSample>),
+    FloatHistograms(Vec<record::RefFloatHistogramSample>),
+}
+
+#[test]
+fn test_ooowal_write_append_v2() {
+    let minutes = |m: i64| m * 60 * 1000;
+    use storage::tsdbutil as tu;
+
+    let s1 = ls(&["l", "v1"]);
+    let s2 = ls(&["l", "v2"]);
+
+    // A sample of the scenario's type: (series ref, minutes) -> one-sample record content.
+    #[derive(Clone, Copy)]
+    enum Kind {
+        Float,
+        Hist(fn(i64) -> Histogram),
+        FloatHist(fn(i64) -> FloatHistogram),
+    }
+
+    // Builds a record of the scenario's sample type from (ref, mins) pairs.
+    let recs = |kind: Kind, ss: &[(u64, i64)]| -> WalRec {
+        match kind {
+            Kind::Float => WalRec::Samples(
+                ss.iter().map(|&(r, mins)| record::RefSample { r#ref: r, st: 0, t: minutes(mins), v: mins as f64 }).collect(),
+            ),
+            Kind::Hist(g) => WalRec::Histograms(
+                ss.iter()
+                    .map(|&(r, mins)| record::RefHistogramSample { r#ref: r, st: 0, t: minutes(mins), h: Arc::new(g(mins)) })
+                    .collect(),
+            ),
+            Kind::FloatHist(g) => WalRec::FloatHistograms(
+                ss.iter()
+                    .map(|&(r, mins)| record::RefFloatHistogramSample { r#ref: r, st: 0, t: minutes(mins), fh: Arc::new(g(mins)) })
+                    .collect(),
+            ),
+        }
+    };
+    let marker = |r: u64, mmap_ref: u64| {
+        WalRec::Markers(vec![record::RefMmapMarker { r#ref: r, mmap_ref: record::ChunkDiskMapperRef(mmap_ref) }])
+    };
+
+    // The MmapRef in this are not hand calculated, and instead taken from the test run. What is important here
+    // is the order of records, and that MmapRef increases for each record.
+    let scenarios: Vec<(&str, Kind, [u64; 3])> = vec![
+        ("float", Kind::Float, [58, 107, 156]),
+        ("integer histogram", Kind::Hist(tu::generate_test_histogram), [89, 172, 257]),
+        ("float histogram", Kind::FloatHist(tu::generate_test_float_histogram), [177, 348, 521]),
+        ("custom buckets histogram", Kind::Hist(tu::generate_test_custom_buckets_histogram), [82, 160, 239]),
+        (
+            "custom buckets float histogram",
+            Kind::FloatHist(tu::generate_test_custom_buckets_float_histogram),
+            [134, 263, 393],
+        ),
+    ];
+
+    for (name, kind, mrefs) in scenarios {
+        let expected_ooo_records = vec![
+            marker(1, 0),
+            recs(kind, &[(1, 40)]),
+            marker(2, 0),
+            recs(kind, &[(2, 42)]),
+            recs(kind, &[(2, 45), (1, 35)]),
+            marker(1, 0x100000000 + 8), // 3rd sample, hence m-mapped.
+            recs(kind, &[(1, 36), (1, 37)]),
+            marker(1, 0x100000000 + mrefs[0]), // 3rd sample, hence m-mapped.
+            recs(kind, &[(1, 50)]),             // Does not contain the in-order sample here.
+            // Single commit but multiple OOO records.
+            marker(2, 0x100000000 + mrefs[1]),
+            recs(kind, &[(2, 50), (2, 51)]),
+            marker(2, 0x100000000 + mrefs[2]),
+            recs(kind, &[(2, 52), (2, 53)]),
+        ];
+        let expected_ino_records = vec![
+            WalRec::Series(vec![
+                record::RefSeries { r#ref: 1, labels: s1.clone() },
+                record::RefSeries { r#ref: 2, labels: s2.clone() },
+            ]),
+            recs(kind, &[(1, 60), (2, 60)]),
+            recs(kind, &[(1, 40)]),
+            recs(kind, &[(2, 42)]),
+            recs(kind, &[(2, 45), (1, 35), (1, 36), (1, 37)]),
+            recs(kind, &[(1, 50), (2, 65)]), // Contains both in-order and ooo sample.
+            recs(kind, &[(2, 50), (2, 51), (2, 52), (2, 53)]),
+        ];
+
+        let append_sample = |app: &mut dyn AppenderV2, l: &Labels, mins: i64| -> u64 {
+            match kind {
+                Kind::Float => app.append(0, l, 0, minutes(mins), mins as f64, None, None, &ao()).unwrap(),
+                Kind::Hist(g) => app.append(0, l, 0, minutes(mins), 0.0, Some(&g(mins)), None, &ao()).unwrap(),
+                Kind::FloatHist(g) => app.append(0, l, 0, minutes(mins), 0.0, None, Some(&g(mins)), &ao()).unwrap(),
+            }
+        };
+        ooo_wal_write(name, append_sample, expected_ooo_records, expected_ino_records);
+    }
+}
+
+fn ooo_wal_write(
+    name: &str,
+    append_sample: impl Fn(&mut dyn AppenderV2, &Labels, i64) -> u64,
+    expected_ooo_records: Vec<WalRec>,
+    expected_ino_records: Vec<WalRec>,
+) {
+    let mut opts = db::default_options();
+    opts.out_of_order_cap_max = 2;
+    opts.out_of_order_time_window = 30 * 60 * 1000;
+    let db = new_test_db(vec![with_opts(opts)]);
+
+    let (s1, s2) = (ls(&["l", "v1"]), ls(&["l", "v2"]));
+
+    // Ingest sample at 1h.
+    let mut app = db.appender_v2(&ctx());
+    append_sample(&mut *app, &s1, 60);
+    append_sample(&mut *app, &s2, 60);
+    assert!(app.commit().is_none());
+
+    // OOO for s1.
+    let mut app = db.appender_v2(&ctx());
+    append_sample(&mut *app, &s1, 40);
+    assert!(app.commit().is_none());
+
+    // OOO for s2.
+    let mut app = db.appender_v2(&ctx());
+    append_sample(&mut *app, &s2, 42);
+    assert!(app.commit().is_none());
+
+    // OOO for both s1 and s2 in the same commit.
+    let mut app = db.appender_v2(&ctx());
+    append_sample(&mut *app, &s2, 45);
+    append_sample(&mut *app, &s1, 35);
+    append_sample(&mut *app, &s1, 36); // m-maps.
+    append_sample(&mut *app, &s1, 37);
+    assert!(app.commit().is_none());
+
+    // OOO for s1 but not for s2 in the same commit.
+    let mut app = db.appender_v2(&ctx());
+    append_sample(&mut *app, &s1, 50); // m-maps.
+    append_sample(&mut *app, &s2, 65);
+    assert!(app.commit().is_none());
+
+    // Single commit has 2 times m-mapping and more samples after m-map.
+    let mut app = db.appender_v2(&ctx());
+    append_sample(&mut *app, &s2, 50); // m-maps.
+    append_sample(&mut *app, &s2, 51);
+    append_sample(&mut *app, &s2, 52); // m-maps.
+    append_sample(&mut *app, &s2, 53);
+    assert!(app.commit().is_none());
+
+    let get_records = |wal_dir: &Path| -> Vec<WalRec> {
+        let sr = wlog::new_segments_reader(wal_dir).unwrap();
+        let mut r = wlog::Reader::new(sr);
+        let mut records = Vec::new();
+        let mut dec = record::Decoder::new(tsdb::Logger::nop());
+        while r.next() {
+            let rec = r.record();
+            match dec.r#type(rec) {
+                record::Type::Series => {
+                    let mut v = Vec::new();
+                    dec.series(rec, &mut v).unwrap();
+                    records.push(WalRec::Series(v));
+                }
+                record::Type::Samples | record::Type::SamplesV2 => {
+                    let mut v = Vec::new();
+                    dec.samples(rec, &mut v).unwrap();
+                    records.push(WalRec::Samples(v));
+                }
+                record::Type::MmapMarkers => {
+                    let mut v = Vec::new();
+                    dec.mmap_markers(rec, &mut v).unwrap();
+                    records.push(WalRec::Markers(v));
+                }
+                record::Type::HistogramSamples | record::Type::CustomBucketsHistogramSamples => {
+                    let mut v = Vec::new();
+                    dec.histogram_samples(rec, &mut v).unwrap();
+                    records.push(WalRec::Histograms(v));
+                }
+                record::Type::FloatHistogramSamples | record::Type::CustomBucketsFloatHistogramSamples => {
+                    let mut v = Vec::new();
+                    dec.float_histogram_samples(rec, &mut v).unwrap();
+                    records.push(WalRec::FloatHistograms(v));
+                }
+                typ => panic!("got a WAL record that is not series or samples: {typ:?}"),
+            }
+        }
+        records
+    };
+
+    // The normal WAL.
+    let act_recs = get_records(&db.dir().join("wal"));
+    assert_eq!(expected_ino_records, act_recs, "{name}");
+
+    // The WBL.
+    let act_recs = get_records(&db.dir().join(wlog::WBL_DIR_NAME));
+    assert_eq!(expected_ooo_records, act_recs, "{name}");
+}
+
+#[test]
+fn test_db_panic_on_mmapping_head_chunk_append_v2() {
+    let db = new_test_db(vec![]);
+    db.disable_compactions();
+
+    // Choosing scrape interval of 45s to have chunk larger than 1h.
+    let itvl = 45 * 1000i64;
+
+    let mut last_ts = 0i64;
+    let mut add_samples = |db: &DB, num_samples: i64| {
+        let mut app = db.appender_v2(&ctx());
+        let mut r = 0;
+        let lbls = ls(&["__name__", "testing", "foo", "bar"]);
+        for i in 0..num_samples {
+            r = app.append(r, &lbls, 0, last_ts, last_ts as f64, None, None, &ao()).unwrap();
+            last_ts += itvl;
+            if i % 10 == 0 {
+                assert!(app.commit().is_none());
+                app = db.appender_v2(&ctx());
+            }
+        }
+        assert!(app.commit().is_none());
+    };
+
+    // Ingest samples up to 2h50m to make the head "about to compact".
+    let num_samples = 170 * 60 * 1000 / itvl;
+    add_samples(&db, num_samples);
+
+    assert!(db.blocks().is_empty());
+    db.compact(&ctx()).unwrap();
+    assert!(db.blocks().is_empty());
+
+    // Restarting.
+    db.close().unwrap();
+
+    let db = new_test_db(vec![with_dir(db.dir())]);
+    db.disable_compactions();
+
+    // Ingest samples up to 20m more to make the head compact.
+    let num_samples = 20 * 60 * 1000 / itvl;
+    add_samples(&db, num_samples);
+
+    assert!(db.blocks().is_empty());
+    db.compact(&ctx()).unwrap();
+    assert_eq!(1, db.blocks().len());
+
+    // More samples to m-map and panic.
+    let num_samples = 120 * 60 * 1000 / itvl;
+    add_samples(&db, num_samples);
+
     db.close().unwrap();
 }
