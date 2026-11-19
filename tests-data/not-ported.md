@@ -32,3 +32,15 @@
   `crates/tsdb/examples/tsdb_interop.rs`.
 - `tsdb/goversion` `Test`: an empty Go test that only checks that the package builds with Go 1.12 or newer (build
   tags). No Rust equivalent; its ledger entry also has `file: ""`.
+
+## remote (read/write handlers, codec)
+
+- `codec_test` `TestValidateLabelsAndMetricName`: 3 of 9 rows ("label name with \xff", "label value is an invalid
+  UTF-8 value", "metric name has invalid utf8") cannot be built: Rust strings are always valid UTF-8, and the prompb
+  decoder replaces invalid bytes with U+FFFD. The other 6 rows are ported.
+- `read_handler_test` `TestStreamReadEndpoint` "write errors": checks the handler against a failing
+  `http.ResponseWriter` (zero and partial writes). The Rust handler builds the body in memory and writes nothing
+  itself. "storage errors" runs each case once by calling the handler directly (no HTTP/2, TLS or otelhttp); a
+  stream that fails after its first frame aborts the whole response.
+- `read_handler_test` `TestRemoteReadGateWaitDurationObserved`: Go uses the synctest fake clock (exact waits); the
+  port uses real time and checks each wait within 50ms above the expected value.

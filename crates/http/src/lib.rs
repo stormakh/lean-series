@@ -261,6 +261,7 @@ pub fn reason(status: u16) -> &'static str {
         202 => "Accepted",
         204 => "No Content",
         206 => "Partial Content",
+        300 => "Multiple Choices",
         301 => "Moved Permanently",
         302 => "Found",
         303 => "See Other",
