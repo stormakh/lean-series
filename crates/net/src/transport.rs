@@ -23,8 +23,84 @@ pub struct Conn {
 }
 
 pub enum Stream {
-    Plain(TcpStream),
-    Tls(Box<rustls::StreamOwned<rustls::ClientConnection, TcpStream>>),
+    Plain(Sock),
+    Tls(Box<rustls::StreamOwned<rustls::ClientConnection, Sock>>),
+}
+
+/// A connected socket: TCP, or a unix domain socket (Go `WithDialContextFunc` dialing "unix").
+pub enum Sock {
+    Tcp(TcpStream),
+    Unix(std::os::unix::net::UnixStream),
+}
+
+impl Sock {
+    fn set_read_timeout(&self, d: Option<Duration>) -> std::io::Result<()> {
+        match self {
+            Sock::Tcp(s) => s.set_read_timeout(d),
+            Sock::Unix(s) => s.set_read_timeout(d),
+        }
+    }
+    fn set_write_timeout(&self, d: Option<Duration>) -> std::io::Result<()> {
+        match self {
+            Sock::Tcp(s) => s.set_write_timeout(d),
+            Sock::Unix(s) => s.set_write_timeout(d),
+        }
+    }
+    fn set_nonblocking(&self, b: bool) -> std::io::Result<()> {
+        match self {
+            Sock::Tcp(s) => s.set_nonblocking(b),
+            Sock::Unix(s) => s.set_nonblocking(b),
+        }
+    }
+    fn peek(&self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Sock::Tcp(s) => s.peek(buf),
+            // UnixStream has no stable peek; a non-blocking read of zero bytes is not possible either, so read
+            // through a cloned handle only to detect EOF or data (the connection is then not reused).
+            Sock::Unix(s) => {
+                use std::io::Read;
+                let mut c = s.try_clone()?;
+                c.read(buf)
+            }
+        }
+    }
+    /// Shuts both directions down; a blocked read or write on another thread returns.
+    pub fn shutdown(&self) {
+        let _ = match self {
+            Sock::Tcp(s) => s.shutdown(std::net::Shutdown::Both),
+            Sock::Unix(s) => s.shutdown(std::net::Shutdown::Both),
+        };
+    }
+    fn try_clone(&self) -> std::io::Result<Sock> {
+        Ok(match self {
+            Sock::Tcp(s) => Sock::Tcp(s.try_clone()?),
+            Sock::Unix(s) => Sock::Unix(s.try_clone()?),
+        })
+    }
+}
+
+impl Read for Sock {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Sock::Tcp(s) => s.read(buf),
+            Sock::Unix(s) => s.read(buf),
+        }
+    }
+}
+
+impl Write for Sock {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            Sock::Tcp(s) => s.write(buf),
+            Sock::Unix(s) => s.write(buf),
+        }
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            Sock::Tcp(s) => s.flush(),
+            Sock::Unix(s) => s.flush(),
+        }
+    }
 }
 
 fn timed_out() -> std::io::Error {
@@ -32,7 +108,7 @@ fn timed_out() -> std::io::Error {
 }
 
 impl Conn {
-    fn tcp(&self) -> &TcpStream {
+    fn tcp(&self) -> &Sock {
         match &self.s {
             Stream::Plain(s) => s,
             Stream::Tls(s) => &s.sock,
@@ -126,11 +202,13 @@ pub struct TransportOptions {
     pub idle_conn_timeout: Duration,
     pub max_idle_per_host: usize,
     pub dial: Option<DialFunc>,
+    /// Dial this unix socket instead of the request host (the scrape `__unix_socket__` label).
+    pub unix_socket: Option<String>,
 }
 
 impl Default for TransportOptions {
     fn default() -> Self {
-        TransportOptions { keep_alives: true, idle_conn_timeout: Duration::from_secs(300), max_idle_per_host: 1000, dial: None }
+        TransportOptions { keep_alives: true, idle_conn_timeout: Duration::from_secs(300), max_idle_per_host: 1000, dial: None, unix_socket: None }
     }
 }
 
@@ -237,7 +315,16 @@ impl Transport {
         v.push(Idle { key, conn, since: Instant::now() });
     }
 
-    fn dial(&self, addr: &str, deadline: Option<Instant>) -> Result<TcpStream, Error> {
+    fn dial(&self, addr: &str, deadline: Option<Instant>) -> Result<Sock, Error> {
+        if let Some(path) = &self.opts.unix_socket {
+            return std::os::unix::net::UnixStream::connect(path)
+                .map(Sock::Unix)
+                .map_err(|e| timeout_or(&e, || format!("dial unix {path}: connect: {}", go_io_error(&e))));
+        }
+        self.dial_tcp(addr, deadline).map(Sock::Tcp)
+    }
+
+    fn dial_tcp(&self, addr: &str, deadline: Option<Instant>) -> Result<TcpStream, Error> {
         if let Some(d) = &self.opts.dial {
             return d("tcp", addr, deadline).map_err(|e| timeout_or(&e, || format!("dial tcp {addr}: {}", go_io_error(&e))));
         }
@@ -315,7 +402,7 @@ impl Transport {
         Ok(conn)
     }
 
-    fn connect_tunnel(&self, mut tcp: TcpStream, p: &GoUrl, target: &str, deadline: Option<Instant>) -> Result<TcpStream, Error> {
+    fn connect_tunnel(&self, mut tcp: Sock, p: &GoUrl, target: &str, deadline: Option<Instant>) -> Result<Sock, Error> {
         let mut c = Conn { s: Stream::Plain(tcp.try_clone().map_err(|e| Error::other(go_io_error(&e)))?), deadline: None };
         c.set_deadline(deadline)?;
         c.arm().map_err(|_| Error::timeout())?;
@@ -415,19 +502,22 @@ impl Transport {
     /// One request on one connection. Returns the response and the connection when it can be reused, or the
     /// error and how far the exchange got (0: request not written, 1: written, 2: response bytes read).
     fn exchange(&self, conn: Conn, req: &Request, proxy: Option<&GoUrl>, deadline: Option<Instant>) -> Result<(Response, Option<Conn>), (Error, u8)> {
-        let Some(a) = &req.abort else {
+        let Some(c) = &req.cancel else {
             return self.exchange_inner(conn, req, proxy, deadline);
         };
-        if !a.register(conn.tcp().try_clone().ok()) {
-            return Err((Error::other("context canceled"), 0));
+        if c.is_cancelled() {
+            return Err((Error::canceled(), 0));
+        }
+        if let Ok(s) = conn.tcp().try_clone() {
+            c.register(s);
         }
         let r = self.exchange_inner(conn, req, proxy, deadline);
-        a.register(None);
-        if a.is_aborted() {
-            // the connection was shut down under the exchange
-            return Err((Error::other("context canceled"), 2));
+        c.clear();
+        match r {
+            Err(_) if c.is_cancelled() => Err((Error::canceled(), 2)),
+            Ok((resp, keep)) => Ok((resp, if c.is_cancelled() { None } else { keep })),
+            r => r,
         }
-        r
     }
 
     fn exchange_inner(&self, mut conn: Conn, req: &Request, proxy: Option<&GoUrl>, deadline: Option<Instant>) -> Result<(Response, Option<Conn>), (Error, u8)> {
@@ -473,8 +563,21 @@ impl Transport {
                 stream_body(&mut r, chunked, clen, sink).map_err(|e| (e, 2))?;
                 reusable = false;
             } else if chunked {
-                body = read_chunked(&mut r, limit).map_err(|e| (e, 2))?;
+                let trunc = req.truncate_body && limit < usize::MAX;
+                let (b, cut) = read_chunked(&mut r, limit, trunc).map_err(|e| (e, 2))?;
+                body = b;
+                if cut {
+                    reusable = false;
+                }
             } else if let Some(n) = clen {
+                if n > limit && req.truncate_body {
+                    body = vec![0u8; limit + 1];
+                    r.read_exact(&mut body).map_err(|e| (if e.kind() == std::io::ErrorKind::UnexpectedEof { Error::other("unexpected EOF") } else { io(e) }, 2))?;
+                    let mut sent = req.clone();
+                    sent.body = Vec::new();
+                    let resp = Response { status, status_text: format!("{} {}", status, status_text(status)).trim_end().to_string(), header, body, request: sent };
+                    return Ok((resp, None));
+                }
                 if n > limit {
                     return Err((Error::too_large(), 2));
                 }
@@ -488,6 +591,11 @@ impl Transport {
                         break;
                     }
                     if body.len() + n > limit {
+                        if req.truncate_body {
+                            let keep = limit + 1 - body.len();
+                            body.extend_from_slice(&buf[..keep.min(n)]);
+                            break;
+                        }
                         return Err((Error::too_large(), 2));
                     }
                     body.extend_from_slice(&buf[..n]);
@@ -575,7 +683,8 @@ fn framing(h: &Header) -> Result<(bool, Option<usize>), Error> {
     first.parse::<usize>().map(|n| (false, Some(n))).map_err(|_| Error::other(format!("bad Content-Length {}", yaml::go_quote(first))))
 }
 
-fn read_chunked<R: BufRead>(r: &mut R, max: usize) -> Result<Vec<u8>, Error> {
+/// Reads a chunked body. Over `max` bytes: with `truncate`, returns the first `max + 1` bytes and true; else fails.
+fn read_chunked<R: BufRead>(r: &mut R, max: usize, truncate: bool) -> Result<(Vec<u8>, bool), Error> {
     let io = |e: std::io::Error| match e.kind() {
         std::io::ErrorKind::UnexpectedEof => Error::other("unexpected EOF"),
         _ => timeout_or(&e, || io_error_text(&e)),
@@ -597,11 +706,20 @@ fn read_chunked<R: BufRead>(r: &mut R, max: usize) -> Result<Vec<u8>, Error> {
                     return Err(Error::other("unexpected EOF"));
                 }
                 if line.trim().is_empty() {
-                    return Ok(body);
+                    return Ok((body, false));
                 }
             }
         }
-        let end = body.len().checked_add(n).filter(|e| *e <= max).ok_or_else(Error::too_large)?;
+        let end = match body.len().checked_add(n).filter(|e| *e <= max) {
+            Some(e) => e,
+            None if truncate => {
+                let st = body.len();
+                body.resize(max + 1, 0);
+                r.read_exact(&mut body[st..]).map_err(io)?;
+                return Ok((body, true));
+            }
+            None => return Err(Error::too_large()),
+        };
         let st = body.len();
         body.resize(end, 0);
         r.read_exact(&mut body[st..]).map_err(io)?;

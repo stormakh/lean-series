@@ -317,7 +317,7 @@ impl OAuth2RoundTripper {
         let tls = new_tls_config(&self.config.tls_config, mgr).map_err(Error::other)?;
         let proxy = self.config.proxy_config.proxy();
         let pch = self.config.proxy_config.get_proxy_connect_header();
-        let topts = TransportOptions { keep_alives: self.opts.keep_alives, idle_conn_timeout: Duration::from_secs(10), max_idle_per_host: 1, dial: self.opts.dial.clone() };
+        let topts = TransportOptions { keep_alives: self.opts.keep_alives, idle_conn_timeout: Duration::from_secs(10), max_idle_per_host: 1, dial: self.opts.dial.clone(), unix_socket: self.opts.unix_socket.clone() };
         let new_rt: NewRt = Arc::new(move |t| Ok(Arc::new(Transport::new(t, proxy.clone(), pch.clone(), topts.clone()).map_err(Error::other)?) as Arc<dyn RoundTripper>));
         let settings = TlsRoundTripperSettings::from_config(&self.config.tls_config, mgr).map_err(Error::other)?;
         let mut t: Arc<dyn RoundTripper> = if settings.immutable() { new_rt(tls)? } else { Arc::new(TlsRoundTripper::new(tls, settings, new_rt)?) };

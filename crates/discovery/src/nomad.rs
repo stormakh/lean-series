@@ -223,7 +223,7 @@ pub mod api {
             // Go `toHTTP`
             url.raw_query = params.encode();
             let user = url.user.clone();
-            let mut req = net::Request { method: "GET".to_string(), url, header: net::Header::new(), host: String::new(), body: Vec::new(), timeout: None, max_body_bytes: None, decompress: false, redirect_hosts: Vec::new(), abort: None, body_sink: None };
+            let mut req = net::Request { method: "GET".to_string(), url, header: net::Header::new(), host: String::new(), body: Vec::new(), timeout: None, max_body_bytes: None, decompress: false, redirect_hosts: Vec::new(), truncate_body: false, cancel: None, body_sink: None };
             if let Some(ui) = user {
                 req.set_basic_auth(&ui.username, ui.password().unwrap_or(""));
             }

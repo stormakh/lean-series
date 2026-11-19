@@ -5,3 +5,5 @@
 pub mod annotations {
     pub use storage::annotations::*;
 }
+
+pub mod teststorage;

@@ -362,12 +362,12 @@ impl HttpClient {
         let mut req = net::Request::get(&url).map_err(|e| ApiError::transport(&e))?;
         req.header.set("Accept", "application/json");
         req.header.set("User-Agent", &self.user_agent);
-        let abort = net::Abort::new();
+        let abort = net::Cancel::new();
         let a = abort.clone();
-        if !stop.set(Box::new(move || a.abort())) {
+        if !stop.set(Box::new(move || a.cancel())) {
             return Err(ApiError::new(0, "", "context canceled"));
         }
-        req.abort = Some(abort);
+        req.cancel = Some(abort);
         Ok(req)
     }
 }
