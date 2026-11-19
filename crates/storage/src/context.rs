@@ -21,11 +21,23 @@ const NOT_DONE: u8 = 0;
 const DONE_CANCELED: u8 = 1;
 const DONE_DEADLINE: u8 = 2;
 
-#[derive(Debug)]
 struct Inner {
     state: AtomicU8,
     deadline: Option<Instant>,
     parent: Option<Arc<Inner>>,
+    /// A value attached with [`Context::with_value`] (Go `context.WithValue`), keyed by its type.
+    value: Option<Arc<dyn std::any::Any + Send + Sync>>,
+}
+
+impl std::fmt::Debug for Inner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Inner")
+            .field("state", &self.state)
+            .field("deadline", &self.deadline)
+            .field("parent", &self.parent)
+            .field("value", &self.value.is_some())
+            .finish()
+    }
 }
 
 impl Inner {
@@ -113,6 +125,7 @@ impl Context {
             state: AtomicU8::new(NOT_DONE),
             deadline,
             parent: self.inner.clone(),
+            value: None,
         });
         (
             Context {
@@ -120,6 +133,30 @@ impl Context {
             },
             CancelToken { inner },
         )
+    }
+
+    /// A child context that carries `v` (Go `context.WithValue` with the type of `v` as the key). It is done when
+    /// the parent is done.
+    pub fn with_value<T: std::any::Any + Send + Sync>(&self, v: T) -> Context {
+        let inner = Arc::new(Inner {
+            state: AtomicU8::new(NOT_DONE),
+            deadline: None,
+            parent: self.inner.clone(),
+            value: Some(Arc::new(v)),
+        });
+        Context { inner: Some(inner) }
+    }
+
+    /// The nearest value of type `T` attached with [`Context::with_value`] (Go `ctx.Value(key)`).
+    pub fn value<T: std::any::Any + Send + Sync>(&self) -> Option<&T> {
+        let mut cur = self.inner.as_deref();
+        while let Some(i) = cur {
+            if let Some(v) = i.value.as_ref().and_then(|v| v.downcast_ref::<T>()) {
+                return Some(v);
+            }
+            cur = i.parent.as_deref();
+        }
+        None
     }
 
     /// The deadline of this context or of its nearest parent with one.

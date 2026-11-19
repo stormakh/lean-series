@@ -162,8 +162,14 @@ pub fn loaded_storage(input: &str) -> Result<TestStorage, String> {
 /// Go `LoadedStorage(t, input, opts...)` with storage options.
 pub fn loaded_storage_with_options(input: &str, opts: teststorage::Options) -> Result<TestStorage, String> {
     let st = TestStorage::with_options(opts);
-    let st2 = st.clone();
-    let open = move || -> Arc<dyn Storage> { Arc::new(st2.clone()) };
+    load_into(input, Arc::new(st.clone()))?;
+    Ok(st)
+}
+
+/// Go `LoadedStorage` with a given storage (for example the real TSDB): appends the data of the `load` commands
+/// of `input` to `st`.
+pub fn load_into(input: &str, st: Arc<dyn Storage>) -> Result<(), String> {
+    let open = move || -> Arc<dyn Storage> { st.clone() };
     let mut test = Test::new(input, false, &open)?;
     for cmd in std::mem::take(&mut test.cmds) {
         match cmd {
@@ -176,7 +182,7 @@ pub fn loaded_storage_with_options(input: &str, opts: teststorage::Options) -> R
             }
         }
     }
-    Ok(st)
+    Ok(())
 }
 
 /// The test data directory of upstream (`promql/promqltest/testdata`).

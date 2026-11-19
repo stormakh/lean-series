@@ -1,0 +1,23 @@
+[package]
+name = "rules"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+model = { path = "../model" }
+promql = { path = "../promql" }
+storage = { path = "../storage" }
+yaml = { path = "../yaml" }
+yaml-rust2 = { version = "0.13", default-features = false }
+discovery = { path = "../discovery" }
+notifier = { path = "../notifier" }
+template = { path = "../template" }
+json = { path = "../json" }
+util = { path = "../util" }
+chunkenc = { path = "../chunkenc" }
+
+[dev-dependencies]
+scrape = { path = "../scrape" }
+config = { path = "../config" }
+tsdb = { path = "../tsdb" }

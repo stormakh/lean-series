@@ -272,6 +272,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "notifier"
+version = "0.1.0"
+dependencies = [
+ "config",
+ "discovery",
+ "http",
+ "json",
+ "model",
+ "net",
+ "yaml",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -372,6 +385,26 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "rules"
+version = "0.1.0"
+dependencies = [
+ "chunkenc",
+ "config",
+ "discovery",
+ "json",
+ "model",
+ "notifier",
+ "promql",
+ "scrape",
+ "storage",
+ "template",
+ "tsdb",
+ "util",
+ "yaml",
+ "yaml-rust2",
 ]
 
 [[package]]
@@ -504,6 +537,16 @@ name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
+
+[[package]]
+name = "template"
+version = "0.1.0"
+dependencies = [
+ "model",
+ "promql",
+ "storage",
+ "yaml",
+]
 
 [[package]]
 name = "textparse"
