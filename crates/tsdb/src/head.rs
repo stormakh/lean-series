@@ -1420,7 +1420,7 @@ pub struct Head {
     /// Mint allowed to be added to the head.
     pub min_valid_time: AtomicI64,
     pub last_wal_truncation_time: AtomicI64,
-    pub(crate) last_memory_truncation_time: AtomicI64,
+    pub last_memory_truncation_time: AtomicI64,
     pub last_series_id: AtomicU64,
     /// All the ooo m-map chunks should be after this.
     pub(crate) min_ooo_mmap_ref: AtomicU64,
@@ -1460,7 +1460,7 @@ pub struct Head {
     pub stats: Arc<HeadStats>,
     write_notified: RwLock<Option<Arc<dyn WriteNotified>>>,
 
-    pub(crate) mem_truncation_in_process: AtomicBool,
+    pub mem_truncation_in_process: AtomicBool,
     /// For testing purposes.
     #[doc(hidden)]
     pub mem_truncation_call_back: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
