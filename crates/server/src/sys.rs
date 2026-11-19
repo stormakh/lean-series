@@ -116,12 +116,44 @@ pub fn start_trim_thread() {
     });
 }
 
-/// Gives free heap memory back to the OS (glibc `malloc_trim`).
+/// Gives free heap memory back to the OS (glibc `malloc_trim`) and unmaps the pages of the binary's code.
 pub fn trim() {
     #[cfg(target_env = "gnu")]
     // SAFETY: malloc_trim only releases free pages.
     unsafe {
         libc::malloc_trim(0);
+    }
+    release_binary_pages();
+}
+
+/// Unmaps the pages of the binary's read-only file mappings (code, constants) from this process. They stay in the
+/// page cache and come back on the next use without I/O. The kernel maps code in large blocks (fault-around and large
+/// folios), so after startup most of the 13 MB of code is mapped although little of it runs again; this keeps only
+/// the code that the server runs from now on. Mappings with private (relocated) pages are left alone.
+pub fn release_binary_pages() {
+    let Ok(exe) = std::fs::read_link("/proc/self/exe") else { return };
+    let Ok(smaps) = std::fs::read_to_string("/proc/self/smaps") else { return };
+    let exe = exe.to_string_lossy();
+    let mut cur: Option<(usize, usize)> = None;
+    for line in smaps.lines() {
+        let mut f = line.split_ascii_whitespace();
+        let first = f.next().unwrap_or("");
+        if let Some((a, b)) = first.split_once('-')
+            && let (Ok(a), Ok(b)) = (usize::from_str_radix(a, 16), usize::from_str_radix(b, 16))
+        {
+            let perms = f.next().unwrap_or("");
+            let path = f.nth(3).unwrap_or("");
+            cur = (path == exe && perms.starts_with('r') && perms.as_bytes().get(1) == Some(&b'-')).then_some((a, b));
+        } else if first == "Anonymous:"
+            && let Some((a, b)) = cur.take()
+            && f.next() == Some("0")
+        {
+            // SAFETY: (a, b) is a read-only private file mapping of the executable with no private pages, so
+            // dropping its pages loses nothing: the next access maps the same file contents again.
+            unsafe {
+                libc::madvise(a as *mut libc::c_void, b - a, libc::MADV_DONTNEED);
+            }
+        }
     }
 }
 
