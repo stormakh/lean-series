@@ -2107,10 +2107,14 @@ fn fmt_paths(p: &[PathBuf]) -> String {
 
 /// Finds a WAL error in the chain of `e` (or makes one with its text), for `WL::repair`.
 fn to_wlog_err(e: &Error) -> wlog::Error {
-    match e.downcast_ref::<wlog::Error>() {
-        Some(w) => w.clone(),
-        None => wlog::Error::msg(&e.to_string()),
+    if let Some(w) = e.downcast_ref::<wlog::Error>() {
+        return w.clone();
     }
+    // The WBL replay wraps its error in `ErrLoadWbl` twice (as Go does); Go's `errors.As` unwraps through both.
+    if let Some(inner) = e.downcast_ref::<ErrLoadWbl>() {
+        return to_wlog_err(&inner.0);
+    }
+    wlog::Error::msg(&e.to_string())
 }
 
 impl PinnedChunkQuerier {
