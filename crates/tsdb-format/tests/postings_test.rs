@@ -969,7 +969,7 @@ fn test_mem_postings_label_values_limit_smallest() {
         "precondition: the shared value list is held in insertion order"
     );
 
-    let h = |limit: usize, limit_smallest: bool| {
+    let h = |limit: i64, limit_smallest: bool| {
         Some(LabelHints {
             limit,
             limit_smallest,

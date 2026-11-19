@@ -18,7 +18,7 @@ use model::labels::{Labels, ScratchBuilder};
 use tsdb_format::chunks::{
     self, ChunkDiskMapper, ChunkDiskMapperRef, DEFAULT_WRITE_BUFFER_SIZE, Meta,
 };
-use tsdb_format::context::Context;
+use storage::Context;
 use tsdb_format::index::{self, Postings as _, StringIter as _};
 use tsdb_format::record::{Decoder, Encoder, Type};
 use tsdb_format::tombstones::{self, Interval};
@@ -420,7 +420,7 @@ fn read_block(
         let labels = b.labels();
         let cs: Vec<String> = metas
             .iter()
-            .map(|m| format!("{}:{}:{}", m.r#ref, m.min_time, m.max_time))
+            .map(|m| format!("{}:{}:{}", m.chunk_ref, m.min_time, m.max_time))
             .collect();
         let _ = writeln!(
             out,
@@ -437,13 +437,13 @@ fn read_block(
         for m in &metas {
             let (enc, bytes) = match &cr {
                 Some(cr) => {
-                    let (enc, bytes) = cr.chunk_bytes(m.r#ref).unwrap();
-                    let _ = writeln!(out, "chunk {} {} {}", m.r#ref, enc.0, hex(bytes));
+                    let (enc, bytes) = cr.chunk_bytes(m.chunk_ref).unwrap();
+                    let _ = writeln!(out, "chunk {} {} {}", m.chunk_ref, enc.0, hex(bytes));
                     (enc.0, bytes.to_vec())
                 }
                 None => (0, Vec::new()),
             };
-            s.chunks.push((m.r#ref, m.min_time, m.max_time, enc, bytes));
+            s.chunks.push((m.chunk_ref, m.min_time, m.max_time, enc, bytes));
         }
         series.push(s);
     }
@@ -470,8 +470,8 @@ fn rewrite_block(go: &Path, out: &Path, name: &str, with_chunks: bool) {
             .chunks
             .iter()
             .map(|(r, mint, maxt, enc, b)| Meta {
-                r#ref: *r,
-                chunk: with_chunks.then(|| chunkenc::from_data(Encoding(*enc), b.clone()).unwrap()),
+                chunk_ref: *r,
+                chunk: with_chunks.then(|| std::sync::Arc::from(chunkenc::from_data(Encoding(*enc), b.clone()).unwrap())),
                 min_time: *mint,
                 max_time: *maxt,
             })
@@ -479,7 +479,7 @@ fn rewrite_block(go: &Path, out: &Path, name: &str, with_chunks: bool) {
         if let Some(cw) = &mut cw {
             cw.write_chunks(&mut metas).unwrap();
             for (m, c) in metas.iter().zip(&s.chunks) {
-                assert_eq!(m.r#ref, c.0, "block chunk ref differs from Go's");
+                assert_eq!(m.chunk_ref, c.0, "block chunk ref differs from Go's");
             }
         }
         iw.add_series(s.r, &s.labels, &metas).unwrap();

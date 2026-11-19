@@ -16,10 +16,17 @@ json = { path = "../json" }
 yaml = { path = "../yaml" }
 textparse = { path = "../textparse" }
 discovery = { path = "../discovery" }
+# md5 of config YAML (Go toHash) in storage.rs.
+crypto = { path = "../crypto" }
+# go_duration_string for error texts.
+util = { path = "../util" }
 # Remote write/read bodies are Snappy block format.
 snap = "1"
 # OTLP write requests may be gzip-compressed (same pin as the http crate).
 flate2 = "=1.1.10"
 
 [dev-dependencies]
-util = { path = "../util" }
+# Test storage (promqltest.LoadedStorage) for the read handler tests.
+promql = { path = "../promql" }
+# The real TSDB for the OTLP handler exemplar test.
+tsdb = { path = "../tsdb" }

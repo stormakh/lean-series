@@ -241,6 +241,16 @@ impl Logger {
     pub fn error(&self, msg: &str, kv: &[(&str, &dyn fmt::Display)]) {
         self.log("ERROR", msg, kv);
     }
+
+    /// Logs at level INFO.
+    pub fn info(&self, msg: &str, kv: &[(&str, &dyn fmt::Display)]) {
+        self.log("INFO", msg, kv);
+    }
+
+    /// Logs at level DEBUG.
+    pub fn debug(&self, msg: &str, kv: &[(&str, &dyn fmt::Display)]) {
+        self.log("DEBUG", msg, kv);
+    }
 }
 
 impl fmt::Debug for Logger {

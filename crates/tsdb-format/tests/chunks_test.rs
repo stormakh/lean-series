@@ -36,7 +36,7 @@ fn test_reader_with_invalid_buffer() {
     let r = Reader::from_raw_segments(vec![b]);
 
     let res = r.chunk_or_iterable(&Meta {
-        r#ref: 0,
+        chunk_ref: 0,
         ..Default::default()
     });
     assert!(res.is_err());

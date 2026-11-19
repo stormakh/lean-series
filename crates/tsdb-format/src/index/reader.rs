@@ -451,7 +451,7 @@ impl Decoder {
         let mut ref0 = d.uvarint64() as i64;
 
         chks.push(Meta {
-            r#ref: ref0 as u64,
+            chunk_ref: ref0 as u64,
             chunk: None,
             min_time: t0,
             max_time: maxt,
@@ -469,7 +469,7 @@ impl Decoder {
                 return Err(Error::wrap(&format!("read meta for chunk {i}"), e));
             }
             chks.push(Meta {
-                r#ref: ref0 as u64,
+                chunk_ref: ref0 as u64,
                 chunk: None,
                 min_time: mint,
                 max_time: maxt,
@@ -704,13 +704,13 @@ impl Reader {
             let early_limit = LabelHints::allows_early_stop(hints);
             let mut values = Vec::with_capacity(e.len());
             for k in e.keys() {
-                if early_limit && values.len() >= hints.map_or(0, |h| h.limit) {
+                if early_limit && values.len() as i64 >= hints.map_or(0, |h| h.limit) {
                     break;
                 }
                 values.push(k.clone());
             }
             if !early_limit {
-                values = LabelHints::apply_limit(hints, values);
+                values = super::apply_limit(hints, values);
             }
             return Ok(values);
         }
@@ -721,7 +721,7 @@ impl Reader {
             return Ok(Vec::new());
         }
 
-        let limit = hints.map_or(0, |h| h.limit);
+        let limit = hints.map_or(0, |h| h.limit.max(0) as usize);
         let mut values_length = e.len() * SYMBOL_FACTOR;
         if limit > 0 && values_length > limit {
             values_length = limit;
