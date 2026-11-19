@@ -1,6 +1,7 @@
 //! Shared test helpers (Go `util/teststorage`, `promqltest.LoadedStorage`, and the doubles of `api_test.go`).
 #![allow(dead_code)]
 pub mod doubles;
+pub mod testhelpers;
 
 use std::path::PathBuf;
 use std::sync::Arc;
