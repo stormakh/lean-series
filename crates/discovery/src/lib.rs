@@ -21,6 +21,7 @@ pub(crate) mod gojson;
 pub mod hetzner;
 pub mod http;
 pub mod ionos;
+pub mod kubernetes;
 pub mod linode;
 pub mod log;
 pub mod manager;
@@ -44,6 +45,7 @@ pub mod triton;
 pub mod util;
 pub mod uyuni;
 pub mod vultr;
+pub mod xds;
 pub mod zookeeper;
 
 use std::any::Any;
@@ -268,4 +270,9 @@ impl Discoverer for StaticDiscoverer {
         // sends once (or stops when cancelled), then closes the channel as upstream does
         up.send(self.0.clone());
     }
+}
+
+/// Go `strutil.SanitizeLabelName`: every character outside `[a-zA-Z0-9_]` becomes `_`.
+pub fn sanitize_label_name(name: &str) -> String {
+    name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }).collect()
 }

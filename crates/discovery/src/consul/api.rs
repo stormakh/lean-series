@@ -189,7 +189,7 @@ impl Request {
             self.url.host = "localhost".to_string();
         }
         self.header.set("Content-Type", JSON_CONTENT_TYPE);
-        net::Request { method: "GET".to_string(), url: self.url, header: self.header, host: String::new(), body: Vec::new(), timeout: None, max_body_bytes: None, decompress: false, redirect_hosts: Vec::new() }
+        net::Request { method: "GET".to_string(), url: self.url, header: self.header, host: String::new(), body: Vec::new(), timeout: None, max_body_bytes: None, decompress: false, redirect_hosts: Vec::new(), abort: None, body_sink: None }
     }
 }
 

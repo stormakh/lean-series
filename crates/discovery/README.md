@@ -79,3 +79,10 @@ Differences that apply to these providers:
 - Where Go panics on a null pointer in an API response, the port uses the zero value.
 - The ZooKeeper tree cache metrics are process-wide (`zookeeper::treecache::treecache_metrics()`); the server must
   register them (Go: default registry).
+- `kubernetes_sd_configs`: an in-house API client (`kubernetes/client.rs`) instead of client-go: JSON instead of
+  protobuf, HTTP/1.1 (one connection per watch), no client rate limiter, list + watch instead of the watch-list
+  stream; kubeconfig `exec`, `auth-provider` and impersonation are not supported (an error); the client-go
+  process metrics (`prometheus_sd_kubernetes_http_request_*`, `..._workqueue_*`) are not exported. Targets of
+  uncovered container ports (endpoints roles) follow the first-seen pod order (Go: map order).
+- `kuma_sd_configs`: protobuf and protojson by hand (`xds/pb.rs`); see the module comments.
+- End-to-end check against Prometheus 3.16.0 on a fake API server: `python3 scripts/e2e/k8s-sd/run.py`.

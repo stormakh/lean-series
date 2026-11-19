@@ -37,7 +37,6 @@ fn must_parse_url(u: &str) -> Url {
 }
 
 /// Go `kubernetesSDHostURL`.
-#[allow(dead_code)]
 fn kubernetes_sd_host_url() -> Url {
     Url::parse("https://localhost:1234").unwrap()
 }
@@ -496,24 +495,27 @@ pub fn expected_conf() -> Config {
             },
             ScrapeConfig {
                 service_discovery_configs: sd(vec![
-                    // waits for kubernetes:
-                    // &kubernetes.SDConfig{
-                    //     APIServer: kubernetesSDHostURL(),
-                    //     Role:      kubernetes.RoleEndpoint,
-                    //     HTTPClientConfig: config.HTTPClientConfig{
-                    //         BasicAuth: &config.BasicAuth{
-                    //             Username: "myusername",
-                    //             Password: "mysecret",
-                    //         },
-                    //         TLSConfig: config.TLSConfig{
-                    //             CertFile: filepath.FromSlash("testdata/valid_cert_file"),
-                    //             KeyFile:  filepath.FromSlash("testdata/valid_key_file"),
-                    //         },
-                    //         FollowRedirects: true,
-                    //         EnableHTTP2:     true,
-                    //     },
-                    //     NamespaceDiscovery: kubernetes.NamespaceDiscovery{},
-                    // },
+                    Box::new(discovery::kubernetes::SdConfig {
+                        api_server: kubernetes_sd_host_url(),
+                        role: discovery::kubernetes::Role::new(discovery::kubernetes::Role::ENDPOINT),
+                        http_client_config: HttpClientConfig {
+                            basic_auth: Some(BasicAuth {
+                                username: s("myusername"),
+                                password: Secret::new("mysecret"),
+                                ..Default::default()
+                            }),
+                            tls_config: TlsConfig {
+                                cert_file: s("testdata/valid_cert_file"),
+                                key_file: s("testdata/valid_key_file"),
+                                ..Default::default()
+                            },
+                            follow_redirects: true,
+                            enable_http2: true,
+                            ..Default::default()
+                        },
+                        namespace_discovery: discovery::kubernetes::NamespaceDiscovery::default(),
+                        ..Default::default()
+                    }),
                 ]),
                 ..job("service-kubernetes")
             },
@@ -530,31 +532,24 @@ pub fn expected_conf() -> Config {
                 },
 
                 service_discovery_configs: sd(vec![
-                    // waits for kubernetes:
-                    // &kubernetes.SDConfig{
-                    //     APIServer: kubernetesSDHostURL(),
-                    //     Role:      kubernetes.RoleEndpoint,
-                    //     NamespaceDiscovery: kubernetes.NamespaceDiscovery{
-                    //         Names: []string{
-                    //             "default",
-                    //         },
-                    //     },
-                    //     HTTPClientConfig: config.DefaultHTTPClientConfig,
-                    // },
+                    Box::new(discovery::kubernetes::SdConfig {
+                        api_server: kubernetes_sd_host_url(),
+                        role: discovery::kubernetes::Role::new(discovery::kubernetes::Role::ENDPOINT),
+                        namespace_discovery: discovery::kubernetes::NamespaceDiscovery { names: vec![s("default")], ..Default::default() },
+                        http_client_config: HttpClientConfig::default_config(),
+                        ..Default::default()
+                    }),
                 ]),
                 ..job("service-kubernetes-namespaces")
             },
             ScrapeConfig {
-                service_discovery_configs: sd(vec![
-                    // waits for kuma:
-                    // &xds.KumaSDConfig{
-                    //     Server:           "http://kuma-control-plane.kuma-system.svc:5676",
-                    //     ClientID:         "main-prometheus",
-                    //     HTTPClientConfig: config.DefaultHTTPClientConfig,
-                    //     RefreshInterval:  model.Duration(15 * time.Second),
-                    //     FetchTimeout:     model.Duration(2 * time.Minute),
-                    // },
-                ]),
+                service_discovery_configs: sd(vec![Box::new(discovery::xds::KumaSdConfig {
+                    server: s("http://kuma-control-plane.kuma-system.svc:5676"),
+                    client_id: s("main-prometheus"),
+                    http_client_config: HttpClientConfig::default_config(),
+                    refresh_interval: Duration::from_secs(15),
+                    fetch_timeout: Duration::from_secs(120),
+                })]),
                 ..job("service-kuma")
             },
             ScrapeConfig {

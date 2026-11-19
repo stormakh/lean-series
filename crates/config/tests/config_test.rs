@@ -57,7 +57,6 @@ fn test_yaml_not_longer_supported_am_api() {
 }
 
 #[test]
-#[ignore = "waits for SD providers: kubernetes, kuma"]
 fn test_yaml_roundtrip() {
     let _g = setup();
     let want = load_file("testdata/roundtrip.good.yml", false, &nop()).unwrap();
@@ -339,21 +338,18 @@ fn test_scrape_interval_larger() {
 }
 
 #[test]
-#[ignore = "waits for SD providers: kubernetes"]
 fn test_kubernetes_empty_api_server() {
     let _g = setup();
     load_file("testdata/kubernetes_empty_apiserver.good.yml", false, &nop()).unwrap();
 }
 
 #[test]
-#[ignore = "waits for SD providers: kubernetes"]
 fn test_kubernetes_with_kube_config() {
     let _g = setup();
     load_file("testdata/kubernetes_kubeconfig_without_apiserver.good.yml", false, &nop()).unwrap();
 }
 
 #[test]
-#[ignore = "waits for SD providers: kubernetes"]
 fn test_kubernetes_selectors() {
     let _g = setup();
     load_file("testdata/kubernetes_selectors_endpoints.good.yml", false, &nop()).unwrap();
@@ -508,7 +504,6 @@ const EXPECTED_ERRORS: &[(&str, &str, &[&str])] = &[
 ];
 
 #[test]
-#[ignore = "waits for SD providers: kubernetes"]
 fn test_bad_configs() {
     let _g = setup();
     for (filename, err_msg, _) in EXPECTED_ERRORS {
@@ -1127,7 +1122,6 @@ fn test_get_scrape_configs_loaded() {
 // ---- cfg-expected: TestLoadConfig, TestElideSecrets, TestLoadConfigRuleFilesAbsolutePath ----
 
 #[test]
-#[ignore = "waits for SD providers: kubernetes, kuma"]
 fn test_load_config() {
     let _g = setup();
     // Parse a valid file that sets a global scrape timeout. This tests whether parsing
@@ -1143,7 +1137,6 @@ fn test_load_config() {
 
 // YAML marshaling must not reveal authentication credentials.
 #[test]
-#[ignore = "waits for SD providers: kubernetes, kuma"]
 fn test_elide_secrets() {
     let _g = setup();
     let c = load_file("testdata/conf.good.yml", false, &Logger::nop()).unwrap();

@@ -12,6 +12,7 @@ net = { path = "../net" }
 crypto = { path = "../crypto" }
 # RSA signing: GCE service account JWT, OCI HTTP signature, STACKIT RS512 JWT (already in the tree via rustls/net)
 ring = "0.17"
+regex = "1.13"
 
 [dev-dependencies]
 http = { path = "../http" }

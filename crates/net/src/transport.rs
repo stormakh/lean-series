@@ -414,7 +414,23 @@ impl Transport {
 
     /// One request on one connection. Returns the response and the connection when it can be reused, or the
     /// error and how far the exchange got (0: request not written, 1: written, 2: response bytes read).
-    fn exchange(&self, mut conn: Conn, req: &Request, proxy: Option<&GoUrl>, deadline: Option<Instant>) -> Result<(Response, Option<Conn>), (Error, u8)> {
+    fn exchange(&self, conn: Conn, req: &Request, proxy: Option<&GoUrl>, deadline: Option<Instant>) -> Result<(Response, Option<Conn>), (Error, u8)> {
+        let Some(a) = &req.abort else {
+            return self.exchange_inner(conn, req, proxy, deadline);
+        };
+        if !a.register(conn.tcp().try_clone().ok()) {
+            return Err((Error::other("context canceled"), 0));
+        }
+        let r = self.exchange_inner(conn, req, proxy, deadline);
+        a.register(None);
+        if a.is_aborted() {
+            // the connection was shut down under the exchange
+            return Err((Error::other("context canceled"), 2));
+        }
+        r
+    }
+
+    fn exchange_inner(&self, mut conn: Conn, req: &Request, proxy: Option<&GoUrl>, deadline: Option<Instant>) -> Result<(Response, Option<Conn>), (Error, u8)> {
         conn.set_deadline(deadline).map_err(|e| (e, 0))?;
         let io = |e: std::io::Error| timeout_or(&e, || io_error_text(&e));
         self.write_request(&mut conn, req, proxy).map_err(|e| (io(e), 0))?;
@@ -453,6 +469,9 @@ impl Transport {
             let limit = req.max_body_bytes.unwrap_or(usize::MAX);
             let mut body = Vec::new();
             if req.method == "HEAD" || status == 204 || status == 304 {
+            } else if let (Some(sink), true) = (&req.body_sink, (200..300).contains(&status)) {
+                stream_body(&mut r, chunked, clen, sink).map_err(|e| (e, 2))?;
+                reusable = false;
             } else if chunked {
                 body = read_chunked(&mut r, limit).map_err(|e| (e, 2))?;
             } else if let Some(n) = clen {
@@ -475,7 +494,7 @@ impl Transport {
                 }
                 reusable = false;
             }
-            if req.decompress && req.header.get("Accept-Encoding").is_none() {
+            if req.decompress && req.body_sink.is_none() && req.header.get("Accept-Encoding").is_none() {
                 let enc = header.get_str("Content-Encoding").to_ascii_lowercase();
                 if enc == "gzip" || enc == "deflate" {
                     body = decode_body(&enc, &body, limit).map_err(|e| (e, 2))?;
@@ -590,6 +609,64 @@ fn read_chunked<R: BufRead>(r: &mut R, max: usize) -> Result<Vec<u8>, Error> {
         r.read_exact(&mut crlf).map_err(io)?;
         if &crlf != b"\r\n" {
             return Err(Error::other("malformed chunked encoding"));
+        }
+    }
+}
+
+/// Hands a response body to `sink` piece by piece as it arrives (chunked, sized or up to EOF).
+fn stream_body<R: BufRead>(r: &mut R, chunked: bool, clen: Option<usize>, sink: &crate::types::BodySink) -> Result<(), Error> {
+    let io = |e: std::io::Error| match e.kind() {
+        std::io::ErrorKind::UnexpectedEof => Error::other("unexpected EOF"),
+        _ => timeout_or(&e, || io_error_text(&e)),
+    };
+    let mut buf = vec![0u8; 16 * 1024];
+    // reads `n` bytes in pieces; false when the sink wants no more
+    let pass = |r: &mut R, mut left: usize, buf: &mut [u8]| -> Result<bool, Error> {
+        while left > 0 {
+            let k = left.min(buf.len());
+            r.read_exact(&mut buf[..k]).map_err(io)?;
+            left -= k;
+            if !sink.call(&buf[..k]) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    };
+    if chunked {
+        let mut line = String::new();
+        loop {
+            line.clear();
+            if r.read_line(&mut line).map_err(io)? == 0 {
+                return Err(Error::other("unexpected EOF"));
+            }
+            let hex = line.trim().split(';').next().unwrap_or("").trim();
+            let n = usize::from_str_radix(hex, 16).map_err(|_| Error::other("invalid byte in chunk length"))?;
+            if n == 0 {
+                loop {
+                    line.clear();
+                    if r.read_line(&mut line).map_err(io)? == 0 || line.trim().is_empty() {
+                        return Ok(());
+                    }
+                }
+            }
+            if !pass(r, n, &mut buf)? {
+                return Ok(());
+            }
+            let mut crlf = [0u8; 2];
+            r.read_exact(&mut crlf).map_err(io)?;
+            if &crlf != b"\r\n" {
+                return Err(Error::other("malformed chunked encoding"));
+            }
+        }
+    }
+    if let Some(n) = clen {
+        pass(r, n, &mut buf)?;
+        return Ok(());
+    }
+    loop {
+        let n = r.read(&mut buf).map_err(io)?;
+        if n == 0 || !sink.call(&buf[..n]) {
+            return Ok(());
         }
     }
 }
