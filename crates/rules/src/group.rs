@@ -515,7 +515,9 @@ impl Group {
                     }
                 }
                 Ok(_) => {
-                    series_returned.insert(s.metric.data().to_vec(), s.metric.clone());
+                    let mut key = Vec::new();
+                    s.metric.bytes(&mut key);
+                    series_returned.insert(key, s.metric.clone());
                 }
             }
         }

@@ -1,13 +1,18 @@
 //! Port of `model/labels` in its default `stringlabels` form: a label set is one immutable byte buffer that holds
-//! name/value pairs sorted by name, each string preceded by its length (one byte for 0..=254, else 0xFF and three
+//! name/value pairs sorted by name, each string preceded by its length (one byte for 0..=253, else 0xFF and three
 //! little-endian bytes). The buffer is shared (`Arc`), so cloning a `Labels` is cheap.
+//!
+//! Long-lived label sets (head series) may be interned ([`Labels::interned`]): their strings of at least
+//! `MIN_INTERN_LEN` bytes become 3-byte references (0xFE and a little-endian id) to one copy in a process-wide
+//! table. Equal label sets may therefore have different buffers; equality, ordering, hashes and the `bytes`
+//! encodings are defined on the strings and do not depend on interning.
 //!
 //! All names and values are valid UTF-8 (they come from `&str`), so the string accessors never fail. Go strings may
 //! hold invalid UTF-8; in Rust such bytes must be rejected (or converted) where they enter the program.
 
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 
 mod float;
 mod sharding;
@@ -117,20 +122,88 @@ fn is_valid_legacy_metric_byte(b: u8, i: usize) -> bool {
 // ---------------------------------------------------------------------------------------------------------------
 // Encoding.
 
-#[inline(always)]
-fn decode_size(data: &[u8], index: usize) -> (usize, usize) {
-    let b = data[index];
-    if b == 255 {
-        let i = index + 1;
-        return (data[i] as usize | (data[i + 1] as usize) << 8 | (data[i + 2] as usize) << 16, i + 3);
-    }
-    (b as usize, index + 1)
-}
+/// Marks a reference to an interned string (followed by a 2-byte little-endian id).
+const REF_MARK: u8 = 254;
+/// Marks a long string (followed by a 3-byte little-endian length).
+const LONG_MARK: u8 = 255;
+/// Strings shorter than this stay inline (a reference takes 3 bytes).
+const MIN_INTERN_LEN: usize = 4;
+/// The most strings and bytes the intern table holds; interned strings are never freed.
+const MAX_SYMBOLS: usize = 1 << 16;
+const MAX_SYMBOL_BYTES: usize = 16 << 20;
+
+/// The interned strings by id.
+static SYMBOLS: [OnceLock<&'static str>; MAX_SYMBOLS] = [const { OnceLock::new() }; MAX_SYMBOLS];
+
+/// The ids of the interned strings, and their total size.
+static SYMBOL_IDS: LazyLock<Mutex<(HashMap<&'static str, u16>, usize)>> =
+    LazyLock::new(|| Mutex::new((HashMap::new(), 0)));
 
 #[inline(always)]
+fn symbol(id: usize) -> &'static [u8] {
+    match SYMBOLS[id].get() {
+        Some(s) => s.as_bytes(),
+        None => unreachable!("label string reference to a missing symbol"),
+    }
+}
+
+/// The id of `s` in the intern table, adding it when there is room.
+fn intern(table: &mut (HashMap<&'static str, u16>, usize), s: &str) -> Option<u16> {
+    if let Some(&id) = table.0.get(s) {
+        return Some(id);
+    }
+    let id = table.0.len();
+    if id >= MAX_SYMBOLS || table.1 + s.len() > MAX_SYMBOL_BYTES {
+        return None;
+    }
+    let st: &'static str = Box::leak(s.to_owned().into_boxed_str());
+    let _ = SYMBOLS[id].set(st);
+    table.0.insert(st, id as u16);
+    table.1 += s.len();
+    Some(id as u16)
+}
+
+/// The string at `index` (inline or interned) and the index after it.
+#[inline(always)]
 fn decode_string(data: &[u8], index: usize) -> (&[u8], usize) {
-    let (size, index) = decode_size(data, index);
-    (&data[index..index + size], index + size)
+    let b = data[index];
+    if b < REF_MARK {
+        let i = index + 1;
+        return (&data[i..i + b as usize], i + b as usize);
+    }
+    if b == REF_MARK {
+        return (symbol(data[index + 1] as usize | (data[index + 2] as usize) << 8), index + 3);
+    }
+    let i = index + 1;
+    let size = data[i] as usize | (data[i + 1] as usize) << 8 | (data[i + 2] as usize) << 16;
+    (&data[i + 3..i + 3 + size], i + 3 + size)
+}
+
+/// Whether the buffer has interned strings.
+fn has_refs(data: &[u8]) -> bool {
+    let mut i = 0;
+    while i < data.len() {
+        if data[i] == REF_MARK {
+            return true;
+        }
+        (_, i) = decode_string(data, i);
+    }
+    false
+}
+
+/// Appends the plain (not interned) encoding of the strings of `data` to `buf`.
+fn append_plain(buf: &mut Vec<u8>, data: &[u8]) {
+    let mut i = 0;
+    while i < data.len() {
+        let (s, ni) = decode_string(data, i);
+        if data[i] == REF_MARK {
+            encode_size(buf, s.len());
+            buf.extend_from_slice(s);
+        } else {
+            buf.extend_from_slice(&data[i..ni]);
+        }
+        i = ni;
+    }
 }
 
 /// Views label bytes as a str. Every string in a label buffer was copied from a `&str`.
@@ -143,7 +216,7 @@ fn as_str(b: &[u8]) -> &str {
 }
 
 fn size_when_encoded(x: usize) -> usize {
-    if x < 255 {
+    if x < REF_MARK as usize {
         1
     } else if x <= 1 << 24 {
         4
@@ -154,16 +227,22 @@ fn size_when_encoded(x: usize) -> usize {
 
 #[inline]
 fn encode_size(buf: &mut Vec<u8>, v: usize) {
-    if v < 255 {
+    if v < REF_MARK as usize {
         buf.push(v as u8);
     } else {
-        buf.extend_from_slice(&[255, v as u8, (v >> 8) as u8, (v >> 16) as u8]);
+        buf.extend_from_slice(&[LONG_MARK, v as u8, (v >> 8) as u8, (v >> 16) as u8]);
     }
 }
 
 #[inline]
 fn label_size(name: &str, value: &str) -> usize {
     name.len() + size_when_encoded(name.len()) + value.len() + size_when_encoded(value.len())
+}
+
+/// The size of a label in Go's encoding (a 1-byte length below 255 bytes).
+fn go_label_size(name: usize, value: usize) -> usize {
+    let size = |x: usize| if x < 255 { 1 } else { size_when_encoded(x) };
+    name + size(name) + value + size(value)
 }
 
 #[inline]
@@ -251,7 +330,38 @@ impl Labels {
     /// Writes an opaque, not-human-readable encoding of the labels into `buf` (cleared first), usable as a map key.
     pub fn bytes(&self, buf: &mut Vec<u8>) {
         buf.clear();
-        buf.extend_from_slice(self.data());
+        append_plain(buf, self.data());
+    }
+
+    /// The same labels with their strings of at least `MIN_INTERN_LEN` bytes kept once in a process-wide table
+    /// (strings that do not fit in the table stay inline). For label sets that live long, such as those of head
+    /// series: an interned set takes about a fifth of the memory of a plain one.
+    pub fn interned(&self) -> Labels {
+        let data = self.data();
+        let mut buf = Vec::with_capacity(data.len());
+        let mut table = SYMBOL_IDS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut i = 0;
+        while i < data.len() {
+            let (s, ni) = decode_string(data, i);
+            match (s.len() >= MIN_INTERN_LEN).then(|| intern(&mut table, as_str(s))).flatten() {
+                Some(id) => buf.extend_from_slice(&[REF_MARK, id as u8, (id >> 8) as u8]),
+                None => {
+                    encode_size(&mut buf, s.len());
+                    buf.extend_from_slice(s);
+                }
+            }
+            i = ni;
+        }
+        drop(table);
+        if buf[..] == data[..] {
+            return self.clone();
+        }
+        Labels::from_vec(buf)
+    }
+
+    /// Whether some strings of the labels are interned.
+    pub fn is_interned(&self) -> bool {
+        has_refs(self.data())
     }
 
     /// Whether the labels are the zero value (empty).
@@ -321,7 +431,23 @@ impl Labels {
     /// Hash of the label set (xxhash64 of the encoded buffer). Not stable across versions.
     #[inline]
     pub fn hash(&self) -> u64 {
-        xxhash::sum64(self.data())
+        let data = self.data();
+        if !has_refs(data) {
+            return xxhash::sum64(data);
+        }
+        // The hash of the plain encoding.
+        let mut d = xxhash::Digest::new();
+        let mut size = Vec::with_capacity(4);
+        let mut i = 0;
+        while i < data.len() {
+            let (s, ni) = decode_string(data, i);
+            size.clear();
+            encode_size(&mut size, s.len());
+            d.write(&size);
+            d.write(s);
+            i = ni;
+        }
+        d.sum64()
     }
 
     /// Hash of the labels whose names are in `names` (sorted ascending). `b` is scratch space.
@@ -390,7 +516,7 @@ impl Labels {
                 break;
             }
             if lname == names[j].as_ref().as_bytes() {
-                buf.extend_from_slice(&data[pos..np]);
+                append_plain(buf, &data[pos..np]);
             }
             pos = np;
         }
@@ -409,7 +535,7 @@ impl Labels {
                 j += 1;
             }
             if j == names.len() || lname != names[j].as_ref().as_bytes() {
-                buf.extend_from_slice(&data[pos..np]);
+                append_plain(buf, &data[pos..np]);
             }
             pos = np;
         }
@@ -435,23 +561,14 @@ impl Labels {
         let data = self.data();
         let mut i = 0;
         while i < data.len() {
-            let (size, ni) = decode_size(data, i);
+            let (lname, ni) = decode_string(data, i);
+            let (v, ni) = decode_string(data, ni);
             i = ni;
-            if data[i] == nb[0] {
-                let lname = &data[i..i + size];
-                i += size;
-                if lname == nb {
-                    let (v, _) = decode_string(data, i);
-                    return as_str(v);
-                }
-            } else {
-                if data[i] > nb[0] {
-                    break;
-                }
-                i += size;
+            match lname.cmp(nb) {
+                std::cmp::Ordering::Less => {}
+                std::cmp::Ordering::Equal => return as_str(v),
+                std::cmp::Ordering::Greater => break,
             }
-            let (size, ni) = decode_size(data, i);
-            i = ni + size;
         }
         ""
     }
@@ -466,22 +583,14 @@ impl Labels {
         let data = self.data();
         let mut i = 0;
         while i < data.len() {
-            let (size, ni) = decode_size(data, i);
+            let (lname, ni) = decode_string(data, i);
+            let (_, ni) = decode_string(data, ni);
             i = ni;
-            if data[i] == nb[0] {
-                let lname = &data[i..i + size];
-                i += size;
-                if lname == nb {
-                    return true;
-                }
-            } else {
-                if data[i] > nb[0] {
-                    break;
-                }
-                i += size;
+            match lname.cmp(nb) {
+                std::cmp::Ordering::Less => {}
+                std::cmp::Ordering::Equal => return true,
+                std::cmp::Ordering::Greater => break,
             }
-            let (size, ni) = decode_size(data, i);
-            i = ni + size;
         }
         false
     }
@@ -533,7 +642,18 @@ impl Labels {
     /// Approximate size of the labels in bytes.
     #[inline]
     pub fn byte_size(&self) -> u64 {
-        self.data().len() as u64
+        // Go reports the length of its buffer, which keeps strings of 254 bytes with a 1-byte length and has no
+        // interned strings.
+        let data = self.data();
+        let mut n = 0;
+        let mut i = 0;
+        while i < data.len() {
+            let (k, ni) = decode_string(data, i);
+            let (v, ni) = decode_string(data, ni);
+            n += go_label_size(k.len(), v.len());
+            i = ni;
+        }
+        n as u64
     }
 
     /// Number of labels; relatively slow.
@@ -542,9 +662,8 @@ impl Labels {
         let mut count = 0;
         let mut i = 0;
         while i < data.len() {
-            let (size, ni) = decode_size(data, i);
-            let (size2, ni2) = decode_size(data, ni + size);
-            i = ni2 + size2;
+            let (_, ni) = decode_string(data, i);
+            (_, i) = decode_string(data, ni);
             count += 1;
         }
         count
@@ -561,8 +680,7 @@ impl Labels {
         let mut i = 0;
         while i < data.len() {
             let (lname, i2) = decode_string(&data, i);
-            let (size, i2) = decode_size(&data, i2);
-            let i2 = i2 + size;
+            let (_, i2) = decode_string(&data, i2);
             if lname[0] > b'_' {
                 break;
             }
@@ -758,7 +876,7 @@ impl PartialEq for Labels {
     #[inline]
     fn eq(&self, other: &Labels) -> bool {
         match (&self.data, &other.data) {
-            (Some(a), Some(b)) => Arc::ptr_eq(a, b) || a[..] == b[..],
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b) || a[..] == b[..] || compare_data(a, b) == 0,
             (None, None) => true,
             _ => false,
         }
@@ -769,7 +887,8 @@ impl Eq for Labels {}
 
 impl std::hash::Hash for Labels {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        state.write(self.data());
+        // Equal labels may be encoded differently (interned or not); hash the strings.
+        state.write_u64(Labels::hash(self));
     }
 }
 
@@ -801,7 +920,30 @@ impl fmt::Debug for Labels {
 
 /// Compares two label sets: negative if a < b, 0 if equal, positive if a > b (Go `labels.Compare`).
 pub fn compare(a: &Labels, b: &Labels) -> i32 {
-    let (ad, bd) = (a.data(), b.data());
+    compare_data(a.data(), b.data())
+}
+
+/// [`compare`] on encoded buffers: the label strings in order, the shorter sequence first when one is a prefix.
+fn compare_data(ad: &[u8], bd: &[u8]) -> i32 {
+    if has_refs(ad) || has_refs(bd) {
+        let (mut i, mut j) = (0, 0);
+        loop {
+            match (i < ad.len(), j < bd.len()) {
+                (false, false) => return 0,
+                (false, true) => return -1,
+                (true, false) => return 1,
+                (true, true) => {}
+            }
+            let (x, ni) = decode_string(ad, i);
+            let (y, nj) = decode_string(bd, j);
+            match x.cmp(y) {
+                std::cmp::Ordering::Less => return -1,
+                std::cmp::Ordering::Greater => return 1,
+                std::cmp::Ordering::Equal => {}
+            }
+            (i, j) = (ni, nj);
+        }
+    }
     let (shorter, longer) = if bd.len() < ad.len() { (bd, ad) } else { (ad, bd) };
     let mut i = 0;
     while i + 8 < shorter.len() {
@@ -827,12 +969,10 @@ pub fn compare(a: &Labels, b: &Labels) -> i32 {
     }
     let first_diff = i;
     let mut i = 0;
-    let (mut size, mut next_i) = decode_size(ad, i);
-    while next_i + size <= first_diff {
-        i = next_i + size;
-        let (s, n) = decode_size(ad, i);
-        size = s;
-        next_i = n;
+    let (_, mut next) = decode_string(ad, i);
+    while next <= first_diff {
+        i = next;
+        (_, next) = decode_string(ad, i);
     }
     let (a_str, _) = decode_string(ad, i);
     let (b_str, _) = decode_string(bd, i);
@@ -884,7 +1024,7 @@ where
 
 /// Approximate space required for `n` copies of a label.
 pub fn size_of_labels(name: &str, value: &str, n: u64) -> u64 {
-    label_size(name, value) as u64 * n
+    go_label_size(name.len(), value.len()) as u64 * n
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1158,11 +1298,11 @@ impl ScratchBuilder {
 fn write_label_at(m: &mut [u8], mut pos: usize, name: &str, value: &str) -> usize {
     for s in [name, value] {
         let v = s.len();
-        if v < 255 {
+        if v < REF_MARK as usize {
             m[pos] = v as u8;
             pos += 1;
         } else {
-            m[pos..pos + 4].copy_from_slice(&[255, v as u8, (v >> 8) as u8, (v >> 16) as u8]);
+            m[pos..pos + 4].copy_from_slice(&[LONG_MARK, v as u8, (v >> 8) as u8, (v >> 16) as u8]);
             pos += 4;
         }
         m[pos..pos + v].copy_from_slice(s.as_bytes());

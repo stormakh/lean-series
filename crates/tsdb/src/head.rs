@@ -2575,8 +2575,10 @@ impl Head {
         } else {
             0
         };
+        // Head series live long: keep their label strings once (a scrape cache may already share interned labels).
+        let kept = if lset.is_interned() { lset.clone() } else { lset.interned() };
         let optimistically_created =
-            Arc::new(MemSeries::new(lset.clone(), id, shard_hash, self.opts.isolation_disabled, pending_commit));
+            Arc::new(MemSeries::new(kept, id, shard_hash, self.opts.isolation_disabled, pending_commit));
         let (s, created) = self.series.set_unless_already_set(hash, lset, optimistically_created);
         if !created {
             return Ok((s, false));

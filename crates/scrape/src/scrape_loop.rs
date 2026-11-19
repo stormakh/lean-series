@@ -1283,6 +1283,8 @@ impl ScrapeLoop {
                     err = Some(e);
                     break;
                 }
+                // The labels live on in the cache and the head: keep their strings once.
+                *lset = lset.interned();
             }
             macro_rules! ls {
                 () => {
@@ -1579,6 +1581,8 @@ impl ScrapeLoop {
                     err = Some(x);
                     break;
                 }
+                // The labels live on in the cache and the head: keep their strings once.
+                *lset = lset.interned();
             }
             macro_rules! ls {
                 () => {
