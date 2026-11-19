@@ -37,6 +37,16 @@ impl Bstream {
         self.count = 0;
     }
 
+    /// Appends a byte. A full buffer grows by a quarter (at least 32 bytes) instead of doubling, so open head
+    /// chunks keep little unused capacity; amortized growth stays linear in the chunk size.
+    #[inline]
+    fn push(&mut self, b: u8) {
+        if self.stream.len() == self.stream.capacity() {
+            self.stream.reserve_exact((self.stream.len() / 4).max(32));
+        }
+        self.stream.push(b);
+    }
+
     #[inline]
     pub fn bytes(&self) -> &[u8] {
         &self.stream
@@ -50,7 +60,7 @@ impl Bstream {
     #[inline]
     pub fn write_bit(&mut self, bit: bool) {
         if self.count == 0 {
-            self.stream.push(0);
+            self.push(0);
             self.count = 8;
         }
         let i = self.stream.len() - 1;
@@ -63,14 +73,14 @@ impl Bstream {
     #[inline]
     pub fn write_byte(&mut self, byt: u8) {
         if self.count == 0 {
-            self.stream.push(byt);
+            self.push(byt);
             return;
         }
         let i = self.stream.len() - 1;
         // Complete the last byte with the leftmost count bits from byt.
         self.stream[i] |= byt >> (8 - self.count);
         // Write the remainder, if any.
-        self.stream.push(((byt as u16) << self.count) as u8);
+        self.push(((byt as u16) << self.count) as u8);
     }
 
     #[inline]
@@ -109,12 +119,12 @@ impl Bstream {
             self.count = 0;
         }
         while nbits >= 8 {
-            self.stream.push((u >> 56) as u8);
+            self.push((u >> 56) as u8);
             u <<= 8;
             nbits -= 8;
         }
         if nbits > 0 {
-            self.stream.push((u >> 56) as u8);
+            self.push((u >> 56) as u8);
             self.count = (8 - nbits) as u8;
         }
     }
