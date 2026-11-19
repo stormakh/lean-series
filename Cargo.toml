@@ -14,3 +14,12 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 debug = "line-tables-only"
+
+# Test builds: the PromQL and rules tests push millions of samples through the real TSDB.
+# Optimizing these crates in dev builds keeps `cargo test` fast (promql_test: ~140 s -> fast).
+[profile.dev.package.tsdb]
+opt-level = 2
+[profile.dev.package.tsdb-format]
+opt-level = 2
+[profile.dev.package.chunkenc]
+opt-level = 2
