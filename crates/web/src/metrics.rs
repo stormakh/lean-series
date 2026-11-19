@@ -70,6 +70,22 @@ pub trait Gatherer: Send + Sync {
     fn gather(&self) -> Result<Vec<MetricFamily>, String>;
 }
 
+/// Go `prometheus.DefaultGatherer`. (Temporary stub until the registry lands.)
+pub fn default_gatherer() -> std::sync::Arc<dyn Gatherer> {
+    struct Stub;
+    impl Gatherer for Stub {
+        fn gather(&self) -> Result<Vec<MetricFamily>, String> {
+            Ok(vec![MetricFamily {
+                name: "go_goroutines".to_string(),
+                help: "Number of goroutines that currently exist.".to_string(),
+                typ: MetricType::Gauge,
+                metrics: vec![Metric { labels: vec![], value: MetricValue::Gauge(1.0), timestamp_ms: None }],
+            }])
+        }
+    }
+    std::sync::Arc::new(Stub)
+}
+
 fn protojson_f64(f: f64, out: &mut String) {
     if f.is_nan() {
         out.push_str("\"NaN\"");

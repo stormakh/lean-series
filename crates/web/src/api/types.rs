@@ -72,16 +72,38 @@ pub struct QueryCostData {
     pub estimate: CostEstimate,
 }
 
-/// Query statistics as rendered by a stats renderer (Go `stats.QueryStats`): JSON text, or none.
+/// Query statistics as rendered by a stats renderer (Go `stats.QueryStats`).
 #[derive(Clone, Debug, PartialEq)]
-pub struct QueryStatsJson(pub String);
+pub enum QueryStats {
+    /// Go `stats.BuiltinStats`.
+    Builtin(util::stats::BuiltinStats),
+    /// A custom renderer's statistics, as JSON text.
+    Custom(String),
+}
+
+impl QueryStats {
+    /// Go `QueryStats.Builtin()` (empty for custom statistics).
+    pub fn builtin(&self) -> util::stats::BuiltinStats {
+        match self {
+            QueryStats::Builtin(b) => b.clone(),
+            QueryStats::Custom(_) => Default::default(),
+        }
+    }
+
+    pub fn write_json(&self, out: &mut String) {
+        match self {
+            QueryStats::Builtin(b) => b.write_json(out),
+            QueryStats::Custom(s) => out.push_str(s),
+        }
+    }
+}
 
 /// Go `QueryData`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct QueryData {
     pub result_type: ValueType,
     pub result: Value,
-    pub stats: Option<QueryStatsJson>,
+    pub stats: Option<QueryStats>,
     pub cost: Option<QueryCostComparison>,
 }
 
@@ -93,7 +115,7 @@ impl QueryData {
         write_value(&self.result, out);
         if let Some(s) = &self.stats {
             out.push_str(",\"stats\":");
-            out.push_str(&s.0);
+            s.write_json(out);
         }
         if let Some(c) = &self.cost {
             out.push_str(",\"cost\":{\"estimated\":");

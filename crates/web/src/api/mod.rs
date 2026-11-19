@@ -26,6 +26,7 @@ use promql::parser::{Parser, ValueType};
 use promql::{PromqlError, QueryOpts, QueryResult};
 use storage::{Annotations, Context, Error, SampleAndChunkQueryable, ExemplarQueryable};
 
+use yaml::url::GoUrl;
 use crate::gotime::{GoDuration, Time, duration_seconds, duration_string, go_quote};
 use crate::httputil::CorsOrigin;
 use crate::metrics::Gatherer;
@@ -204,16 +205,16 @@ pub struct GlobalUrlOptions {
 }
 
 /// Go `StatsRenderer`: renders the statistics for the `stats` parameter; `None` leaves them out.
-pub type StatsRenderer = Arc<dyn Fn(&Context, Option<&util::stats::Statistics>, &str) -> Option<QueryStatsJson> + Send + Sync>;
+pub type StatsRenderer = Arc<dyn Fn(&Context, Option<&util::stats::Statistics>, &str) -> Option<QueryStats> + Send + Sync>;
 
 /// Go `DefaultStatsRenderer`.
-pub fn default_stats_renderer(_ctx: &Context, s: Option<&util::stats::Statistics>, param: &str) -> Option<QueryStatsJson> {
+pub fn default_stats_renderer(_ctx: &Context, s: Option<&util::stats::Statistics>, param: &str) -> Option<QueryStats> {
     if param.is_empty() {
         return None;
     }
     // Go: stats.NewQueryStats(nil) dereferences nil; a query always has statistics.
     let s = s?;
-    Some(QueryStatsJson(util::stats::new_query_stats(s).to_json_string()))
+    Some(QueryStats::Builtin(util::stats::new_query_stats(s)))
 }
 
 /// Go `OverrideErrorCode`.
@@ -446,37 +447,8 @@ pub fn join_host_port(host: &str, port: &str) -> String {
     if host.contains(':') { format!("[{}]:{}", host, port) } else { format!("{}:{}", host, port) }
 }
 
-/// A parsed URL as far as `getGlobalURL` needs it.
-#[derive(Clone, Debug, PartialEq)]
-pub struct SimpleUrl {
-    pub scheme: String,
-    pub host: String,
-    /// Everything after the host (path, query, fragment), as in the original text.
-    pub rest: String,
-}
-
-impl SimpleUrl {
-    pub fn parse(u: &str) -> SimpleUrl {
-        let (scheme, after) = match u.find("://") {
-            Some(i) => (u[..i].to_string(), &u[i + 3..]),
-            None => (String::new(), u),
-        };
-        let end = after.find(['/', '?', '#']).unwrap_or(after.len());
-        SimpleUrl { scheme, host: after[..end].to_string(), rest: after[end..].to_string() }
-    }
-}
-
-impl fmt::Display for SimpleUrl {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if !self.scheme.is_empty() {
-            write!(f, "{}://", self.scheme)?;
-        }
-        write!(f, "{}{}", self.host, self.rest)
-    }
-}
-
 /// Go `getGlobalURL`.
-pub fn get_global_url(u: &SimpleUrl, opts: &GlobalUrlOptions) -> Result<SimpleUrl, (SimpleUrl, String)> {
+pub fn get_global_url(u: &GoUrl, opts: &GlobalUrlOptions) -> Result<GoUrl, (GoUrl, String)> {
     let mut u = u.clone();
     let (host, port) = match sanitize_split_host_port(&u.host) {
         Ok(v) => v,
@@ -916,7 +888,7 @@ impl Api {
         }
     }
 
-    fn render_stats(&self, ctx: &Context, s: Option<&util::stats::Statistics>, param: &str) -> Option<QueryStatsJson> {
+    fn render_stats(&self, ctx: &Context, s: Option<&util::stats::Statistics>, param: &str) -> Option<QueryStats> {
         match &self.o.stats_renderer {
             Some(f) => f(ctx, s, param),
             None => default_stats_renderer(ctx, s, param),
@@ -1504,7 +1476,7 @@ impl Api {
                 }
                 for target in &active[pool] {
                     let last_err_str = target.last_error().map(|e| e.to_string()).unwrap_or_default();
-                    let url = SimpleUrl::parse(&target.url_string());
+                    let url = target.url();
                     let (global, gerr) = match get_global_url(&url, &self.o.global_url_options) {
                         Ok(u) => (u, None),
                         Err((u, e)) => (u, Some(e)),
@@ -1518,8 +1490,8 @@ impl Api {
                         discovered_labels: target.discovered_labels(&mut builder),
                         labels: target.labels(),
                         scrape_pool: pool.clone(),
-                        scrape_url: url.to_string(),
-                        global_url: global.to_string(),
+                        scrape_url: url.to_url_string(),
+                        global_url: global.to_url_string(),
                         last_error,
                         last_scrape: target.last_scrape().map(Time::from_system).unwrap_or_default(),
                         last_scrape_duration: target.last_scrape_duration().as_secs_f64(),
