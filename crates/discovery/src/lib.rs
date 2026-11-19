@@ -6,6 +6,7 @@
 //! Discoverers run on their own threads and block.
 //!
 //! See README.md for how to add a provider.
+pub mod adapter;
 pub mod aws;
 pub mod azure;
 pub mod cancel;
