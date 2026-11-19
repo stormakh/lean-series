@@ -452,7 +452,7 @@ impl Group {
         self.metrics.eval_total.with_label_values(&[&key]).inc();
 
         let query_func = self.opts.query_func.clone().expect("rules: ManagerOptions.query_func is not set");
-        let vector = match rule.eval(ctx, rule_query_offset, ts, &query_func, self.opts.external_url.as_deref(), self.limit) {
+        let vector = match rule.eval(ctx, rule_query_offset, ts, &query_func, self.opts.external_url.as_ref(), self.limit) {
             Ok(v) => v,
             Err(err) => {
                 rule.set_health(crate::RuleHealth::Bad);

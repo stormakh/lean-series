@@ -276,7 +276,7 @@ impl AlertingRule {
         notify(ctx, &self.expr_string(), alerts);
     }
 
-    fn expand(&self, ctx: &Context, text: &str, smpl: &Sample, l: &HashMap<String, String>, ts: Time, query: &QueryFunc, external_url: Option<&str>) -> String {
+    fn expand(&self, ctx: &Context, text: &str, smpl: &Sample, l: &HashMap<String, String>, ts: Time, query: &QueryFunc, external_url: Option<&yaml::url::GoUrl>) -> String {
         let defs = "{{$labels := .Labels}}{{$externalLabels := .ExternalLabels}}{{$externalURL := .ExternalURL}}{{$value := .Value}}";
         let full = format!("{defs}{text}");
         let name = format!("__alert_{}", self.name);
@@ -306,7 +306,7 @@ impl Rule for AlertingRule {
     }
 
     /// Go `Eval`: evaluates the expression, creates pending alerts and fires or removes earlier ones.
-    fn eval(&self, ctx: &Context, query_offset: Duration, ts: Time, query: &QueryFunc, external_url: Option<&str>, limit: i64) -> Result<Vector, Error> {
+    fn eval(&self, ctx: &Context, query_offset: Duration, ts: Time, query: &QueryFunc, external_url: Option<&yaml::url::GoUrl>, limit: i64) -> Result<Vector, Error> {
         let ctx = new_origin_context(ctx, new_rule_detail(self));
         let res = query(&ctx, &self.expr_string(), ts.sub_dur(query_offset))?;
 

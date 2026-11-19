@@ -192,7 +192,7 @@ pub trait Rule: Any + Send + Sync {
         query_offset: Duration,
         evaluation_time: Time,
         query_func: &QueryFunc,
-        external_url: Option<&str>,
+        external_url: Option<&yaml::url::GoUrl>,
         limit: i64,
     ) -> Result<Vector, Error>;
     /// A human-readable representation (YAML) of the rule.

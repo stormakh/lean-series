@@ -20,7 +20,7 @@ impl Rule for UnknownRule {
         static EMPTY: std::sync::OnceLock<Labels> = std::sync::OnceLock::new();
         EMPTY.get_or_init(Labels::empty)
     }
-    fn eval(&self, _: &Context, _: Duration, _: Time, _: &QueryFunc, _: Option<&str>, _: i64) -> Result<Vector, Error> {
+    fn eval(&self, _: &Context, _: Duration, _: Time, _: &QueryFunc, _: Option<&yaml::url::GoUrl>, _: i64) -> Result<Vector, Error> {
         Ok(Vec::new())
     }
     fn string(&self) -> String {

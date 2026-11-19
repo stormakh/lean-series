@@ -83,7 +83,7 @@ fn main() {
         queryable: Some(st.clone() as Arc<dyn Queryable>),
         query_func: Some(rules::engine_query_func(engine, st.clone() as Arc<dyn Queryable>)),
         notify_func: Some(rules::send_alerts(nm.clone() as Arc<dyn rules::Sender>, &external_url)),
-        external_url: Some(external_url.clone()),
+        external_url: Some(yaml::url::parse(&external_url).expect("external url")),
         registerer: Some(reg.clone()),
         logger: logger.clone(),
         outage_tolerance: Duration::from_secs(3600),

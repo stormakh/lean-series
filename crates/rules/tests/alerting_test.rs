@@ -408,7 +408,8 @@ instance: {{ $v.Labels.instance }}, value: {{ printf "%.0f" $v.Value }};
             drop(start_tx.lock().unwrap().take()); // Go close(startQueryCh).
             // adapted: Go waits 20ms before failing; the machine running the tests is heavily loaded, so the
             // wait is 10s. A rule lock held during template expansion blocks forever, so the check is the same.
-            if done_rx.lock().unwrap().recv_timeout(Duration::from_secs(10)).is_err() {
+            // A closed channel (Disconnected) is Go's receive from the closed getDoneCh.
+            if let Err(mpsc::RecvTimeoutError::Timeout) = done_rx.lock().unwrap().recv_timeout(Duration::from_secs(10)) {
                 panic!("unexpected blocking when template expanding.");
             }
         }

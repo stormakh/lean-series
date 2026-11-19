@@ -52,7 +52,7 @@ impl Rule for RecordingRule {
         &self.labels
     }
 
-    fn eval(&self, ctx: &Context, query_offset: Duration, ts: Time, query: &QueryFunc, _external_url: Option<&str>, limit: i64) -> Result<Vector, Error> {
+    fn eval(&self, ctx: &Context, query_offset: Duration, ts: Time, query: &QueryFunc, _external_url: Option<&yaml::url::GoUrl>, limit: i64) -> Result<Vector, Error> {
         let ctx = new_origin_context(ctx, new_rule_detail(self));
         let mut vector = query(&ctx, &self.expr_string(), ts.sub_dur(query_offset))?;
 

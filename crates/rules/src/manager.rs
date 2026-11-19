@@ -198,8 +198,8 @@ impl RuleConcurrencyController for SequentialRuleEvalController {
 #[derive(Clone)]
 pub struct ManagerOptions {
     pub name_validation_scheme: ValidationScheme,
-    /// The external URL (`--web.external-url`), as a string.
-    pub external_url: Option<String>,
+    /// The external URL (`--web.external-url`).
+    pub external_url: Option<yaml::url::GoUrl>,
     pub query_func: Option<QueryFunc>,
     pub notify_func: Option<NotifyFunc>,
     pub context: Context,
