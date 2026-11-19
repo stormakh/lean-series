@@ -592,6 +592,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b"
 
 [[package]]
+name = "web"
+version = "0.1.0"
+dependencies = [
+ "chunkenc",
+ "config",
+ "crypto",
+ "discovery",
+ "flate2",
+ "http",
+ "json",
+ "model",
+ "net",
+ "promql",
+ "regex",
+ "scrape",
+ "storage",
+ "textparse",
+ "tsdb",
+ "tsdb-format",
+ "util",
+ "yaml",
+]
+
+[[package]]
 name = "webpki-roots"
 version = "1.0.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"

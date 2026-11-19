@@ -3,7 +3,8 @@
 use crate::util::{http_date, now_unix};
 use crate::{Body, Request, Response, compressible, reason};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -88,8 +89,18 @@ impl Server {
             Err(_) => 0,
         }
     }
+    /// The bound address.
+    pub fn local_addr(&self) -> Option<SocketAddr> {
+        self.listener.local_addr().ok()
+    }
     /// Accepts connections forever.
     pub fn run(self, svc: Arc<dyn Service>) {
+        self.run_until(svc, Arc::new(AtomicBool::new(false)))
+    }
+    /// Accepts connections until `stop` is set. The accept loop checks `stop` after each accepted connection, so
+    /// whoever sets it must then connect once to `local_addr` to wake the loop. Connections already accepted keep
+    /// running until they close or time out; the listener closes when this returns.
+    pub fn run_until(self, svc: Arc<dyn Service>, stop: Arc<AtomicBool>) {
         let slots = Arc::new(Slots { used: Mutex::new(0), cv: Condvar::new() });
         let cfg = Arc::new(self.cfg);
         loop {
@@ -112,10 +123,16 @@ impl Server {
                 Ok((s, _)) => s,
                 Err(_) => {
                     drop(guard);
+                    if stop.load(Ordering::SeqCst) {
+                        return;
+                    }
                     std::thread::sleep(Duration::from_millis(10));
                     continue;
                 }
             };
+            if stop.load(Ordering::SeqCst) {
+                return;
+            }
             let svc = svc.clone();
             let cfg2 = cfg.clone();
             let spawned = std::thread::Builder::new().stack_size(cfg.stack_size).spawn(move || {
@@ -415,6 +432,7 @@ fn write_response(w: &mut TcpStream, mut resp: Response, head: bool, close: bool
                     }
                 }
             }
+            Body::Stream(_) => {}
         }
         if let Some(z) = data {
             resp.body = Body::Bytes(z);
@@ -422,9 +440,11 @@ fn write_response(w: &mut TcpStream, mut resp: Response, head: bool, close: bool
             resp.headers.push(("Vary".to_string(), "Accept-Encoding".to_string()));
         }
     }
+    let stream = matches!(&resp.body, Body::Stream(_));
     let len: u64 = match &resp.body {
         Body::Bytes(b) => b.len() as u64,
         Body::File(_, n) => *n,
+        Body::Stream(_) => 0,
     };
     let mut hlen = 64 + date.len();
     for (k, v) in resp.headers.iter() {
@@ -446,7 +466,9 @@ fn write_response(w: &mut TcpStream, mut resp: Response, head: bool, close: bool
         h.extend_from_slice(v.as_bytes());
         h.extend_from_slice(b"\r\n");
     }
-    if !no_body {
+    if stream && !no_body {
+        h.extend_from_slice(b"Transfer-Encoding: chunked\r\n");
+    } else if !no_body {
         h.extend_from_slice(b"Content-Length: ");
         push_num(&mut h, len);
         h.extend_from_slice(b"\r\n");
@@ -485,6 +507,57 @@ fn write_response(w: &mut TcpStream, mut resp: Response, head: bool, close: bool
                 left -= got as u64;
             }
         }
+        Body::Stream(f) => {
+            w.write_all(&h)?;
+            let mut cw = ChunkedWriter { w, buf: Vec::with_capacity(4096) };
+            let res = f(&mut cw);
+            crate::StreamWriter::flush(&mut cw)?;
+            cw.w.write_all(b"0\r\n\r\n")?;
+            res?;
+        }
     }
     Ok(())
+}
+
+/// Writes a streamed body with chunked transfer encoding: one chunk per flush (or per 32 KiB).
+struct ChunkedWriter<'a> {
+    w: &'a mut TcpStream,
+    buf: Vec<u8>,
+}
+
+impl crate::StreamWriter for ChunkedWriter<'_> {
+    fn write_all(&mut self, b: &[u8]) -> std::io::Result<()> {
+        self.buf.extend_from_slice(b);
+        if self.buf.len() >= 32 * 1024 {
+            crate::StreamWriter::flush(self)?;
+        }
+        Ok(())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        if self.buf.is_empty() {
+            return Ok(());
+        }
+        let mut out = Vec::with_capacity(self.buf.len() + 16);
+        let hex = format!("{:x}\r\n", self.buf.len());
+        out.extend_from_slice(hex.as_bytes());
+        out.extend_from_slice(&self.buf);
+        out.extend_from_slice(b"\r\n");
+        self.buf.clear();
+        self.w.write_all(&out)?;
+        self.w.flush()
+    }
+
+    fn peer_closed(&mut self) -> bool {
+        if self.w.set_nonblocking(true).is_err() {
+            return false;
+        }
+        let mut b = [0u8; 1];
+        let closed = match self.w.peek(&mut b) {
+            Ok(0) => true,
+            Ok(_) => false,
+            Err(e) => e.kind() != std::io::ErrorKind::WouldBlock,
+        };
+        let _ = self.w.set_nonblocking(false);
+        closed
+    }
 }

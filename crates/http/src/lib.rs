@@ -110,11 +110,52 @@ impl Request {
     }
 }
 
-#[derive(Debug)]
 pub enum Body {
     Bytes(Vec<u8>),
     /// A file streamed from disk with its length.
     File(std::fs::File, u64),
+    /// A body written by a function as it is produced (chunked transfer encoding). Each `flush` sends what was
+    /// written so far. Used for server-sent events and NDJSON streams.
+    Stream(StreamFn),
+}
+
+/// Writes a streamed body.
+pub trait StreamWriter {
+    /// Queues bytes (sent at the next flush, or when 32 KiB are queued).
+    fn write_all(&mut self, b: &[u8]) -> std::io::Result<()>;
+    /// Sends what was written so far.
+    fn flush(&mut self) -> std::io::Result<()>;
+    /// Whether the client closed the connection (checked without blocking).
+    fn peer_closed(&mut self) -> bool;
+}
+
+/// The function that writes a streamed body.
+pub type StreamFn = Box<dyn FnOnce(&mut dyn StreamWriter) -> std::io::Result<()> + Send>;
+
+impl std::fmt::Debug for Body {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Body::Bytes(b) => f.debug_tuple("Bytes").field(b).finish(),
+            Body::File(file, n) => f.debug_tuple("File").field(file).field(n).finish(),
+            Body::Stream(_) => f.write_str("Stream"),
+        }
+    }
+}
+
+/// Collects a streamed body in memory (tests and in-process callers).
+pub struct VecStreamWriter(pub Vec<u8>);
+
+impl StreamWriter for VecStreamWriter {
+    fn write_all(&mut self, b: &[u8]) -> std::io::Result<()> {
+        self.0.extend_from_slice(b);
+        Ok(())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn peer_closed(&mut self) -> bool {
+        false
+    }
 }
 
 /// Header list with room for the default headers the app and the server add, so they do not grow it again.
@@ -200,7 +241,24 @@ impl Response {
     pub fn body_bytes(&self) -> &[u8] {
         match &self.body {
             Body::Bytes(b) => b,
-            Body::File(_, _) => &[],
+            Body::File(_, _) | Body::Stream(_) => &[],
+        }
+    }
+
+    /// The whole body: bytes, a file's content, or a stream run to its end.
+    pub fn into_body_vec(self) -> Vec<u8> {
+        match self.body {
+            Body::Bytes(b) => b,
+            Body::File(mut f, _) => {
+                let mut v = Vec::new();
+                let _ = std::io::Read::read_to_end(&mut f, &mut v);
+                v
+            }
+            Body::Stream(s) => {
+                let mut w = VecStreamWriter(Vec::new());
+                let _ = s(&mut w);
+                w.0
+            }
         }
     }
 }
