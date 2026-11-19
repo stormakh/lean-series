@@ -6,6 +6,9 @@ fn main() {
     let dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
     let file = format!("{dir}/hot-symbols.txt");
     println!("cargo:rerun-if-changed={file}");
+    // A fixed load address: no run-time relocations, so the 500 KB of pointers in .data.rel.ro (vtables, string
+    // tables) stay clean file pages instead of private dirty copies, and .rela.dyn (600 KB) is not read at startup.
+    println!("cargo:rustc-link-arg-bin=prometheus=-no-pie");
     if std::path::Path::new(&file).exists() {
         println!("cargo:rustc-link-arg-bin=prometheus=-Wl,--symbol-ordering-file={file}");
         println!("cargo:rustc-link-arg-bin=prometheus=-Wl,--no-warn-symbol-ordering");
