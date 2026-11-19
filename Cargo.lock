@@ -303,6 +303,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "promtool"
+version = "0.1.0"
+dependencies = [
+ "chunkenc",
+ "config",
+ "discovery",
+ "flate2",
+ "http",
+ "json",
+ "model",
+ "net",
+ "notifier",
+ "promql",
+ "regex",
+ "remote",
+ "rules",
+ "scrape",
+ "storage",
+ "textparse",
+ "tsdb",
+ "tsdb-format",
+ "util",
+ "yaml",
+]
+
+[[package]]
 name = "r-efi"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

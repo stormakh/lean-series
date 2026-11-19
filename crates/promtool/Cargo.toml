@@ -1,0 +1,35 @@
+[package]
+name = "promtool"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "promtool"
+path = "src/main.rs"
+
+[dependencies]
+model = { path = "../model" }
+chunkenc = { path = "../chunkenc" }
+storage = { path = "../storage" }
+promql = { path = "../promql" }
+tsdb = { path = "../tsdb" }
+tsdb-format = { path = "../tsdb-format" }
+textparse = { path = "../textparse" }
+config = { path = "../config" }
+discovery = { path = "../discovery" }
+scrape = { path = "../scrape" }
+rules = { path = "../rules" }
+notifier = { path = "../notifier" }
+remote = { path = "../remote" }
+http = { path = "../http" }
+net = { path = "../net" }
+json = { path = "../json" }
+yaml = { path = "../yaml" }
+util = { path = "../util" }
+regex = "1.13"
+# gzip of the `debug` tarball (same pin as the http crate).
+flate2 = "=1.1.10"

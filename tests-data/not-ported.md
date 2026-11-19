@@ -2,6 +2,7 @@
 
 | crate | file | test | reason |
 |---|---|---|---|
+| promtool | tsdb_test | test_format_series_set_rejects_unknown_sample_type | Go passes an iterator that returns `chunkenc.ValueType(255)` to reach the `default` branch ("unknown sample type unknown"). The Rust `chunkenc::ValueType` is a closed enum, so no such value exists and the branch cannot be written; a Go-only fact. |
 | scrape | scrape_test | test_request_traceparent_header | Needs OpenTelemetry tracing (a TracerProvider and the W3C trace context propagator); tracing export is out of scope (PORTING.md). Ported and `#[ignore]`d. |
 | web | web_test | test_tlshttp2_alpn | Tests HTTP/2 negotiation over TLS (ALPN `h2`) with exporter-toolkit's web config file. The Rust web server is HTTP/1.1 only and has no TLS or web config file support (`Handler::run` refuses a web config file), so there is no Rust behavior to check. |
 

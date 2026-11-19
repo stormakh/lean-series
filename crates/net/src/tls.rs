@@ -105,11 +105,42 @@ pub fn x509_key_pair(cert_pem: &[u8], key_pem: &[u8]) -> Result<CertifiedKey, St
         }
     }
     let Some(signing) = signing else { return Err("tls: failed to parse private key".to_string()) };
+    // Go compares the key types first ("type does not match"), then the keys.
+    let key_alg = match signing.algorithm() {
+        rustls::SignatureAlgorithm::RSA => Some("rsa"),
+        rustls::SignatureAlgorithm::ECDSA => Some("ec"),
+        rustls::SignatureAlgorithm::ED25519 => Some("ed25519"),
+        _ => None,
+    };
+    if let (Some(k), Some(c)) = (key_alg, spki_algorithm(&certs[0]))
+        && k != c
+    {
+        return Err("tls: private key type does not match public key type".to_string());
+    }
     let ck = CertifiedKey::new(certs, signing);
     match ck.keys_match() {
         Ok(()) | Err(rustls::Error::InconsistentKeys(rustls::InconsistentKeys::Unknown)) => Ok(ck),
         Err(rustls::Error::InconsistentKeys(rustls::InconsistentKeys::KeyMismatch)) => Err("tls: private key does not match public key".to_string()),
         Err(e) => Err(format!("x509: {}", tls_error_text(&e))),
+    }
+}
+
+/// The public key algorithm of a certificate ("rsa", "ec", "ed25519"), found by the algorithm OID of its subject
+/// public key. rsaEncryption and id-ecPublicKey are never signature algorithm OIDs; Ed25519 can be both, so it
+/// is checked last.
+fn spki_algorithm(cert: &[u8]) -> Option<&'static str> {
+    const RSA: &[u8] = &[0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x01];
+    const EC: &[u8] = &[0x06, 0x07, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x02, 0x01];
+    const ED25519: &[u8] = &[0x06, 0x03, 0x2B, 0x65, 0x70];
+    let has = |oid: &[u8]| cert.windows(oid.len()).any(|w| w == oid);
+    if has(RSA) {
+        Some("rsa")
+    } else if has(EC) {
+        Some("ec")
+    } else if has(ED25519) {
+        Some("ed25519")
+    } else {
+        None
     }
 }
 
