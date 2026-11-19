@@ -5,3 +5,5 @@
 /bench/tmp/
 /upstream-bin/
 /.claude/
+/upstream
+/upstream-bin

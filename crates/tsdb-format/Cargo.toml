@@ -10,6 +10,7 @@ name = "tsdb_format"
 [dependencies]
 model = { path = "../model" }
 chunkenc = { path = "../chunkenc" }
+storage = { path = "../storage" }
 # mmap of index, chunk and head chunk files.
 memmap2 = "0.9"
 # fallocate and O_DIRECT (already a dependency of memmap2).

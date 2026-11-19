@@ -200,7 +200,7 @@ impl Writer {
         }
         let seq = self.seq() as u64;
         for chk in chks.iter_mut() {
-            chk.r#ref = new_block_chunk_ref(seq, self.n as u64);
+            chk.chunk_ref = new_block_chunk_ref(seq, self.n as u64);
             let c = chk
                 .chunk
                 .as_deref()
@@ -400,7 +400,7 @@ impl Reader {
     /// Go `ChunkOrIterable`: the chunk at `meta.ref`. Block chunks never return an iterable. The data is copied
     /// into a chunk taken from the pool (return it with `pool.put` to reuse its buffer).
     pub fn chunk_or_iterable(&self, meta: &Meta) -> Result<Box<dyn Chunk>, Error> {
-        self.chunk(meta.r#ref)
+        self.chunk(meta.chunk_ref)
     }
 
     /// The chunk at `r` (see `chunk_or_iterable`).

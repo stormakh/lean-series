@@ -10,7 +10,7 @@ use model::labels::{self, Labels};
 
 use super::{CRC32_SIZE, Error, FORMAT_V2, MAGIC_INDEX, SERIES_BYTE_ALIGN, SeriesRef, Symbols};
 use crate::chunks::{ChunkRef, Meta};
-use crate::context::Context;
+use storage::Context;
 use crate::encoding::{Crc32, Decbuf, Encbuf, crc32c};
 use crate::fileutil::{self, MmapFile};
 
@@ -332,7 +332,7 @@ impl Writer {
     }
 
     fn ctx_err(&self) -> Option<Error> {
-        self.ctx.err().map(Error::context)
+        super::Ctx::err(&self.ctx)
     }
 
     /// Go `ensureStage`: handles transitions between write stages and ensures that writer methods are called in
@@ -418,13 +418,13 @@ impl Writer {
         let mut last_chunk_ref = self.last_chunk_ref;
         let mut last_max_t: i64 = 0;
         for (ix, c) in chunks.iter().enumerate() {
-            if c.r#ref < last_chunk_ref {
+            if c.chunk_ref < last_chunk_ref {
                 return Err(Error::new(format!(
                     "unsorted chunk reference: {}, previous: {}",
-                    c.r#ref, last_chunk_ref
+                    c.chunk_ref, last_chunk_ref
                 )));
             }
-            last_chunk_ref = c.r#ref;
+            last_chunk_ref = c.chunk_ref;
 
             if ix > 0 && c.min_time <= last_max_t {
                 return Err(Error::new(format!(
@@ -491,9 +491,9 @@ impl Writer {
             self.buf2.put_varint64(c.min_time);
             self.buf2
                 .put_uvarint64(c.max_time.wrapping_sub(c.min_time) as u64);
-            self.buf2.put_uvarint64(c.r#ref);
+            self.buf2.put_uvarint64(c.chunk_ref);
             let mut t0 = c.max_time;
-            let mut ref0 = c.r#ref as i64;
+            let mut ref0 = c.chunk_ref as i64;
 
             for c in &chunks[1..] {
                 self.buf2.put_uvarint64(c.min_time.wrapping_sub(t0) as u64);
@@ -501,8 +501,8 @@ impl Writer {
                     .put_uvarint64(c.max_time.wrapping_sub(c.min_time) as u64);
                 t0 = c.max_time;
 
-                self.buf2.put_varint64((c.r#ref as i64).wrapping_sub(ref0));
-                ref0 = c.r#ref as i64;
+                self.buf2.put_varint64((c.chunk_ref as i64).wrapping_sub(ref0));
+                ref0 = c.chunk_ref as i64;
             }
         }
 
