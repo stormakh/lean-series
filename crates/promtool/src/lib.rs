@@ -23,6 +23,12 @@ pub mod tsdb_cmd;
 pub mod unittest;
 
 pub mod analyze;
+pub mod check_metrics;
+pub mod expfmt;
+pub mod metrics;
+pub mod promlint;
+pub mod web_config;
+
 pub mod app;
 pub mod cli;
 pub mod debug;

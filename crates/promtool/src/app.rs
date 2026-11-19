@@ -466,7 +466,7 @@ pub fn run_with(args: &[String], io: &mut Io) -> i32 {
             let mut u = server_url.unwrap_or_default();
             crate::check_err(check_server_status(&mut u, ep, rt, io.stderr), io.stderr)
         }
-        "check web-config" => crate::pending::web_config::check_web_config(&parsed.strings("web-config-files"), io),
+        "check web-config" => crate::web_config::check_web_config(&parsed.strings("web-config-files"), io),
         "check rules" => {
             let ls = new_rules_lint_config(
                 &parsed.str("lint"),
@@ -477,14 +477,14 @@ pub fn run_with(args: &[String], io: &mut Io) -> i32 {
             );
             check_rules_cmd(&ls, &p, &parsed.strings("rule-files"), io)
         }
-        "check metrics" => crate::pending::check_metrics::check_metrics(parsed.bool("extended"), &parsed.str("lint"), io),
+        "check metrics" => crate::check_metrics::check_metrics(parsed.bool("extended"), &parsed.str("lint"), io),
         "push metrics" => {
             let u = parse_url_value(&parsed.str("remote-write-url"));
-            crate::pending::metrics::push_metrics(
+            crate::metrics::push_metrics(
                 &u,
                 rt,
                 &parsed.map("header"),
-                parsed.duration("timeout"),
+                std::time::Duration::from_nanos(parsed.duration("timeout").max(0) as u64),
                 &parsed.str("protobuf_message"),
                 &parsed.str("remote-write.path"),
                 &parsed.map("label"),

@@ -38,21 +38,3 @@ pub mod tsdb_cmd {
     }
 }
 
-pub mod check_metrics {
-    pub fn check_metrics(e: bool, l: &str, io: &mut crate::Io) -> i32 {
-        1
-    }
-}
-
-pub mod metrics {
-    use super::*;
-    pub fn push_metrics(u: &yaml::url::GoUrl, rt: std::sync::Arc<dyn net::RoundTripper>, h: &BTreeMap<String, String>, t: i64, pm: &str, ap: &str, l: &BTreeMap<String, String>, f: &[String], io: &mut crate::Io) -> i32 {
-        1
-    }
-}
-
-pub mod web_config {
-    pub fn check_web_config(f: &[String], io: &mut crate::Io) -> i32 {
-        1
-    }
-}
