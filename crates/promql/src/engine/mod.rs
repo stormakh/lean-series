@@ -373,7 +373,15 @@ struct EngineInner {
     enable_query_cost: bool,
     parser: Parser,
     query_limits: RwLock<(u64, u64, Duration)>,
+    /// Parsed expressions by query text. Dashboards send the same texts again and again; parsing is a pure
+    /// function of the text and the (fixed) parser options, so each query gets a clone of the cached AST.
+    parse_cache: Mutex<HashMap<Box<str>, Arc<Expr>>>,
 }
+
+/// Entries in [`EngineInner::parse_cache`]; the cache is cleared when it is full.
+const PARSE_CACHE_ENTRIES: usize = 512;
+/// Longer query texts are not cached.
+const PARSE_CACHE_MAX_QUERY: usize = 16 * 1024;
 
 /// The query engine (Go `Engine`). Cheap to clone; clones share the engine.
 #[derive(Clone)]
@@ -428,6 +436,7 @@ impl Engine {
                 enable_query_cost: opts.enable_query_cost,
                 parser,
                 query_limits: RwLock::new((0, 0, Duration::ZERO)),
+                parse_cache: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -543,7 +552,7 @@ impl Engine {
             if ng.enable_query_cost {
                 context_done(&ctx, ENV)?;
             }
-            let expr = match ng.parser.parse_expr(qs) {
+            let expr = match self.parse_cached(qs) {
                 Ok(e) => e,
                 Err(e) => return Err(qry.construction_error(&ctx, Error::other(e))),
             };
@@ -574,6 +583,25 @@ impl Engine {
             }
         }
         res.map(|_| qry)
+    }
+
+    /// `parser.parse_expr(qs)` through the parse cache. Errors are not cached.
+    fn parse_cached(&self, qs: &str) -> Result<Expr, parser::Error> {
+        let ng = &*self.inner;
+        if qs.len() > PARSE_CACHE_MAX_QUERY {
+            return ng.parser.parse_expr(qs);
+        }
+        let hit = ng.parse_cache.lock().unwrap_or_else(|p| p.into_inner()).get(qs).cloned();
+        if let Some(e) = hit {
+            return Ok((*e).clone());
+        }
+        let e = ng.parser.parse_expr(qs)?;
+        let mut c = ng.parse_cache.lock().unwrap_or_else(|p| p.into_inner());
+        if c.len() >= PARSE_CACHE_ENTRIES {
+            c.clear();
+        }
+        c.insert(qs.into(), Arc::new(e.clone()));
+        Ok(e)
     }
 
     fn new_query(
