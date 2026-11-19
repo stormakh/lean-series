@@ -26,19 +26,26 @@ use crate::rungroup::{Event, Group};
 use crate::sys;
 
 /// Stack size of the threads that run queries (HTTP connections, rule groups): deep PromQL expressions recurse.
-/// Only the pages a thread touches use memory.
-pub const QUERY_STACK_SIZE: usize = 64 << 20;
+/// Only the pages a thread touches use memory. 256 MiB takes about 400k nested parentheses in a release build
+/// (Go: a goroutine stack grows to 1 GB; at depth 200k Go used 900 MB of RSS, this port 15 MB).
+pub const QUERY_STACK_SIZE: usize = 256 << 20;
 
-/// Builds the process logger (Go `promslog.New`) over a handler.
-pub fn new_logger(h: util::logging::Handler) -> Logger {
+/// The component logger (`discovery::Logger`, which most crates take) over the process logger (Go
+/// `promslog.New`): every crate logs through one stream in Go's format.
+pub fn new_logger(root: util::logging::Logger) -> Logger {
     Logger::new(Arc::new(move |level: discovery::log::Level, msg: &str, attrs: &[(String, String)]| {
         let l = match level {
-            discovery::log::Level::Debug => util::logging::SlogLevel::Debug,
-            discovery::log::Level::Info => util::logging::SlogLevel::Info,
-            discovery::log::Level::Warn => util::logging::SlogLevel::Warn,
-            discovery::log::Level::Error => util::logging::SlogLevel::Error,
+            discovery::log::Level::Debug => util::logging::Level::Debug,
+            discovery::log::Level::Info => util::logging::Level::Info,
+            discovery::log::Level::Warn => util::logging::Level::Warn,
+            discovery::log::Level::Error => util::logging::Level::Error,
         };
-        h.log(l, msg, attrs);
+        if !root.enabled(l) {
+            return;
+        }
+        let kv: Vec<(&str, &dyn util::logging::LogValue)> =
+            attrs.iter().map(|(k, v)| (k.as_str(), v as &dyn util::logging::LogValue)).collect();
+        root.log(l, msg, &kv);
     }))
 }
 
@@ -182,7 +189,7 @@ struct Reloading {
     agent_mode: bool,
     logger: Logger,
     no_step: Arc<SafeNoStepSubqueryInterval>,
-    log_level: Arc<util::logging::Level>,
+    root_logger: util::logging::Logger,
 }
 
 impl Reloading {
@@ -193,7 +200,7 @@ impl Reloading {
             agent_mode: self.agent_mode,
             logger: &self.logger,
             no_step_subquery_interval: &self.no_step,
-            log_level: &self.log_level,
+            root_logger: &self.root_logger,
         };
         reload::reload_config(&rc, callback, &self.rls)
     }
@@ -253,13 +260,15 @@ pub fn main() {
         exit(0);
     }
 
-    let log_level = util::logging::Level::new();
-    let _ = log_level.set(&cfg.log_level);
-    let log_format = util::logging::Format::parse(&cfg.log_format).unwrap_or_default();
-    let logger = new_logger(util::logging::Handler::new(log_level.clone(), log_format, None));
+    let root_logger = util::logging::Logger::new(util::logging::Config {
+        level: util::logging::Level::parse(&cfg.log_level).unwrap_or_default(),
+        format: util::logging::Format::parse(&cfg.log_format).unwrap_or_default(),
+        writer: None,
+    });
+    let logger = new_logger(root_logger.clone());
 
     // The CLI log level is the default when runtime.log_level is absent from the config file.
-    let level_string = log_level.to_string();
+    let level_string = root_logger.level().unwrap_or_default().to_string();
     config::set_default_runtime_config(|r| r.log_level = config::LogLevel(level_string.clone()));
 
     let notifs = web::notifications::Notifications::new(cfg.max_notifications_subscribers.max(0) as usize);
@@ -917,7 +926,7 @@ pub fn main() {
         agent_mode,
         logger: logger.clone(),
         no_step: no_step.clone(),
-        log_level: log_level.clone(),
+        root_logger: root_logger.clone(),
     });
 
     let db_open = Event::new();
@@ -1344,15 +1353,62 @@ pub fn main() {
             },
         );
     } else {
-        // Agent mode: the agent WAL storage (tsdb/agent) is not ported yet.
-        let l = logger.clone();
+        // WAL storage (agent mode).
+        let opts = agent::Options {
+            wal_segment_size: cfg.agent.wal_segment_size,
+            wal_compression: tsdb_wal_compression,
+            stripe_size: 0,
+            truncate_frequency: Duration::from_nanos(cfg.agent.truncate_frequency.max(0) as u64),
+            min_wal_time: cfg.agent.min_wal_time / 1_000_000,
+            max_wal_time: cfg.agent.max_wal_time / 1_000_000,
+            no_lockfile: cfg.agent.no_lockfile,
+            out_of_order_time_window: tsdb_conf.out_of_order_time_window.max(0),
+            enable_st_as_zero_sample: fo.agent_enable_st_as_zero_sample,
+            enable_st_storage: fo.agent_enable_st_storage,
+            enable_metadata_wal_records: fo.agent_enable_metadata_wal_records,
+            checkpoint_from_in_memory_series: cfg.agent.checkpoint_from_in_memory_series,
+            checkpoint_batch_size: cfg.agent.checkpoint_batch_size.max(0) as usize,
+        };
+        let cancel = Event::new();
+        let cancel2 = cancel.clone();
+        let (l, l2) = (logger.clone(), logger.clone());
+        let (ls, rs, dbo) = (local_storage.clone(), remote_storage.clone(), db_open.clone());
+        let fo2 = fanout.clone();
+        let path = local_storage_path.clone();
+        let wal_seg = cfg.agent.wal_segment_size;
         g.add(
             "agent-storage",
             move || {
                 l.info("Starting WAL storage ...", &[]);
-                Err("opening storage failed: agent mode (tsdb/agent) is not available in this build yet".to_string())
+                if wal_seg != 0 && !(10 * 1024 * 1024..=256 * 1024 * 1024).contains(&wal_seg) {
+                    return Err("flag 'storage.agent.wal-segment-size' must be set between 10MB and 256MB".to_string());
+                }
+                let al = tsdb_logger(&l.with(&[("component", "agent")]));
+                let rsn: Arc<dyn agent::LowestSentTimestamp> = Arc::new(RemoteNotify(rs.clone()));
+                let db = agent::open(al, Some(rsn), std::path::Path::new(&path), Some(opts))
+                    .map_err(|e| format!("opening storage failed: {e}"))?;
+                let db = Arc::new(db);
+                let fs_type = sys::fs_type(&path);
+                if fs_type == "NFS_SUPER_MAGIC" {
+                    l.warn(&fs_type, &[("msg", "This filesystem is not supported and may lead to data corruption and data loss. Please carefully read https://prometheus.io/docs/prometheus/latest/storage/ to learn more about supported filesystems.")]);
+                } else {
+                    l.info(&fs_type, &[]);
+                }
+                l.info("Agent WAL storage started", &[]);
+                ls.set(Some(LocalDb::Other(db.clone() as Arc<dyn Storage>)), 0);
+                db.set_write_notified(Some(Arc::new(RemoteNotify(rs))));
+                dbo.set();
+                cancel.wait();
+                l.info("Agent WAL storage stopped", &[]);
+                Ok(())
             },
-            |_| {},
+            move |_| {
+                l2.info("Stopping agent WAL storage...", &[]);
+                if let Some(e) = fo2.close() {
+                    l2.error("Error stopping storage", &[("err", &e.to_string())]);
+                }
+                cancel2.set();
+            },
         );
     }
     {
@@ -1428,6 +1484,12 @@ struct RemoteNotify(Arc<remote::storage::Storage>);
 impl tsdb_format::wlog::WriteNotified for RemoteNotify {
     fn notify(&self) {
         self.0.notify();
+    }
+}
+
+impl agent::LowestSentTimestamp for RemoteNotify {
+    fn lowest_sent_timestamp(&self) -> i64 {
+        self.0.lowest_sent_timestamp()
     }
 }
 

@@ -196,7 +196,7 @@ impl RuleConcurrencyController for SequentialRuleEvalController {
 
 /// The stack size of a rule group's evaluation thread (deep rule expressions recurse in the parser and the
 /// engine; virtual memory only until touched).
-pub const GROUP_STACK_SIZE: usize = 64 << 20;
+pub const GROUP_STACK_SIZE: usize = 256 << 20;
 
 /// Go `ManagerOptions`.
 #[derive(Clone)]

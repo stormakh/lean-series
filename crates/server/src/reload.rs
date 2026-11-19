@@ -50,7 +50,8 @@ pub struct ReloadContext<'a> {
     pub agent_mode: bool,
     pub logger: &'a Logger,
     pub no_step_subquery_interval: &'a SafeNoStepSubqueryInterval,
-    pub log_level: &'a util::logging::Level,
+    /// The process logger, whose level `runtime.log_level` sets.
+    pub root_logger: &'a util::logging::Logger,
 }
 
 /// Go `reloadConfig`: loads the file, applies it with every reloader (all run even if one fails), then sets the
@@ -97,7 +98,8 @@ fn reload_config_inner(rc: &ReloadContext<'_>, rls: &[Reloader]) -> Result<(), S
             yaml::go_quote(rc.filename)
         ));
     }
-    rc.log_level.set(&conf.runtime.log_level.0).map_err(|e| format!("applying log level: {e}"))?;
+    let level = util::logging::Level::parse(&conf.runtime.log_level.0).map_err(|e| format!("applying log level: {e}"))?;
+    rc.root_logger.set_level(level);
     update_go_gc(&conf, logger);
     rc.no_step_subquery_interval.set(conf.global_config.evaluation_interval.0);
     let kv: Vec<(&str, &str)> = timings.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();

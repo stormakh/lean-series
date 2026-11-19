@@ -49,6 +49,12 @@ pub fn compress_response(accept_encoding: &str, mut resp: Response) -> Response 
             let _ = std::io::Read::read_to_end(&mut f, &mut b);
             b
         }
+        // A streamed body is produced while it is sent: it stays uncompressed.
+        s @ Body::Stream(_) => {
+            resp.body = s;
+            remove_header(&mut resp, "Vary");
+            return resp;
+        }
     };
     let out = match enc {
         // the server's own small encoder (it also fits the server's small thread stacks)

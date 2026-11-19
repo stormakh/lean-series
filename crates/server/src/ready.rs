@@ -36,7 +36,7 @@ impl LocalDb {
 
 /// Go `agent.ErrUnsupported`.
 pub fn err_unsupported() -> Error {
-    Error::msg("unsupported operation with WAL-only storage")
+    agent::ERR_UNSUPPORTED
 }
 
 /// Go `readyStorage`: a storage whose database is set once it is open.

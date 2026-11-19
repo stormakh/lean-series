@@ -70,8 +70,13 @@ pub fn rw_proto_msg_set(prev: &[String], opt: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// promslog flag `LevelFlagHelp`.
+pub const LEVEL_FLAG_HELP: &str = "Only log messages with the given severity or above. One of: [debug, info, warn, error]";
+/// promslog flag `FormatFlagHelp`.
+pub const FORMAT_FLAG_HELP: &str = "Output format of log messages. One of: [logfmt, json]";
+
 fn log_level_set(_: &[String], v: &str) -> Result<(), String> {
-    util::logging::Level::default().set(v)
+    util::logging::Level::parse(v).map(|_| ())
 }
 
 fn log_format_set(_: &[String], v: &str) -> Result<(), String> {
@@ -227,8 +232,8 @@ pub fn app(name: &str) -> App {
         Flag::new("scrape.discovery-reload-interval", "Interval used by scrape manager to throttle target groups updates.", ModelDuration).hidden().default("5s"),
         Flag::new("enable-feature", ENABLE_FEATURE_HELP, Strings),
         Flag::new("agent", "Run Prometheus in 'Agent mode'.", Bool),
-        Flag::new("log.level", format!("{} Deprecated: set runtime.log_level in the configuration file instead.", util::logging::LEVEL_FLAG_HELP), Custom(log_level_set, false)).default("info"),
-        Flag::new("log.format", util::logging::FORMAT_FLAG_HELP, Custom(log_format_set, false)).default("logfmt"),
+        Flag::new("log.level", format!("{} Deprecated: set runtime.log_level in the configuration file instead.", LEVEL_FLAG_HELP), Custom(log_level_set, false)).default("info"),
+        Flag::new("log.format", FORMAT_FLAG_HELP, Custom(log_format_set, false)).default("logfmt"),
         Flag::new("write-documentation", "Generate command line documentation. Internal use.", Bool).hidden(),
     ];
     App::new(name, "The Prometheus monitoring server", &version_print("prometheus"), flags, Vec::new())

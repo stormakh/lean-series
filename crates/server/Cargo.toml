@@ -18,6 +18,7 @@ model = { path = "../model" }
 chunkenc = { path = "../chunkenc" }
 storage = { path = "../storage" }
 tsdb = { path = "../tsdb" }
+agent = { path = "../agent" }
 tsdb-format = { path = "../tsdb-format" }
 promql = { path = "../promql" }
 config = { path = "../config" }
