@@ -2473,8 +2473,169 @@ fn test_head_returns_sorted_label_values() {
     assert!(q.close().is_none());
 }
 
-// TestWalRepair_DecodingError, TestWblRepair_DecodingError and TestHeadReadWriterRepair open a DB
-// (`tsdb.Open`) to trigger the repair: they are ported once the DB lands.
+/// Go `errors.As(err, &*wlog.CorruptionErr)`, also through an `errLoadWbl` wrapper.
+fn is_corruption_err(err: &Error) -> bool {
+    if err.downcast_ref::<wlog::Error>().and_then(|e| e.corruption()).is_some() {
+        return true;
+    }
+    err.downcast_ref::<tsdb::head_wal::ErrLoadWbl>()
+        .is_some_and(|e| is_corruption_err(&e.0))
+}
+
+/// Counts the intact records of the log in `dir`.
+fn count_records(dir: &std::path::Path) -> usize {
+    let sr = wlog::new_segments_reader(dir).unwrap();
+    let mut r = wlog::Reader::new(sr);
+    let mut act_rec = 0;
+    while r.next() {
+        act_rec += 1;
+    }
+    assert!(r.err().is_none(), "{:?}", r.err());
+    act_rec
+}
+
+/// TestWalRepair_DecodingError ensures that a repair is run for an error when decoding a record.
+#[test]
+fn test_wal_repair_decoding_error() {
+    for enable_st_storage in [false, true] {
+        let enc = Encoder { enable_st_storage };
+        let mut series = Vec::new();
+        enc.series(&[rs(1, &["a", "b"])], &mut series);
+        let mut samples = Vec::new();
+        enc.samples(&[rsmp(0, 99, 1.0)], &mut samples);
+        let mut tstones = Vec::new();
+        enc.tombstones(
+            &[Stone {
+                r#ref: 1,
+                intervals: vec![],
+            }],
+            &mut tstones,
+        );
+        // (name, record, total records, expected intact records); the corruption keeps the first 3 bytes.
+        let tests: Vec<(&str, Vec<u8>, usize, usize)> = vec![
+            ("decode_series", series, 9, 5),
+            ("decode_samples", samples, 9, 5),
+            ("decode_tombstone", tstones, 9, 5),
+        ];
+        for (name, rec, total_recs, exp_recs) in &tests {
+            for compress in COMPRESSIONS {
+                let name = format!("{name},compress={},stStorage={enable_st_storage}", compress.as_str());
+                let dir = TempDir::new();
+
+                // Fill the wal and corrupt it.
+                {
+                    let w = Arc::new(WL::new(dir.path().join("wal"), compress).unwrap());
+                    for i in 1..=*total_recs {
+                        // At this point insert a corrupted record.
+                        if i - 1 == *exp_recs {
+                            // adapted: Go `rec[:3]` slices into the spare (zeroed) capacity of the record
+                            // buffer when the record is shorter (the tombstone record without intervals is 1
+                            // byte); pad with zeros the same way.
+                            let mut corr = rec.clone();
+                            corr.resize(3, 0);
+                            w.log(&corr[..3]).unwrap();
+                            continue;
+                        }
+                        w.log(rec).unwrap();
+                    }
+
+                    let opts = HeadOptions {
+                        chunk_range: 1,
+                        chunk_dir_root: w.dir().to_path_buf(),
+                        ..HeadOptions::default()
+                    };
+                    let h = Head::new(Some(w), None, opts, None).unwrap();
+                    assert_eq!(0.0, h.metrics.wal_corruptions_total.get(), "{name}");
+                    let init_err = h.init(i64::MIN).expect_err("init should fail");
+                    assert!(
+                        is_corruption_err(&init_err),
+                        "{name}: reading the wal didn't return corruption error: {init_err}"
+                    );
+                    h.close().unwrap(); // Head will close the wal as well.
+                }
+
+                // Open the db to trigger a repair.
+                {
+                    let db = tsdb::db::open(dir.path(), None, Some(tsdb::db::default_options()), None).unwrap();
+                    assert_eq!(1.0, db.head().metrics.wal_corruptions_total.get(), "{name}");
+                    db.close().unwrap();
+                }
+
+                // Read the wal content after the repair.
+                assert_eq!(
+                    *exp_recs,
+                    count_records(&dir.path().join("wal")),
+                    "{name}: Wrong number of intact records"
+                );
+            }
+        }
+    }
+}
+
+/// TestWblRepair_DecodingError ensures that a repair is run for an error when decoding a record.
+#[test]
+fn test_wbl_repair_decoding_error() {
+    for enable_st_storage in [false, true] {
+        let name = format!("enableSTStorage={enable_st_storage}");
+        let enc = Encoder { enable_st_storage };
+        let mut rec = Vec::new();
+        enc.samples(&[rsmp(0, 99, 1.0)], &mut rec);
+        let total_recs = 9;
+        let exp_recs = 5;
+        let dir = TempDir::new();
+
+        // Fill the wbl and corrupt it.
+        {
+            let wal = Arc::new(WL::new(dir.path().join("wal"), compression::Type::None).unwrap());
+            let wbl = Arc::new(WL::new(dir.path().join("wbl"), compression::Type::None).unwrap());
+
+            for i in 1..=total_recs {
+                // At this point insert a corrupted record.
+                if i - 1 == exp_recs {
+                    wbl.log(&rec[..3]).unwrap();
+                    continue;
+                }
+                wbl.log(&rec).unwrap();
+            }
+
+            let opts = HeadOptions {
+                chunk_range: 1,
+                chunk_dir_root: wal.dir().to_path_buf(),
+                ..HeadOptions::default()
+            };
+            opts.out_of_order_cap_max.store(30, Ordering::Relaxed);
+            opts.out_of_order_time_window.store(1000 * 60 * 1000, Ordering::Relaxed);
+            let h = Head::new(Some(wal), Some(wbl), opts, None).unwrap();
+            assert_eq!(0.0, h.metrics.wal_corruptions_total.get(), "{name}");
+            let init_err = h.init(i64::MIN).expect_err("init should fail");
+
+            // Wbl errors are wrapped into errLoadWbl, make sure we can unwrap it.
+            assert!(
+                init_err.downcast_ref::<tsdb::head_wal::ErrLoadWbl>().is_some(),
+                "{name}: {init_err}"
+            );
+            assert!(
+                is_corruption_err(&init_err),
+                "{name}: reading the wal didn't return corruption error: {init_err}"
+            );
+            h.close().unwrap(); // Head will close the wal as well.
+        }
+
+        // Open the db to trigger a repair.
+        {
+            let db = tsdb::db::open(dir.path(), None, Some(tsdb::db::default_options()), None).unwrap();
+            assert_eq!(1.0, db.head().metrics.wal_corruptions_total.get(), "{name}");
+            db.close().unwrap();
+        }
+
+        // Read the wbl content after the repair.
+        assert_eq!(
+            exp_recs,
+            count_records(&dir.path().join("wbl")),
+            "{name}: Wrong number of intact records"
+        );
+    }
+}
 
 /// Creating a checkpoint over a corrupted WAL segment increments prometheus_tsdb_wal_corruptions_total.
 #[test]
@@ -2513,6 +2674,97 @@ fn test_head_truncate_wal_increments_corruption_metric_on_corrupted_segment() {
         "checkpoint creation should report a WAL corruption error, got {err}"
     );
     assert_eq!(1.0, h.metrics.wal_corruptions_total.get());
+}
+
+#[test]
+fn test_head_read_writer_repair() {
+    let dir = TempDir::new();
+    const CHUNK_RANGE: i64 = 1000;
+    let wal_dir = dir.path().join("wal");
+    let chunks_dir = tsdb::head::mmapped_chunks_dir(dir.path());
+
+    // Fill the chunk segments and corrupt it.
+    {
+        let w = Arc::new(WL::new(&wal_dir, compression::Type::None).unwrap());
+        let opts = HeadOptions {
+            chunk_range: CHUNK_RANGE,
+            chunk_dir_root: dir.path().to_path_buf(),
+            // We need to set this option so that we use the async queue. Upstream prometheus uses the queue
+            // directly.
+            chunk_write_queue_size: 1,
+            ..HeadOptions::default()
+        };
+        let h = Head::new(Some(w), None, opts, None).unwrap();
+        assert_eq!(0.0, h.metrics.mmap_chunk_corruption_total.get());
+        h.init(i64::MIN).unwrap();
+
+        let c_opts = ChunkOpts {
+            chunk_disk_mapper: Some(&h.chunk_disk_mapper),
+            chunk_range: CHUNK_RANGE,
+            samples_per_chunk: tsdb::head::DEFAULT_SAMPLES_PER_CHUNK,
+            ..Default::default()
+        };
+
+        let (s, created) = h.get_or_create(1, &ls(&["a", "1"]), false).unwrap();
+        assert!(created, "series was not created");
+
+        for i in 0..7i64 {
+            let mut g = s.lock();
+            let (ok, chunk_created) = g.append(
+                0,
+                i * CHUNK_RANGE,
+                (i * CHUNK_RANGE) as f64,
+                0,
+                &c_opts,
+                &s.lset,
+                s.r#ref,
+            );
+            assert!(ok, "series append failed");
+            assert!(chunk_created, "chunk was not created");
+            let (ok, chunk_created) = g.append(
+                0,
+                i * CHUNK_RANGE + CHUNK_RANGE - 1,
+                (i * CHUNK_RANGE) as f64,
+                0,
+                &c_opts,
+                &s.lset,
+                s.r#ref,
+            );
+            assert!(ok, "series append failed");
+            assert!(!chunk_created, "chunk was created");
+            h.chunk_disk_mapper.cut_new_file();
+            g.mmap_chunks(&h.chunk_disk_mapper, s.r#ref);
+        }
+        h.close().unwrap();
+
+        // Verify that there are 6 segment files. It should only be 6 because the last call to .CutNewFile() won't
+        // take effect without another chunk being written.
+        let mut files: Vec<_> = std::fs::read_dir(&chunks_dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        files.sort();
+        assert_eq!(6, files.len());
+
+        // Corrupt the 4th file by writing a random byte to series ref.
+        use std::os::unix::fs::FileExt;
+        let f = std::fs::OpenOptions::new().write(true).open(&files[3]).unwrap();
+        let n = f
+            .write_at(&[67, 88], (tsdb_format::chunks::HEAD_CHUNK_FILE_HEADER_SIZE + 2) as u64)
+            .unwrap();
+        assert_eq!(2, n);
+    }
+
+    // Open the db to trigger a repair.
+    {
+        let db = tsdb::db::open(dir.path(), None, Some(tsdb::db::default_options()), None).unwrap();
+        assert_eq!(1.0, db.head().metrics.mmap_chunk_corruption_total.get());
+        db.close().unwrap();
+    }
+
+    // Verify that there are 3 segment files after the repair. The segments from the corrupt segment should be
+    // removed.
+    assert_eq!(3, std::fs::read_dir(&chunks_dir).unwrap().count());
 }
 
 #[test]
@@ -2911,4 +3163,65 @@ fn test_isolation_without_add() {
     );
 }
 
-// TestIsolationSeek uses a DB (`newTestDB`): ported once the DB lands.
+/// TestIsolationSeek checks that seeking does not expose head samples committed after the querier was created.
+#[test]
+fn test_isolation_seek() {
+    if DEFAULT_ISOLATION_DISABLED {
+        return; // Skipping test since tsdb isolation is disabled.
+    }
+
+    let db = crate::common::new_test_db(vec![]);
+    let lbls = ls(&["foo", "bar"]);
+    let append_range = |from: i64, to: i64| {
+        let mut app = db.appender(&ctx());
+        for ts in from..=to {
+            app.append(0, &lbls, ts, ts as f64).unwrap();
+        }
+        commit(&mut *app);
+    };
+    let timestamps = |from: i64, to: i64| -> Vec<i64> { (from..=to).collect() };
+
+    append_range(1, 10);
+    // A querier starting after the chunk's first sample trims the chunk.
+    let mut queriers: Vec<(&str, i64, storage::BoxQuerier)> = Vec::new();
+    for (name, mint) in [("untrimmed", 0i64), ("trimmed", 3)] {
+        let q = db.querier(mint, 100).unwrap();
+        queriers.push((name, mint, q));
+    }
+    // The queriers must not see samples committed after they were created, although these share a head chunk
+    // with the ones they do see.
+    append_range(11, 20);
+
+    for (qname, qmint, q) in &queriers {
+        // (name, seek (zero means advancing with Next only), want)
+        let cases: Vec<(&str, i64, Vec<i64>)> = vec![
+            ("next", 0, timestamps((*qmint).max(1), 10)),
+            ("seek to a visible sample", 5, timestamps(5, 10)),
+            ("seek past the visible samples", 15, vec![]),
+        ];
+        for (tname, seek, want) in cases {
+            let name = format!("{qname}/{tname}");
+            let mut ss = q.select(&ctx(), false, None, &[eq("foo", "bar")]);
+            assert!(ss.next(), "{name}");
+            let s = ss.at().clone();
+            let mut it = s.iterator(None);
+            let mut vt = it.next();
+            if seek != 0 {
+                vt = it.seek(seek);
+            }
+            let mut got = Vec::new();
+            while vt == ValueType::Float {
+                got.push(it.at_t());
+                vt = it.next();
+            }
+            assert!(it.err().is_none(), "{name}");
+            assert_eq!(want, got, "{name}");
+            drop(it);
+            assert!(!ss.next(), "{name}");
+            assert!(ss.err().is_none(), "{name}");
+        }
+    }
+    for (_, _, mut q) in queriers {
+        assert!(q.close().is_none());
+    }
+}
