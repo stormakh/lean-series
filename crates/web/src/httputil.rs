@@ -80,11 +80,9 @@ pub fn compress(resp: &mut Response, req: &Request) {
         _ => return,
     };
     let out = match enc {
-        "gzip" => {
-            let mut w = flate2::write::GzEncoder::new(Vec::with_capacity(data.len() / 4 + 64), flate2::Compression::default());
-            let _ = w.write_all(data);
-            w.finish().unwrap_or_default()
-        }
+        // The http crate's encoder sizes its state to the input; flate2's default allocates and clears a full
+        // zlib-sized state for each body, which costs more than the query for small JSON answers.
+        "gzip" => http::gzip::gzip_vec(data),
         _ => {
             let mut w = flate2::write::ZlibEncoder::new(Vec::with_capacity(data.len() / 4 + 64), flate2::Compression::default());
             let _ = w.write_all(data);
