@@ -22,7 +22,20 @@ pub mod rules_cmd;
 pub mod tsdb_cmd;
 pub mod unittest;
 
+pub mod analyze;
 pub mod app;
+pub mod cli;
+pub mod debug;
+pub mod doctext;
+pub mod pending;
+pub mod promslog;
+pub mod query;
+pub mod sd;
+
+/// Go's text of an I/O error (for example "no such file or directory").
+pub fn io_err_text(e: &std::io::Error) -> String {
+    net::types::go_io_error(e)
+}
 
 use std::io::{Read, Write};
 
