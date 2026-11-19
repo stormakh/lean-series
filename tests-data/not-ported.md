@@ -22,8 +22,6 @@
   `test_query_cost_reject_metric_reason`.
 - `estimate_test` `TestEstimateCost_SparseSeries`: needs the real TSDB (head compaction into blocks, multi-block
   sampling). Waits for the TSDB crate.
-- `estimate_resource_test` `TestEstimateCost_RemoteSamplingFallback`: needs `storage/remote` (prompb, remote read
-  client). Waits for the remote crate.
 
 ## tsdb
 

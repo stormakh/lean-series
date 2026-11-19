@@ -296,6 +296,7 @@ dependencies = [
  "chunkenc",
  "json",
  "model",
+ "remote",
  "storage",
  "util",
 ]
