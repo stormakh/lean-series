@@ -2359,3 +2359,189 @@ fn rate_annotation_cases() -> Vec<(&'static str, &'static str, &'static str, boo
 			"#, "increase(series_bucket[1m1s])", false, vec![], vec![]),
     ]
 }
+
+// -----------------------------------------------------------------------------------------------------------------
+// Histogram edge cases with mock storage.
+
+/// A querier that returns the series of `series` whose labels match (Go `storage.MockQuerier`).
+struct SeriesQuerier(Vec<storage::SeriesArc>);
+
+impl LabelQuerier for SeriesQuerier {
+    fn label_values(&self, _: &Context, _: &str, _: Option<&LabelHints>, _: &[Matcher]) -> LabelResult {
+        (Vec::new(), Annotations::new(), None)
+    }
+    fn label_names(&self, _: &Context, _: Option<&LabelHints>, _: &[Matcher]) -> LabelResult {
+        (Vec::new(), Annotations::new(), None)
+    }
+    fn close(&mut self) -> Option<Error> {
+        None
+    }
+}
+
+struct OneSeriesSet(Option<storage::SeriesArc>, bool);
+
+impl storage::SeriesSet for OneSeriesSet {
+    fn next(&mut self) -> bool {
+        let c = self.1;
+        self.1 = true;
+        !c && self.0.is_some()
+    }
+    fn at(&self) -> &storage::SeriesArc {
+        self.0.as_ref().unwrap()
+    }
+    fn err(&self) -> Option<Error> {
+        None
+    }
+    fn warnings(&self) -> Annotations {
+        Annotations::new()
+    }
+}
+
+impl Querier for SeriesQuerier {
+    fn select(&self, _: &Context, _: bool, _: Option<&SelectHints>, ms: &[Matcher]) -> BoxSeriesSet {
+        let s = self.0.iter().find(|s| ms.iter().all(|m| m.matches(s.labels().get(&m.name)))).cloned();
+        Box::new(OneSeriesSet(s, false))
+    }
+}
+
+fn series_queryable(series: Vec<storage::SeriesArc>) -> Arc<dyn storage::Queryable> {
+    let series = Arc::new(series);
+    Arc::new(QueryableFunc(move |_, _| -> Result<BoxQuerier, Error> {
+        Ok(Box::new(SeriesQuerier(series.as_ref().clone())))
+    }))
+}
+
+/// A series over a list of chunks (Go `mockSeries` of engine_test.go).
+struct ChunksSeries {
+    labels: Labels,
+    chunks: Vec<Box<dyn chunkenc::Chunk>>,
+}
+
+impl storage::Series for ChunksSeries {
+    fn labels(&self) -> &Labels {
+        &self.labels
+    }
+    fn iterator<'a>(&'a self, _reuse: Option<chunkenc::AnyIterator<'a>>) -> chunkenc::AnyIterator<'a> {
+        let its = self.chunks.iter().map(|c| c.iterator(None)).collect();
+        storage::chain_sample_iterator_from_iterators(None, its)
+    }
+}
+
+#[test]
+fn test_histogram_rate_with_float_staleness() {
+    use chunkenc::{ENC_HISTOGRAM, ENC_XOR, new_empty_chunk};
+    use model::histogram::{Histogram, Span};
+    let h1 = Histogram {
+        schema: 2,
+        count: 10,
+        sum: 100.0,
+        positive_spans: vec![Span::new(0, 1)],
+        positive_buckets: vec![100],
+        ..Default::default()
+    };
+    let mut c1 = new_empty_chunk(ENC_HISTOGRAM).unwrap();
+    let mut app = c1.appender().unwrap();
+    let (newc, recoded) = app.append_histogram(&mut *c1, None, 0, 0, &mut h1.clone(), false).unwrap();
+    assert!(!recoded && newc.is_none());
+    let (newc, recoded) = app.append_histogram(&mut *c1, None, 0, 10, &mut h1.clone(), false).unwrap();
+    assert!(!recoded && newc.is_none());
+
+    let mut c2 = new_empty_chunk(ENC_XOR).unwrap();
+    let mut app = c2.appender().unwrap();
+    app.append(&mut *c2, 0, 20, model::value::stale_nan());
+
+    let h2 = Histogram { schema: 2, ..Default::default() };
+    let mut c3 = new_empty_chunk(ENC_HISTOGRAM).unwrap();
+    let mut app = c3.appender().unwrap();
+    let (newc, recoded) = app.append_histogram(&mut *c3, None, 0, 30, &mut h2.clone(), false).unwrap();
+    assert!(!recoded && newc.is_none());
+    let (newc, recoded) = app.append_histogram(&mut *c3, None, 0, 40, &mut h2.clone(), false).unwrap();
+    assert!(!recoded && newc.is_none());
+
+    let q = series_queryable(vec![Arc::new(ChunksSeries {
+        labels: from_strings(&["__name__", "foo"]),
+        chunks: vec![c1, c2, c3],
+    })]);
+    let engine = promqltest::new_test_engine(false, Duration::ZERO, promqltest::DEFAULT_MAX_SAMPLES_PER_QUERY);
+    let ctx = Context::background();
+    let mut qry = engine.new_instant_query(&ctx, q, None, "rate(foo[40s])", 45).unwrap();
+    let res = qry.exec(&ctx);
+    assert!(res.err.is_none(), "{:?}", res.err);
+    let vec = res.vector().unwrap();
+    assert_eq!(1, vec.len());
+    let h = vec[0].h.as_ref().expect("the result is a histogram");
+    assert_eq!(0.0, h.count);
+    assert_eq!(0.0, h.sum);
+}
+
+fn is_histogram_kind(e: &Error, kind: model::histogram::ErrorKind) -> bool {
+    match e {
+        Error::Chunk(c) => c.is_histogram(kind),
+        other => other.unwrap_once().is_some_and(|i| is_histogram_kind(i, kind)),
+    }
+}
+
+#[test]
+fn test_invalid_histogram_bucket_layout_fails_query() {
+    use model::histogram::{CounterResetHint, ErrorKind, FloatHistogram, Span};
+    let invalid = FloatHistogram {
+        counter_reset_hint: CounterResetHint::GaugeType,
+        schema: 1,
+        count: 5.0,
+        sum: 10.0,
+        positive_spans: vec![Span::new(0, 1), Span::new(-2, 1)],
+        positive_buckets: vec![2.0, 3.0],
+        ..Default::default()
+    };
+    let valid = FloatHistogram {
+        counter_reset_hint: CounterResetHint::GaugeType,
+        schema: 0,
+        count: 5.0,
+        sum: 10.0,
+        positive_spans: vec![Span::new(0, 2)],
+        positive_buckets: vec![2.0, 3.0],
+        ..Default::default()
+    };
+    let mut invalid_counter = invalid.clone();
+    invalid_counter.counter_reset_hint = CounterResetHint::UnknownCounterReset;
+    let mut valid_counter = valid.clone();
+    valid_counter.counter_reset_hint = CounterResetHint::UnknownCounterReset;
+    let fh = |t: i64, h: &FloatHistogram| storage::Sample::float_histogram(0, t, h.clone());
+    let mk = |name: &str, samples: Vec<storage::Sample>| storage::new_list_series(from_strings(&["__name__", name]), samples);
+    let q = series_queryable(vec![
+        mk("invalid_higher_schema", vec![fh(60000, &invalid)]),
+        mk("valid_lower_schema", vec![fh(60000, &valid)]),
+        mk("schema_increase", vec![fh(0, &valid), fh(60000, &invalid)]),
+        mk("counter_schema_increase", vec![fh(0, &valid_counter), fh(30000, &valid_counter), fh(60000, &invalid_counter)]),
+        mk("schema_decrease", vec![fh(30000, &invalid), fh(60000, &valid)]),
+    ]);
+    let engine = promqltest::new_test_engine(false, Duration::ZERO, promqltest::DEFAULT_MAX_SAMPLES_PER_QUERY);
+    let mut failures = Vec::new();
+    for expr in [
+        "invalid_higher_schema + valid_lower_schema",
+        "valid_lower_schema + invalid_higher_schema",
+        "invalid_higher_schema - valid_lower_schema",
+        "valid_lower_schema - invalid_higher_schema",
+        "rate(counter_schema_increase[2m])",
+        "increase(counter_schema_increase[2m])",
+        "delta(schema_increase[2m])",
+        "idelta(schema_increase[2m])",
+        "delta(schema_decrease[2m])",
+        "idelta(schema_decrease[2m])",
+        "rate(counter_schema_increase[2m] anchored)",
+        "increase(counter_schema_increase[2m] anchored)",
+        "delta(schema_increase[30s] anchored)",
+        "schema_increase offset 30s smoothed",
+        "delta(schema_increase[30s] smoothed)",
+        "delta(schema_increase[30s] offset 30s smoothed)",
+    ] {
+        let ctx = Context::background();
+        let mut qry = engine.new_instant_query(&ctx, q.clone(), None, expr, 60000).unwrap();
+        let err = qry.exec(&ctx).err;
+        if !err.as_ref().is_some_and(|e| is_histogram_kind(e, ErrorKind::HistogramSpanNegativeOffset)) {
+            failures.push(format!("{}: {:?}", expr, err));
+        }
+    }
+    assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.join("\n"));
+}
+
