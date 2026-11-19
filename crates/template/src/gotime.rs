@@ -432,8 +432,8 @@ fn next_std_chunk(layout: &str) -> (&str, Option<Std>, &str) {
                     }
                 }
             }
-            b'.' | b',' => {
-                if i + 1 < n && (l[i + 1] == b'0' || l[i + 1] == b'9') {
+            b'.' | b','
+                if i + 1 < n && (l[i + 1] == b'0' || l[i + 1] == b'9') => {
                     let ch = l[i + 1];
                     let mut j = i + 1;
                     while j < n && l[j] == ch {
@@ -444,7 +444,6 @@ fn next_std_chunk(layout: &str) -> (&str, Option<Std>, &str) {
                         return (&layout[..i], Some(std), &layout[j..]);
                     }
                 }
-            }
             _ => {}
         }
     }
@@ -584,21 +583,19 @@ pub fn duration_round(d: i64, m: i64) -> i64 {
         if r + r < m {
             return d + r;
         }
-        if let Some(d1) = (d - m).checked_add(r) {
-            if d1 < d {
+        if let Some(d1) = (d - m).checked_add(r)
+            && d1 < d {
                 return d1;
             }
-        }
         return i64::MIN;
     }
     if r + r < m {
         return d - r;
     }
-    if let Some(d1) = (d + m).checked_sub(r) {
-        if d1 > d {
+    if let Some(d1) = (d + m).checked_sub(r)
+        && d1 > d {
             return d1;
         }
-    }
     i64::MAX
 }
 

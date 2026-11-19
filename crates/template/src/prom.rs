@@ -158,7 +158,7 @@ pub fn convert_to_float(i: &Value) -> Result<f64, String> {
 
 /// Go's `int64(f)` on amd64: out-of-range values and NaN become math.MinInt64.
 fn go_f64_to_i64(f: f64) -> i64 {
-    if f.is_nan() || f >= 9.223372036854775808e18 || f < -9.223372036854775808e18 {
+    if f.is_nan() || f >= 9.223_372_036_854_776e18 || f < -9.223_372_036_854_776e18 {
         i64::MIN
     } else {
         f as i64

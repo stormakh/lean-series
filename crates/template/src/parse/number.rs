@@ -308,12 +308,12 @@ fn parse_hex_float(s: &str) -> Option<f64> {
 
 /// Go `float64(int64(f)) == f` (an out-of-range conversion never round-trips on amd64).
 fn int_exact(f: f64) -> bool {
-    (-9.223372036854775808e18..9.223372036854775808e18).contains(&f) && (f as i64) as f64 == f
+    (-9.223_372_036_854_776e18..9.223_372_036_854_776e18).contains(&f) && (f as i64) as f64 == f
 }
 
 /// Go `float64(uint64(f)) == f`.
 fn uint_exact(f: f64) -> bool {
-    (0.0..1.8446744073709551616e19).contains(&f.abs()) && f > -1.0 && (f as u64) as f64 == f
+    (0.0..1.844_674_407_370_955_2e19).contains(&f.abs()) && f > -1.0 && (f as u64) as f64 == f
 }
 
 fn simplify_complex(n: &mut NumberNode) {
@@ -369,14 +369,13 @@ pub fn new_number(pos: usize, text: &str, typ: ItemType) -> Result<NumberNode, S
         }
         _ => {}
     }
-    if let Some(stripped) = text.strip_suffix('i') {
-        if let Some(f) = parse_float(stripped) {
+    if let Some(stripped) = text.strip_suffix('i')
+        && let Some(f) = parse_float(stripped) {
             n.is_complex = true;
             n.complex128 = (0.0, f);
             simplify_complex(&mut n);
             return Ok(n);
         }
-    }
     let u = parse_uint0(text);
     if let Some(u) = u {
         n.is_uint = true;

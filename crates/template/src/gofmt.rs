@@ -447,15 +447,13 @@ impl Printer {
         }
         s.push_str("U+");
         s.push_str(&hex);
-        if self.f.sharp && u <= 0x10FFFF {
-            if let Some(c) = char::from_u32(u as u32) {
-                if is_print(c) {
+        if self.f.sharp && u <= 0x10FFFF
+            && let Some(c) = char::from_u32(u as u32)
+                && is_print(c) {
                     s.push_str(" '");
                     s.push(c);
                     s.push('\'');
                 }
-            }
-        }
         let old_zero = self.f.zero;
         self.f.zero = false;
         self.pad(&s);
@@ -893,12 +891,11 @@ impl Printer {
         if self.f.sharp_v {
             return false;
         }
-        if matches!(verb, 'v' | 's' | 'x' | 'X' | 'q') {
-            if let Some(s) = stringer(arg) {
+        if matches!(verb, 'v' | 's' | 'x' | 'X' | 'q')
+            && let Some(s) = stringer(arg) {
                 self.fmt_string(&s, verb, arg);
                 return true;
             }
-        }
         false
     }
 
@@ -1039,14 +1036,13 @@ impl Printer {
                 self.buf.push('}');
             }
             Value::Slice(s) => {
-                if matches!(verb, 's' | 'q' | 'x' | 'X') {
-                    if let Some(Type::Uint(UintKind::Uint8)) = s.ty.elem() {
+                if matches!(verb, 's' | 'q' | 'x' | 'X')
+                    && let Some(Type::Uint(UintKind::Uint8)) = s.ty.elem() {
                         let bytes: Vec<u8> =
                             s.items.iter().map(|v| if let Value::Uint(u, _) = v { *u as u8 } else { 0 }).collect();
                         self.fmt_bytes(&bytes, verb, &s.ty.to_string(), value);
                         return;
                     }
-                }
                 let elem = s.ty.elem().cloned().unwrap_or(Type::Interface);
                 if self.f.sharp_v {
                     self.buf.push_str(&s.ty.to_string());
@@ -1344,12 +1340,11 @@ fn int_from_arg(a: &[Value], arg_num: usize) -> (i64, bool, usize) {
                 num = *n;
                 is_int = true;
             }
-            Value::Uint(n, _) => {
-                if (*n as i64) >= 0 {
+            Value::Uint(n, _)
+                if (*n as i64) >= 0 => {
                     num = *n as i64;
                     is_int = true;
                 }
-            }
             _ => {}
         }
         new_arg_num = arg_num + 1;

@@ -372,11 +372,10 @@ fn take_nested_pipes(cmds: &mut [CommandNode], stack: &mut Vec<Box<PipeNode>>) {
                 Node::Chain(ch) => &mut ch.node,
                 other => other,
             };
-            if matches!(slot, Node::Pipe(_)) {
-                if let Node::Pipe(p) = std::mem::replace(slot, Node::Nil(0)) {
+            if matches!(slot, Node::Pipe(_))
+                && let Node::Pipe(p) = std::mem::replace(slot, Node::Nil(0)) {
                     stack.push(p);
                 }
-            }
         }
     }
 }

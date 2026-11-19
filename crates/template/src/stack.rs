@@ -10,7 +10,7 @@ const SEGMENT_STACK: usize = 16 << 20;
 
 /// Runs `f` on a new thread with a large stack when `depth` starts a new segment, else on this thread.
 pub fn maybe_grow<R: Send>(depth: usize, f: impl FnOnce() -> R + Send) -> R {
-    if depth == 0 || depth % SEGMENT != 0 {
+    if depth == 0 || !depth.is_multiple_of(SEGMENT) {
         return f();
     }
     std::thread::scope(|s| {

@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+
+<link type="text/css" rel="stylesheet" href="/prom//classic/static/vendor/rickshaw/rickshaw.min.css">
+<link type="text/css" rel="stylesheet" href="/prom//classic/static/vendor/bootstrap-4.5.2/css/bootstrap.min.css">
+<link type="text/css" rel="stylesheet" href="/prom//classic/static/css/prom_console.css">
+<link type="text/css" rel="stylesheet" href="/prom//classic/static/vendor/bootstrap4-glyphicons/css/bootstrap-glyphicons.min.css">
+<script src="/prom//classic/static/vendor/rickshaw/vendor/d3.v3.js"></script>
+<script src="/prom//classic/static/vendor/rickshaw/vendor/d3.layout.min.js"></script>
+<script src="/prom//classic/static/vendor/rickshaw/rickshaw.min.js"></script>
+<script src="/prom//classic/static/vendor/js/jquery-3.5.1.min.js"></script>
+<script src="/prom//classic/static/vendor/js/popper.min.js"></script>
+<script src="/prom//classic/static/vendor/bootstrap-4.5.2/js/bootstrap.min.js"></script>
+
+<script>
+var PATH_PREFIX = "\/prom\/";
+</script>
+<script src="/prom//classic/static/js/prom_console.js"></script>
+
+</head>
+<body>
+
+<nav class="navbar fixed-top navbar-expand-sm navbar-dark bg-dark">
+  <div class="container-fluid">
+    
+    <div class="navbar-header">
+      <button type="button" class="navbar-toggler" data-toggle="collapse" data-target="#bs-example-navbar-collapse-1" aria-expanded="false" aria-controls="navbar-nav" aria-label="toggle navigation">
+        <span class="navbar-toggler-icon"></span>
+        
+       
+        
+        
+      </button>
+      <a class="navbar-brand" href="/prom//">Prometheus</a>
+    </div>
+
+    <div class="collapse navbar-collapse" id="bs-example-navbar-collapse-1">
+      <ul class="nav navbar-nav">
+        <li class="nav-item"><a class="nav-link" href="/prom//alerts">Alerts</a></li>
+        <li class="nav-item"><a class="nav-link" href="https://www.pagerduty.com/">PagerDuty</a></li>
+      </ul>
+    </div>
+  </div>
+</nav>
+
+
+
+<div class="prom_lhs_menu row">
+<nav class="col-md-2 md-block bg-dark sidebar prom_lhs_menu_nav">
+<div class="sidebar-sticky">
+<ul class="nav flex-column">
+ 
+
+  <li ><a class="nav-link" href="index.html.example">Overview</a></li>
+
+
+
+
+  <li ><a class="nav-link" href="node.html">Node</a></li>
+
+
+  
+  <ul>
+    <li >
+      <a class="nav-link" href="node-overview.html?instance=localhost%3a9090">localhost:9090</a>
+    </li>
+    <ul>
+      <li >
+        <a class="nav-link" href="node-cpu.html?instance=localhost%3a9090">CPU</a>
+      </li>
+      <li class="prom_lhs_menu_selected nav-item">
+        <a class="nav-link" href="node-disk.html?instance=localhost%3a9090">Disk</a>
+      </li>
+    </ul>
+  </ul>
+  
+
+
+
+
+
+  <li ><a class="nav-link" href="prometheus.html">Prometheus</a></li>
+
+
+
+
+</ul>
+</div>
+</nav>
+</div>
+
+
+
+
+<div class="prom_console_rhs">
+<table class="table table-bordered table-hover table-sm">
+
+<tr>
+  <th colspan="2">Disks</th>
+</tr>
+
+  <th colspan="2"></th>
+  <tr>
+    <td>Utilization</td>
+    <td>
+
+<a class="prom_query_drilldown" href="/prom//graph?g0.expr=irate%28node_disk_io_time_seconds_total%7Bjob%3D%27node%27%2Cinstance%3D%27localhost%3A9090%27%2Cdevice%3D%27%27%7D%5B5m%5D%29&#43;%2A&#43;100&amp;g0.tab=0">1.0%</a>
+</td>
+  </tr>
+  <tr>
+    <td>Throughput</td>
+    <td>
+
+<a class="prom_query_drilldown" href="/prom//graph?g0.expr=irate%28node_disk_read_bytes_total%7Bjob%3D%27node%27%2Cinstance%3D%27localhost%3A9090%27%2Cdevice%3D%27%27%7D%5B5m%5D%29&#43;%2B&#43;irate%28node_disk_written_bytes_total%7Bjob%3D%27node%27%2Cinstance%3D%27localhost%3A9090%27%2Cdevice%3D%27%27%7D%5B5m%5D%29&amp;g0.tab=0">1B/s</a>
+</td>
+  </tr>
+  <tr>
+    <td>Avg Read Time</td>
+    <td>
+
+<a class="prom_query_drilldown" href="/prom//graph?g0.expr=irate%28node_disk_read_time_seconds_total%7Bjob%3D%27node%27%2Cinstance%3D%27localhost%3A9090%27%2Cdevice%3D%27%27%7D%5B5m%5D%29&#43;%2F&#43;irate%28node_disk_reads_completed_total%7Bjob%3D%27node%27%2Cinstance%3D%27localhost%3A9090%27%2Cdevice%3D%27%27%7D%5B5m%5D%29&amp;g0.tab=0">1s</a>
+</td>
+  </tr>
+  <tr>
+    <td>Avg Write Time</td>
+    <td>
+
+<a class="prom_query_drilldown" href="/prom//graph?g0.expr=irate%28node_disk_write_time_seconds_total%7Bjob%3D%27node%27%2Cinstance%3D%27localhost%3A9090%27%2Cdevice%3D%27%27%7D%5B5m%5D%29&#43;%2F&#43;irate%28node_disk_writes_completed_total%7Bjob%3D%27node%27%2Cinstance%3D%27localhost%3A9090%27%2Cdevice%3D%27%27%7D%5B5m%5D%29&amp;g0.tab=0">1s</a>
+</td>
+  </tr>
+
+  <th colspan="2">sda</th>
+  <tr>
+    <td>Utilization</td>
+    <td>
+
+<a class="prom_query_drilldown" href="/prom//graph?g0.expr=irate%28node_disk_io_time_seconds_total%7Bjob%3D%27node%27%2Cinstance%3D%27b%3A9100%27%2Cdevice%3D%27sda%27%7D%5B5m%5D%29&#43;%2A&#43;100&amp;g0.tab=0">1.0%</a>
+</td>
+  </tr>
+  <tr>
+    <td>Throughput</td>
+    <td>
+
+<a class="prom_query_drilldown" href="/prom//graph?g0.expr=irate%28node_disk_read_bytes_total%7Bjob%3D%27node%27%2Cinstance%3D%27b%3A9100%27%2Cdevice%3D%27sda%27%7D%5B5m%5D%29&#43;%2B&#43;irate%28node_disk_written_bytes_total%7Bjob%3D%27node%27%2Cinstance%3D%27b%3A9100%27%2Cdevice%3D%27sda%27%7D%5B5m%5D%29&amp;g0.tab=0">1B/s</a>
+</td>
+  </tr>
+  <tr>
+    <td>Avg Read Time</td>
+    <td>
+
+<a class="prom_query_drilldown" href="/prom//graph?g0.expr=irate%28node_disk_read_time_seconds_total%7Bjob%3D%27node%27%2Cinstance%3D%27b%3A9100%27%2Cdevice%3D%27sda%27%7D%5B5m%5D%29&#43;%2F&#43;irate%28node_disk_reads_completed_total%7Bjob%3D%27node%27%2Cinstance%3D%27b%3A9100%27%2Cdevice%3D%27sda%27%7D%5B5m%5D%29&amp;g0.tab=0">1s</a>
+</td>
+  </tr>
+  <tr>
+    <td>Avg Write Time</td>
+    <td>
+
+<a class="prom_query_drilldown" href="/prom//graph?g0.expr=irate%28node_disk_write_time_seconds_total%7Bjob%3D%27node%27%2Cinstance%3D%27b%3A9100%27%2Cdevice%3D%27sda%27%7D%5B5m%5D%29&#43;%2F&#43;irate%28node_disk_writes_completed_total%7Bjob%3D%27node%27%2Cinstance%3D%27b%3A9100%27%2Cdevice%3D%27sda%27%7D%5B5m%5D%29&amp;g0.tab=0">1s</a>
+</td>
+  </tr>
+
+<tr>
+  <th colspan="2">Filesystem Fullness</th>
+</tr>
+
+
+  <tr>
+    <td></td>
+    <td>
+
+<a class="prom_query_drilldown" href="/prom//graph?g0.expr=100&#43;-&#43;node_filesystem_avail_bytes%7Bjob%3D%27node%27%2Cinstance%3D%27localhost%3A9090%27%2Cmountpoint%3D%27%27%7D&#43;%2F&#43;node_filesystem_size_bytes%7Bjob%3D%27node%27%7D&#43;%2A&#43;100&amp;g0.tab=0">
+1.0
+%</a>
+</td>
+  </tr>
+
+  <tr>
+    <td></td>
+    <td>
+
+<a class="prom_query_drilldown" href="/prom//graph?g0.expr=100&#43;-&#43;node_filesystem_avail_bytes%7Bjob%3D%27node%27%2Cinstance%3D%27b%3A9100%27%2Cmountpoint%3D%27%27%7D&#43;%2F&#43;node_filesystem_size_bytes%7Bjob%3D%27node%27%7D&#43;%2A&#43;100&amp;g0.tab=0">
+1.0
+%</a>
+</td>
+  </tr>
+
+<tr>
+</tr>
+
+</table>
+</div>
+
+
+
+<div class="prom_console_content">
+  <div class="container-fluid">
+
+<div class="prom_graph_timecontrol">
+  <div class="prom_graph_timecontrol_inner">
+    <div class="prom_graph_timecontrol_group ">
+      <button class="btn btn-light pull-left" type="button" id="prom_graph_duration_shrink" title="Shrink the time range.">
+        <i class="glyphicon glyphicon-minus"></i>
+      </button><input class="input pull-left align-middle" size="3" title="Time range of graph" type="text" id="prom_graph_duration"><button class="btn btn-light pull-left" type="button" id="prom_graph_duration_grow" title="Grow the time range.">
+        <i class="glyphicon glyphicon-plus"></i>
+      </button>
+    </div>
+    <div class="prom_graph_timecontrol_group ">
+      <button class="btn btn-light pull-left" type="button" id="prom_graph_time_back" title="Rewind the end time.">
+        <i class="glyphicon glyphicon-backward"></i>
+      </button><input class="input pull-left align-middle" title="End time of graph" placeholder="Until" type="text" id="prom_graph_time_end" size="16" value=""><button class="btn btn-light pull-left" type="button" id="prom_graph_time_forward" title="Advance the end time.">
+        <i class="glyphicon glyphicon-forward"></i>
+      </button>
+    </div>
+    <div class="prom_graph_timecontrol_group ">
+      <div class="btn-group dropup prom_graph_timecontrol_refresh pull-left">
+        <button type="button" class="btn btn-light pull-left" id="prom_graph_refresh_button" title="Refresh.">
+          <i class="glyphicon glyphicon-repeat"></i>
+          <span class="icon-repeat"></span>
+          (<span id="prom_graph_refresh_button_value">Off</span>)
+        </button>
+        <button type="button" class="btn btn-light pull-left dropdown-toggle" data-toggle="dropdown" title="Set autorefresh."aria-haspopup="true" aria-expanded="false">
+          <span class="caret"></span>&nbsp;
+        </button>
+        <ul class="dropdown-menu" id="prom_graph_refresh_intervals" role="menu">
+        </ul>
+      </div>
+    </div>
+  </div>
+  <script>
+  new PromConsole.TimeControl();
+  </script>
+</div>
+
+
+  <h1>Node Disk - localhost:9090</h1>
+
+  <h3>Disk I/O Utilization</h3>
+  <div id="diskioGraph"></div>
+  <script>
+  new PromConsole.Graph({
+    node: document.querySelector("#diskioGraph"),
+    expr: [
+      "irate(node_disk_io_time_seconds_total{job='node',instance='localhost:9090',device!~'^(md\\\\d+$|dm-)'}[5m]) * 100",
+    ],
+    min: 0,
+    name: '[[ device ]]',
+    yUnits: "%",
+    yAxisFormatter: PromConsole.NumberFormatter.humanizeNoSmallPrefix,
+    yHoverFormatter: PromConsole.NumberFormatter.humanizeNoSmallPrefix,
+    yTitle: 'Disk I/O Utilization'
+  })
+  </script>
+  <h3>Filesystem Usage</h3>
+  <div id="fsGraph"></div>
+  <script>
+  new PromConsole.Graph({
+    node: document.querySelector("#fsGraph"),
+    expr: "100 - node_filesystem_avail_bytes{job='node',instance='localhost:9090'} / node_filesystem_size_bytes{job='node'} * 100",
+    min: 0,
+    max: 100,
+    name: '[[ mountpoint ]]',
+    yUnits: "%",
+    yAxisFormatter: PromConsole.NumberFormatter.humanizeNoSmallPrefix,
+    yHoverFormatter: PromConsole.NumberFormatter.humanizeNoSmallPrefix,
+    yTitle: 'Filesystem Fullness'
+  })
+  </script>
+
+  </div>
+</div>
+
+
+
+</body>
+</html>
+

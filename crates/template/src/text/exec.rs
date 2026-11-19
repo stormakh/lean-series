@@ -702,16 +702,14 @@ impl<'t, 'o> State<'t, 'o> {
                 }
                 value = inner;
             }
-            if let Value::Ptr(inner) = &value {
-                if inner.type_of().unwrap_or(Type::Interface).assignable_to(typ) {
+            if let Value::Ptr(inner) = &value
+                && inner.type_of().unwrap_or(Type::Interface).assignable_to(typ) {
                     return Ok((**inner).clone());
                 }
-            }
-            if let Value::Nil(Type::Ptr(elem)) = &value {
-                if elem.assignable_to(typ) {
+            if let Value::Nil(Type::Ptr(elem)) = &value
+                && elem.assignable_to(typ) {
                     return self.errorf(format!("dereference of nil pointer of type {}", typ));
                 }
-            }
             return self.errorf(format!("wrong type for value; expected {}; got {}", typ, vt));
         }
         Ok(value)
@@ -761,35 +759,31 @@ impl<'t, 'o> State<'t, 'o> {
                 self.errorf(format!("expected bool; found {}", n))
             }
             Type::Complex128 => {
-                if let Node::Number(num) = n {
-                    if num.is_complex {
+                if let Node::Number(num) = n
+                    && num.is_complex {
                         return Ok(Value::Complex(num.complex128.0, num.complex128.1));
                     }
-                }
                 self.errorf(format!("expected complex; found {}", n))
             }
             Type::Float64 => {
-                if let Node::Number(num) = n {
-                    if num.is_float {
+                if let Node::Number(num) = n
+                    && num.is_float {
                         return Ok(Value::Float(num.float64));
                     }
-                }
                 self.errorf(format!("expected float; found {}", n))
             }
             Type::Int(k) => {
-                if let Node::Number(num) = n {
-                    if num.is_int {
+                if let Node::Number(num) = n
+                    && num.is_int {
                         return Ok(Value::Int(num.int64, *k));
                     }
-                }
                 self.errorf(format!("expected integer; found {}", n))
             }
             Type::Uint(k) => {
-                if let Node::Number(num) = n {
-                    if num.is_uint {
+                if let Node::Number(num) = n
+                    && num.is_uint {
                         return Ok(Value::Uint(num.uint64, *k));
                     }
-                }
                 self.errorf(format!("expected unsigned integer; found {}", n))
             }
             Type::String(k) => {

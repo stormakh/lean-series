@@ -114,11 +114,10 @@ fn first_ident(cmd: &CommandNode) -> Option<&str> {
 }
 
 fn append_cmd(cmds: &mut Vec<CommandNode>, cmd: CommandNode) {
-    if let (Some(last), Some(next)) = (cmds.last().and_then(first_ident), first_ident(&cmd)) {
-        if redundant(last, next) {
+    if let (Some(last), Some(next)) = (cmds.last().and_then(first_ident), first_ident(&cmd))
+        && redundant(last, next) {
             return;
         }
-    }
     cmds.push(cmd);
 }
 
@@ -135,8 +134,8 @@ fn ensure_pipeline_contains(p: &mut PipeNode, s: &[String]) {
     let mut pipeline_len = p.cmds.len();
     if pipeline_len > 0 {
         let last_ident = first_ident(&p.cmds[pipeline_len - 1]).map(str::to_string);
-        if let Some(esc) = last_ident {
-            if is_predefined_escaper(&esc) {
+        if let Some(esc) = last_ident
+            && is_predefined_escaper(&esc) {
                 let last_args = p.cmds[pipeline_len - 1].args.len();
                 if p.cmds.len() == 1 && last_args > 1 {
                     let pos0 = p.cmds[pipeline_len - 1].args[0].pos();
@@ -156,7 +155,6 @@ fn ensure_pipeline_contains(p: &mut PipeNode, s: &[String]) {
                     pipeline_len -= 1;
                 }
             }
-        }
     }
     let mut new_cmds: Vec<CommandNode> = p.cmds[..pipeline_len.min(p.cmds.len())].to_vec();
     let mut inserted: HashSet<String> = HashSet::new();
@@ -288,8 +286,8 @@ fn context_after_text(c: Context, s: &[u8]) -> (Context, usize) {
     }
     let ends = delim_ends(c.delim);
     let mut i = s.iter().position(|b| ends.contains(b)).unwrap_or(s.len());
-    if c.delim == Delim::SpaceOrTagEnd {
-        if let Some(j) = s[..i].iter().position(|b| b"\"'<=`".contains(b)) {
+    if c.delim == Delim::SpaceOrTagEnd
+        && let Some(j) = s[..i].iter().position(|b| b"\"'<=`".contains(b)) {
             return (
                 Context::error(errorf(
                     ErrorCode::BadHtml,
@@ -300,7 +298,6 @@ fn context_after_text(c: Context, s: &[u8]) -> (Context, usize) {
                 s.len(),
             );
         }
-    }
     if i == s.len() {
         let unescaped = html_unescape(&String::from_utf8_lossy(s));
         let mut u: &[u8] = unescaped.as_bytes();

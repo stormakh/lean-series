@@ -80,11 +80,10 @@ pub(crate) fn printable_value(v: &Value) -> Option<Value> {
 
 /// Go `evalArgs` (text/template): one string argument as is, else the printable values joined by `fmt.Sprint`.
 pub(crate) fn eval_args(args: &[Value]) -> String {
-    if args.len() == 1 {
-        if let Value::String(s, StrKind::String) = &args[0] {
+    if args.len() == 1
+        && let Value::String(s, StrKind::String) = &args[0] {
             return s.to_string();
         }
-    }
     let a: Vec<Value> = args.iter().map(|v| printable_value(v).unwrap_or_else(|| v.clone())).collect();
     sprint(&a)
 }
@@ -176,7 +175,7 @@ pub(crate) fn index(item: &Value, indexes: &[Value]) -> Result<Value, String> {
             Value::Slice(s) => {
                 let x = index_arg(&index, s.items.len())?;
                 if x >= s.items.len() {
-                    return Err(format!("reflect: slice index out of range"));
+                    return Err("reflect: slice index out of range".to_string());
                 }
                 let elem = s.ty.elem().cloned().unwrap_or(Type::Interface);
                 item = from_slot(&s.items[x], &elem);

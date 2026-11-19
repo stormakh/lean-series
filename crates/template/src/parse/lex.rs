@@ -222,14 +222,13 @@ impl<'a> Lexer<'a> {
     }
 
     fn backup(&mut self) {
-        if !self.at_eof && self.pos > 0 {
-            if let Some(r) = self.input[..self.pos].chars().next_back() {
+        if !self.at_eof && self.pos > 0
+            && let Some(r) = self.input[..self.pos].chars().next_back() {
                 self.pos -= r.len_utf8();
                 if r == '\n' {
                     self.line -= 1;
                 }
             }
-        }
     }
 
     fn this_item(&mut self, t: ItemType) -> Item {
@@ -509,8 +508,8 @@ impl<'a> Lexer<'a> {
             if !self.at_terminator() {
                 return self.errorf(format!("bad character {}", sharp_u(r)));
             }
-            if let Some(item) = keyword(&word) {
-                if item > ItemType::Keyword {
+            if let Some(item) = keyword(&word)
+                && item > ItemType::Keyword {
                     if (item == ItemType::Break && !self.options.break_ok)
                         || (item == ItemType::Continue && !self.options.continue_ok)
                     {
@@ -518,7 +517,6 @@ impl<'a> Lexer<'a> {
                     }
                     return self.emit(item);
                 }
-            }
             if word.starts_with('.') {
                 return self.emit(ItemType::Field);
             }

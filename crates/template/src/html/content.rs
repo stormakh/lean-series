@@ -51,8 +51,8 @@ fn indirect_to_stringer(v: &Value) -> Value {
 
 /// Go `stringify`.
 pub fn stringify(args: &[Value]) -> (String, ContentType) {
-    if args.len() == 1 {
-        if let Value::String(s, k) = indirect_all(&args[0]) {
+    if args.len() == 1
+        && let Value::String(s, k) = indirect_all(&args[0]) {
             let t = match k {
                 StrKind::String => ContentType::Plain,
                 StrKind::Css => ContentType::Css,
@@ -65,18 +65,16 @@ pub fn stringify(args: &[Value]) -> (String, ContentType) {
             };
             return (s.to_string(), t);
         }
-    }
     let a: Vec<Value> = args.iter().filter(|a| a.is_valid()).map(indirect_to_stringer).collect();
     (sprint(&a), ContentType::Plain)
 }
 
 /// Go `evalArgs` (html/template): one string as is, else `fmt.Sprint` of the arguments.
 pub fn eval_args(args: &[Value]) -> String {
-    if args.len() == 1 {
-        if let Value::String(s, StrKind::String) = &args[0] {
+    if args.len() == 1
+        && let Value::String(s, StrKind::String) = &args[0] {
             return s.to_string();
         }
-    }
     let a: Vec<Value> = args.iter().map(indirect_to_stringer).collect();
     sprint(&a)
 }
@@ -824,11 +822,10 @@ pub fn ends_with_css_keyword(b: &[u8], kw: &str) -> bool {
     let i = b.len() - kw.len();
     if i != 0 {
         let prefix = String::from_utf8_lossy(&b[..i]);
-        if let Some(r) = prefix.chars().next_back() {
-            if is_css_nmchar(r) {
+        if let Some(r) = prefix.chars().next_back()
+            && is_css_nmchar(r) {
                 return false;
             }
-        }
     }
     b[i..].to_ascii_lowercase() == kw.as_bytes()
 }
@@ -1017,15 +1014,14 @@ pub fn url_filter(args: &[Value]) -> String {
 }
 
 fn is_safe_url(s: &str) -> bool {
-    if let Some((protocol, _)) = s.split_once(':') {
-        if !protocol.contains('/')
+    if let Some((protocol, _)) = s.split_once(':')
+        && !protocol.contains('/')
             && !protocol.eq_ignore_ascii_case("http")
             && !protocol.eq_ignore_ascii_case("https")
             && !protocol.eq_ignore_ascii_case("mailto")
         {
             return false;
         }
-    }
     true
 }
 
