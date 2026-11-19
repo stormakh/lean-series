@@ -183,7 +183,22 @@ impl<'a> MatrixIter<'a> {
     }
 
     /// Go `seek`: seeks to `maxt`, projecting the input cost in `(mint, maxt]` with a guard.
-    pub(crate) fn seek(&mut self, mint_floats: i64, mint_histograms: i64, maxt: i64) -> ValueType {
+    /// Go `beginFrame` (without the context check, which the evaluator's `guard_check` does).
+    #[doc(hidden)]
+    pub fn begin_frame(&mut self, step: isize) {
+        if let Some(g) = &self.guard {
+            g.begin_frame(step);
+        }
+    }
+
+    /// The look-back buffer.
+    #[doc(hidden)]
+    pub fn buffer(&self) -> storage::SampleRingIterator<'_> {
+        self.buf.buffer()
+    }
+
+    #[doc(hidden)]
+    pub fn seek(&mut self, mint_floats: i64, mint_histograms: i64, maxt: i64) -> ValueType {
         match &self.guard {
             None => self.buf.seek(maxt),
             Some(g) => {

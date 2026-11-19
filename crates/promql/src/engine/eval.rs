@@ -461,6 +461,12 @@ impl<'a> Evaluator<'a> {
         ((self.end_timestamp - self.start_timestamp) / self.interval) as usize + 1
     }
 
+    /// The sample statistics (for tests).
+    #[doc(hidden)]
+    pub fn samples_stats(&self) -> &QuerySamples {
+        &self.samples_stats
+    }
+
     /// Go `numSteps`.
     pub(crate) fn num_steps(&self) -> usize {
         if self.interval <= 0 {
@@ -514,7 +520,8 @@ impl<'a> Evaluator<'a> {
     }
 
     /// Go `consumeMatrixSamples`. A negative step skips subquery output.
-    pub(crate) fn consume_matrix_samples(&mut self, n: i64, step: isize) -> EvalResult<()> {
+    #[doc(hidden)]
+    pub fn consume_matrix_samples(&mut self, n: i64, step: isize) -> EvalResult<()> {
         if self.budget.is_none() || step < 0 {
             return Ok(());
         }
@@ -1372,13 +1379,15 @@ impl<'a> Evaluator<'a> {
     }
 
     /// Go `newMatrixIterator`.
-    pub(crate) fn new_matrix_iterator(&self, delta: i64) -> MatrixIter<'a> {
+    #[doc(hidden)]
+    pub fn new_matrix_iterator(&self, delta: i64) -> MatrixIter<'a> {
         MatrixIter::new(self.ctx, self.budget, delta)
     }
 
     /// Go `matrixIterator.checkContext`: fails when the guard saw a cancellation or an exceeded budget.
     #[inline]
-    pub(crate) fn guard_check(&mut self, it: &MatrixIter<'_>) -> EvalResult<()> {
+    #[doc(hidden)]
+    pub fn guard_check(&mut self, it: &MatrixIter<'_>) -> EvalResult<()> {
         let Some(g) = &it.guard else { return Ok(()) };
         let failure = match g.failed.borrow_mut().take() {
             Some(f) => Some(f),

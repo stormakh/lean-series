@@ -966,6 +966,35 @@ pub fn go_mod(x: f64, y: f64) -> f64 {
     x % y
 }
 
+/// Runs `f` with an evaluator over one step at 0 with the given budget and per-step statistics, for tests of
+/// evaluator internals (Go tests build `&evaluator{...}` directly).
+#[doc(hidden)]
+pub fn with_test_evaluator<R>(ctx: &Context, budget: Option<&QueryBudget>, f: impl FnOnce(&mut Evaluator<'_>) -> R) -> R {
+    let state = eval::QueryState::default();
+    let querier = storage::noop_querier();
+    let no_step = |_: i64| 60_000;
+    let mut samples_stats = QuerySamples::new(true);
+    samples_stats.init_step_tracking(0, 0, 1);
+    let mut ev = Evaluator {
+        start_timestamp: 0,
+        end_timestamp: 0,
+        interval: 1,
+        max_samples: i64::MAX,
+        current_samples: 0,
+        budget,
+        lookback_delta: 0,
+        samples_stats,
+        no_step_subquery_interval_fn: &no_step,
+        enable_delayed_name_removal: false,
+        enable_type_and_unit_labels: false,
+        use_start_timestamps: false,
+        querier: &*querier,
+        ctx,
+        state: &state,
+    };
+    f(&mut ev)
+}
+
 /// Go `evaluator.subqueryTimeRange` for an evaluator over `[start, end]` with `interval` (ms), after
 /// `setOffsetForAtModifier(start, expr)`. For tests of the subquery time grid.
 #[doc(hidden)]
