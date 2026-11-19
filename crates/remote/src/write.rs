@@ -62,8 +62,7 @@ pub fn register_global_metrics(reg: &Registry) -> Result<(), String> {
 
 /// Go `toHash`: the MD5 (hex) of the YAML of a remote write config.
 pub fn to_hash(c: &RemoteWriteConfig) -> Result<String, String> {
-    let bytes = yaml::marshal(c)?;
-    Ok(crypto::hex(&crypto::md5(bytes.as_bytes())))
+    crate::storage::to_hash(c).map_err(|e| e.to_string())
 }
 
 /// Makes the write client of a queue (Go `NewWriteClient` with a `ClientConfig` made from the remote write
@@ -496,4 +495,35 @@ impl ExemplarAppenderV2 for TimestampTrackerV2 {
         self.base.exemplars += exemplars.len() as i64;
         Ok(r)
     }
+}
+
+impl crate::storage::RemoteWriteStorage for WriteStorage {
+    fn apply_config(&self, conf: &Config) -> Result<(), Error> {
+        WriteStorage::apply_config(self, conf).map_err(Error::msg)
+    }
+    fn notify(&self) {
+        WriteStorage::notify(self)
+    }
+    fn lowest_sent_timestamp(&self) -> i64 {
+        WriteStorage::lowest_sent_timestamp(self)
+    }
+    fn close(&self) -> Option<Error> {
+        WriteStorage::close(self).err().map(Error::msg)
+    }
+}
+
+/// Go `NewStorage`: the remote storage (reads and writes) with a `WriteStorage` for the write side.
+#[allow(clippy::too_many_arguments)]
+pub fn new_storage(
+    logger: Option<Logger>,
+    reg: Option<Arc<Registry>>,
+    st_callback: Option<crate::read::StartTimeCallback>,
+    wal_dir: &Path,
+    flush_deadline: Duration,
+    sm: Option<Arc<dyn ReadyScrapeManager>>,
+    enable_type_and_unit_labels: bool,
+    client_factory: Option<WriteClientFactory>,
+) -> crate::storage::Storage {
+    let rws = WriteStorage::new(logger, reg, wal_dir, flush_deadline, sm, enable_type_and_unit_labels, client_factory);
+    crate::storage::Storage::with_write_storage(st_callback, rws, crate::storage::default_read_client_factory())
 }
