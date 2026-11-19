@@ -1,7 +1,4 @@
-//! Port of `tsdb/ooo_head_read_test.go` (the tests that need only the head).
-//!
-//! Not ported here yet (they need the DB, `db.rs`): TestOOOHeadChunkReader_Chunk,
-//! TestOOOHeadChunkReader_Chunk_ConsistentQueryResponseDespiteOfHeadExpanding, TestOOOQueryAcrossChunkIDWrap.
+//! Port of `tsdb/ooo_head_read_test.go`.
 
 mod common;
 
@@ -12,16 +9,22 @@ use model::labels::{self, Labels, ScratchBuilder};
 use model::matcher::{MatchType, Matcher};
 use storage::{
     Annotations, BoxSearchResultSet, BoxSeriesSet, Context, LabelHints, LabelQuerier, LabelResult, Meta, Querier,
-    SearchHints, SearchResult, Searcher, SelectHints, ERR_NOT_FOUND,
+    Sample, SearchHints, SearchResult, Searcher, SelectHints, ERR_NOT_FOUND,
 };
 use tsdb::head::{MmappedChunk, OooHeadChunk, OOO_CHUNK_ID_MASK};
 use tsdb::ooo_head::OooChunk;
-use tsdb::ooo_head_read::{as_multi_meta, less_by_min_time_and_min_ref, HeadAndOOOIndexReader, HeadAndOOOQuerier, OooCompactionHead};
-use tsdb::reader::IndexReader;
+use tsdb::ooo_head_read::{
+    as_multi_meta, less_by_min_time_and_min_ref, HeadAndOOOChunkReader, HeadAndOOOIndexReader, HeadAndOOOQuerier,
+    OooCompactionHead,
+};
+use tsdb::reader::{ChunkOrIterable, ChunkReader, IndexReader};
 use tsdb_format::chunks::{new_head_chunk_ref, ChunkDiskMapperRef};
 use tsdb_format::wlog::compression;
 
-use common::{new_test_head, sample_type_scenarios};
+use common::{
+    new_test_db, new_test_head, query, require_equal_samples, require_equal_series, sample_type_scenarios,
+    with_opts, SampleTypeScenario,
+};
 
 #[derive(Clone, Copy, Debug)]
 struct ChunkInterval {
@@ -515,4 +518,557 @@ fn test_ooo_mmap_guard_prevents_aliasing() {
         seen.insert(id, pos);
     }
     let _ = Labels::empty();
+}
+
+/// Go `DefaultOptions()` with `OutOfOrderCapMax = 5` and `OutOfOrderTimeWindow = 120m`.
+fn ooo_db_opts() -> tsdb::db::Options {
+    let mut opts = tsdb::db::default_options();
+    opts.out_of_order_cap_max = 5;
+    opts.out_of_order_time_window = 120 * 60 * 1000;
+    opts
+}
+
+fn minutes(m: i64) -> i64 {
+    m * 60 * 1000
+}
+
+/// Go `testValue{Ts: minutes(m), V: v}`.
+fn tv(ts_minutes: i64, v: i64) -> (i64, i64) {
+    (minutes(ts_minutes), v)
+}
+
+/// Expected samples of one chunk, from (minutes, value) pairs.
+fn exp_samples(scenario: &SampleTypeScenario, v: &[(i64, i64)]) -> Vec<Sample> {
+    v.iter().map(|&(m, x)| (scenario.sample_func)(minutes(m), x)).collect()
+}
+
+/// Expands a chunk or an iterable into its samples (Go `storage.ExpandSamples(it, nil)`).
+fn expand_chunk_or_iterable(c: &ChunkOrIterable) -> Vec<Sample> {
+    match c {
+        ChunkOrIterable::Chunk(c) => {
+            let mut it = c.iterator(None);
+            storage::expand_samples(&mut it).expect("expand samples")
+        }
+        ChunkOrIterable::Iterable(i) => {
+            let mut it = i.iterator(None);
+            storage::expand_samples(&mut it).expect("expand samples")
+        }
+    }
+}
+
+struct ChunkCase {
+    name: &'static str,
+    query_min_t: i64,
+    query_max_t: i64,
+    first_in_order_sample_at: i64,
+    input_samples: Vec<(i64, i64)>,
+    exp_single_chunks: bool,
+    exp_chunks_samples: Vec<Vec<(i64, i64)>>,
+}
+
+/// Go `TestOOOHeadChunkReader_Chunk`: the Chunk method works as expected, by appending out of order samples to
+/// the db and then reading chunks with a HeadAndOOOChunkReader.
+#[test]
+fn test_ooo_head_chunk_reader_chunk() {
+    for (sname, scenario) in sample_type_scenarios() {
+        test_ooo_head_chunk_reader_chunk_scenario(sname, &scenario);
+    }
+}
+
+fn test_ooo_head_chunk_reader_chunk_scenario(sname: &str, scenario: &SampleTypeScenario) {
+    let s1 = labels::from_strings(&["l", "v1"]);
+
+    // Getting a non existing chunk fails with not found error.
+    {
+        let db = new_test_db(vec![with_opts(ooo_db_opts())]);
+        let cr = HeadAndOOOChunkReader::new(db.head.clone(), 0, 1000, None, None, ChunkDiskMapperRef(0));
+        let res = cr.chunk_or_iterable(&Meta {
+            chunk_ref: 0x1800000,
+            chunk: None,
+            min_time: 100,
+            max_time: 300,
+            ..Default::default()
+        });
+        // adapted: Go checks that both the chunk and the iterable are nil; an Err carries neither in Rust.
+        match res {
+            Ok(_) => panic!("{sname}: expected an error"),
+            Err(e) => assert_eq!("not found", e.to_string(), "{sname}"),
+        }
+        let _ = cr.close();
+    }
+
+    let tests = vec![
+        ChunkCase {
+            name: "Getting the head when there are no overlapping chunks returns just the samples in the head",
+            query_min_t: minutes(0),
+            query_max_t: minutes(100),
+            first_in_order_sample_at: minutes(120),
+            input_samples: vec![tv(30, 0), tv(40, 0)],
+            exp_single_chunks: true,
+            // ts (in minutes)         0       10       20       30       40       50       60       70       80       90       100
+            // Query Interval          [------------------------------------------------------------------------------------------]
+            // Chunk 0: Current Head                              [--------] (With 2 samples)
+            // Output Graphically                                 [--------] (With 2 samples)
+            exp_chunks_samples: vec![vec![(30, 0), (40, 0)]],
+        },
+        ChunkCase {
+            name: "Getting the head chunk when there are overlapping chunks returns all combined",
+            query_min_t: minutes(0),
+            query_max_t: minutes(100),
+            first_in_order_sample_at: minutes(120),
+            input_samples: vec![tv(41, 0), tv(42, 0), tv(43, 0), tv(44, 0), tv(45, 0), tv(30, 1), tv(50, 1)],
+            exp_single_chunks: false,
+            // ts (in minutes)         0       10       20       30       40       50       60       70       80       90       100
+            // Query Interval          [------------------------------------------------------------------------------------------]
+            // Chunk 0                                                     [---] (With 5 samples)
+            // Chunk 1: Current Head                              [-----------------] (With 2 samples)
+            // Output Graphically                                 [-----------------] (With 7 samples)
+            exp_chunks_samples: vec![vec![(30, 1), (41, 0), (42, 0), (43, 0), (44, 0), (45, 0), (50, 1)]],
+        },
+        ChunkCase {
+            name: "Two windows of overlapping chunks get properly converged",
+            query_min_t: minutes(0),
+            query_max_t: minutes(100),
+            first_in_order_sample_at: minutes(120),
+            input_samples: vec![
+                // Chunk 0
+                tv(10, 0),
+                tv(12, 0),
+                tv(14, 0),
+                tv(16, 0),
+                tv(20, 0),
+                // Chunk 1
+                tv(20, 1),
+                tv(22, 1),
+                tv(24, 1),
+                tv(26, 1),
+                tv(29, 1),
+                // Chunk 3
+                tv(30, 2),
+                tv(32, 2),
+                tv(34, 2),
+                tv(36, 2),
+                tv(40, 2),
+                // Head
+                tv(40, 3),
+                tv(50, 3),
+            ],
+            exp_single_chunks: false,
+            // ts (in minutes)         0       10       20       30       40       50       60       70       80       90       100
+            // Query Interval          [------------------------------------------------------------------------------------------]
+            // Chunk 0                          [--------]
+            // Chunk 1                                   [-------]
+            // Chunk 2                                            [--------]
+            // Chunk 3: Current Head                                       [--------]
+            // Output Graphically               [----------------][-----------------]
+            exp_chunks_samples: vec![
+                vec![(10, 0), (12, 0), (14, 0), (16, 0), (20, 1), (22, 1), (24, 1), (26, 1), (29, 1)],
+                vec![(30, 2), (32, 2), (34, 2), (36, 2), (40, 3), (50, 3)],
+            ],
+        },
+        ChunkCase {
+            name: "Two windows of overlapping chunks in descending order get properly converged",
+            query_min_t: minutes(0),
+            query_max_t: minutes(100),
+            first_in_order_sample_at: minutes(120),
+            input_samples: vec![
+                // Chunk 0
+                tv(40, 0),
+                tv(42, 0),
+                tv(44, 0),
+                tv(46, 0),
+                tv(50, 0),
+                // Chunk 1
+                tv(30, 1),
+                tv(32, 1),
+                tv(34, 1),
+                tv(36, 1),
+                tv(40, 1),
+                // Chunk 3
+                tv(20, 2),
+                tv(22, 2),
+                tv(24, 2),
+                tv(26, 2),
+                tv(29, 2),
+                // Head
+                tv(10, 3),
+                tv(20, 3),
+            ],
+            exp_single_chunks: false,
+            // ts (in minutes)         0       10       20       30       40       50       60       70       80       90       100
+            // Query Interval          [------------------------------------------------------------------------------------------]
+            // Chunk 0                                                     [--------]
+            // Chunk 1                                            [--------]
+            // Chunk 2                                   [-------]
+            // Chunk 3: Current Head            [--------]
+            // Output Graphically               [----------------][-----------------]
+            exp_chunks_samples: vec![
+                vec![(10, 3), (20, 2), (22, 2), (24, 2), (26, 2), (29, 2)],
+                vec![(30, 1), (32, 1), (34, 1), (36, 1), (40, 0), (42, 0), (44, 0), (46, 0), (50, 0)],
+            ],
+        },
+        ChunkCase {
+            name: "If chunks are not overlapped they are not converged",
+            query_min_t: minutes(0),
+            query_max_t: minutes(100),
+            first_in_order_sample_at: minutes(120),
+            input_samples: vec![
+                // Chunk 0
+                tv(10, 0),
+                tv(12, 0),
+                tv(14, 0),
+                tv(16, 0),
+                tv(18, 0),
+                // Chunk 1
+                tv(20, 1),
+                tv(22, 1),
+                tv(24, 1),
+                tv(26, 1),
+                tv(28, 1),
+                // Chunk 3
+                tv(30, 2),
+                tv(32, 2),
+                tv(34, 2),
+                tv(36, 2),
+                tv(38, 2),
+                // Head
+                tv(40, 3),
+                tv(42, 3),
+            ],
+            exp_single_chunks: true,
+            // ts (in minutes)         0       10       20       30       40       50       60       70       80       90       100
+            // Query Interval          [------------------------------------------------------------------------------------------]
+            // Chunk 0                          [-------]
+            // Chunk 1                                   [-------]
+            // Chunk 2                                            [-------]
+            // Chunk 3: Current Head                                       [-------]
+            // Output Graphically               [-------][-------][-------][--------]
+            exp_chunks_samples: vec![
+                vec![(10, 0), (12, 0), (14, 0), (16, 0), (18, 0)],
+                vec![(20, 1), (22, 1), (24, 1), (26, 1), (28, 1)],
+                vec![(30, 2), (32, 2), (34, 2), (36, 2), (38, 2)],
+                vec![(40, 3), (42, 3)],
+            ],
+        },
+        ChunkCase {
+            name: "Triplet of chunks overlapping returns a single merged chunk",
+            query_min_t: minutes(0),
+            query_max_t: minutes(100),
+            first_in_order_sample_at: minutes(120),
+            input_samples: vec![
+                // Chunk 0
+                tv(10, 0),
+                tv(15, 0),
+                tv(20, 0),
+                tv(25, 0),
+                tv(30, 0),
+                // Chunk 1
+                tv(20, 1),
+                tv(25, 1),
+                tv(30, 1),
+                tv(35, 1),
+                tv(42, 1),
+                // Chunk 2 Head
+                tv(32, 2),
+                tv(50, 2),
+            ],
+            exp_single_chunks: false,
+            // ts (in minutes)         0       10       20       30       40       50       60       70       80       90       100
+            // Query Interval          [------------------------------------------------------------------------------------------]
+            // Chunk 0                          [-----------------]
+            // Chunk 1                                   [--------------------]
+            // Chunk 2 Current Head                                  [--------------]
+            // Output Graphically               [-----------------------------------]
+            exp_chunks_samples: vec![vec![
+                (10, 0),
+                (15, 0),
+                (20, 1),
+                (25, 1),
+                (30, 1),
+                (32, 2),
+                (35, 1),
+                (42, 1),
+                (50, 2),
+            ]],
+        },
+        ChunkCase {
+            name: "Query interval partially overlaps with a triplet of chunks but still returns a single merged chunk",
+            query_min_t: minutes(12),
+            query_max_t: minutes(33),
+            first_in_order_sample_at: minutes(120),
+            input_samples: vec![
+                // Chunk 0
+                tv(10, 0),
+                tv(15, 0),
+                tv(20, 0),
+                tv(25, 0),
+                tv(30, 0),
+                // Chunk 1
+                tv(20, 1),
+                tv(25, 1),
+                tv(30, 1),
+                tv(35, 1),
+                tv(42, 1),
+                // Chunk 2 Head
+                tv(32, 2),
+                tv(50, 2),
+            ],
+            exp_single_chunks: false,
+            // ts (in minutes)         0       10       20       30       40       50       60       70       80       90       100
+            // Query Interval                     [------------------]
+            // Chunk 0                          [-----------------]
+            // Chunk 1                                   [--------------------]
+            // Chunk 2 Current Head                                  [--------------]
+            // Output Graphically               [-----------------------------------]
+            exp_chunks_samples: vec![vec![
+                (10, 0),
+                (15, 0),
+                (20, 1),
+                (25, 1),
+                (30, 1),
+                (32, 2),
+                (35, 1),
+                (42, 1),
+                (50, 2),
+            ]],
+        },
+    ];
+
+    let ctx = Context::background();
+    for tc in tests {
+        let name = format!("{sname}/name={}", tc.name);
+        let db = new_test_db(vec![with_opts(ooo_db_opts())]);
+
+        let mut app = db.appender(&ctx);
+        let s1_ref = scenario
+            .append(&mut *app, &s1, tc.first_in_order_sample_at, tc.first_in_order_sample_at / 1 * 60 * 1000)
+            .0
+            .expect("append");
+        assert!(app.commit().is_none(), "{name}");
+
+        // OOO few samples for s1.
+        let mut app = db.appender(&ctx);
+        for &(ts, v) in &tc.input_samples {
+            scenario.append(&mut *app, &s1, ts, v).0.expect("append");
+        }
+        assert!(app.commit().is_none(), "{name}");
+
+        // The Series method populates the chunk metas, taking a copy of the head OOO chunk if necessary. These
+        // are then used by the ChunkReader.
+        let ir = HeadAndOOOIndexReader::new(
+            db.head.clone(),
+            tc.query_min_t,
+            tc.query_min_t,
+            tc.query_max_t,
+            ChunkDiskMapperRef(0),
+        );
+        let mut chks = Vec::new();
+        let mut b = ScratchBuilder::new(0);
+        ir.series(s1_ref, &mut b, &mut chks).expect("series");
+        assert_eq!(tc.exp_chunks_samples.len(), chks.len(), "{name}");
+
+        let cr =
+            HeadAndOOOChunkReader::new(db.head.clone(), tc.query_min_t, tc.query_max_t, None, None, ChunkDiskMapperRef(0));
+        for (i, m) in chks.iter().enumerate() {
+            let c = cr.chunk_or_iterable(m).expect("chunk or iterable");
+            if tc.exp_single_chunks {
+                assert!(matches!(c, ChunkOrIterable::Chunk(_)), "{name}: expected a chunk");
+            } else {
+                assert!(matches!(c, ChunkOrIterable::Iterable(_)), "{name}: chunk must be nil");
+            }
+            let result_samples = expand_chunk_or_iterable(&c);
+            let exp = exp_samples(scenario, &tc.exp_chunks_samples[i]);
+            require_equal_samples(&format!("{name}: {s1}"), &exp, &result_samples, true);
+        }
+        let _ = cr.close();
+    }
+}
+
+struct ConsistentCase {
+    name: &'static str,
+    query_min_t: i64,
+    query_max_t: i64,
+    first_in_order_sample_at: i64,
+    initial_samples: Vec<(i64, i64)>,
+    samples_after_series_call: Vec<(i64, i64)>,
+    exp_chunks_samples: Vec<Vec<(i64, i64)>>,
+}
+
+/// Go `TestOOOHeadChunkReader_Chunk_ConsistentQueryResponseDespiteOfHeadExpanding`: if a query performs a
+/// Series() call followed by a Chunks() call, the response is consistent with the data seen by Series() even if
+/// the OOO head receives more samples before Chunks() is called.
+#[test]
+fn test_ooo_head_chunk_reader_chunk_consistent_query_response_despite_of_head_expanding() {
+    for (sname, scenario) in sample_type_scenarios() {
+        test_consistent_query_response_scenario(sname, &scenario);
+    }
+}
+
+fn test_consistent_query_response_scenario(sname: &str, scenario: &SampleTypeScenario) {
+    let s1 = labels::from_strings(&["l", "v1"]);
+
+    let tests = vec![
+        ConsistentCase {
+            name: "Current head gets old, new and in between sample after Series call, they all should be omitted from the result",
+            query_min_t: minutes(0),
+            query_max_t: minutes(100),
+            first_in_order_sample_at: minutes(120),
+            initial_samples: vec![
+                // Chunk 0
+                tv(20, 0),
+                tv(22, 0),
+                tv(24, 0),
+                tv(26, 0),
+                tv(30, 0),
+                // Chunk 1 Head
+                tv(25, 1),
+                tv(35, 1),
+            ],
+            samples_after_series_call: vec![tv(10, 1), tv(32, 1), tv(50, 1)],
+            // ts (in minutes)         0       10       20       30       40       50       60       70       80       90       100
+            // Query Interval          [-----------------------------------]
+            // Chunk 0:                                  [--------] (5 samples)
+            // Chunk 1: Current Head                          [-------] (2 samples)
+            // New samples added after Series()
+            // Chunk 1: Current Head            [-----------------------------------] (5 samples)
+            // Output Graphically                        [------------] (With 8 samples, samples newer than lastmint or older than lastmaxt are omitted but the ones in between are kept)
+            exp_chunks_samples: vec![vec![(20, 0), (22, 0), (24, 0), (25, 1), (26, 0), (30, 0), (35, 1)]],
+        },
+        ConsistentCase {
+            name: "After Series() prev head mmapped after getting samples, new head gets new samples also overlapping, none should appear in response.",
+            query_min_t: minutes(0),
+            query_max_t: minutes(100),
+            first_in_order_sample_at: minutes(120),
+            initial_samples: vec![
+                // Chunk 0
+                tv(20, 0),
+                tv(22, 0),
+                tv(24, 0),
+                tv(26, 0),
+                tv(30, 0),
+                // Chunk 1 Head
+                tv(25, 1),
+                tv(35, 1),
+            ],
+            samples_after_series_call: vec![
+                tv(10, 1),
+                tv(32, 1),
+                tv(50, 1),
+                // Chunk 1 gets mmapped and Chunk 2, the new head is born
+                tv(25, 2),
+                tv(31, 2),
+            ],
+            // ts (in minutes)         0       10       20       30       40       50       60       70       80       90       100
+            // Query Interval          [-----------------------------------]
+            // Chunk 0:                                  [--------] (5 samples)
+            // Chunk 1: Current Head                          [-------] (2 samples)
+            // New samples added after Series()
+            // Chunk 1 (mmapped)                     [-------------------------] (5 samples)
+            // Chunk 2: Current Head                    [-----------] (2 samples)
+            // Output Graphically                        [------------]  (8 samples) It has 5 from Chunk 0 and 3 from Chunk 1
+            exp_chunks_samples: vec![vec![(20, 0), (22, 0), (24, 0), (25, 1), (26, 0), (30, 0), (35, 1)]],
+        },
+    ];
+
+    let ctx = Context::background();
+    for tc in tests {
+        let name = format!("{sname}/name={}", tc.name);
+        let db = new_test_db(vec![with_opts(ooo_db_opts())]);
+
+        let mut app = db.appender(&ctx);
+        let s1_ref = scenario
+            .append(&mut *app, &s1, tc.first_in_order_sample_at, tc.first_in_order_sample_at / 1 * 60 * 1000)
+            .0
+            .expect("append");
+        assert!(app.commit().is_none(), "{name}");
+
+        // OOO few samples for s1.
+        let mut app = db.appender(&ctx);
+        for &(ts, v) in &tc.initial_samples {
+            scenario.append(&mut *app, &s1, ts, v).0.expect("append");
+        }
+        assert!(app.commit().is_none(), "{name}");
+
+        // The Series method populates the chunk metas, taking a copy of the head OOO chunk if necessary. These
+        // are then used by the ChunkReader.
+        let ir = HeadAndOOOIndexReader::new(
+            db.head.clone(),
+            tc.query_min_t,
+            tc.query_min_t,
+            tc.query_max_t,
+            ChunkDiskMapperRef(0),
+        );
+        let mut chks = Vec::new();
+        let mut b = ScratchBuilder::new(0);
+        ir.series(s1_ref, &mut b, &mut chks).expect("series");
+        assert_eq!(tc.exp_chunks_samples.len(), chks.len(), "{name}");
+
+        // Now we keep receiving ooo samples.
+        let mut app = db.appender(&ctx);
+        for &(ts, v) in &tc.samples_after_series_call {
+            scenario.append(&mut *app, &s1, ts, v).0.expect("append");
+        }
+        assert!(app.commit().is_none(), "{name}");
+
+        let cr =
+            HeadAndOOOChunkReader::new(db.head.clone(), tc.query_min_t, tc.query_max_t, None, None, ChunkDiskMapperRef(0));
+        for (i, m) in chks.iter().enumerate() {
+            let c = cr.chunk_or_iterable(m).expect("chunk or iterable");
+            assert!(matches!(c, ChunkOrIterable::Iterable(_)), "{name}: chunk must be nil");
+            let result_samples = expand_chunk_or_iterable(&c);
+            let exp = exp_samples(scenario, &tc.exp_chunks_samples[i]);
+            require_equal_samples(&format!("{name}: {s1}"), &exp, &result_samples, true);
+        }
+        let _ = cr.close();
+    }
+}
+
+/// Go `TestOOOQueryAcrossChunkIDWrap`.
+#[test]
+fn test_ooo_query_across_chunk_id_wrap() {
+    for (sname, scenario) in sample_type_scenarios() {
+        let db = new_test_db(vec![with_opts(ooo_db_opts())]);
+        let ctx = Context::background();
+        let s1 = labels::from_strings(&["l", "v1"]);
+
+        let mut app = db.appender(&ctx);
+
+        // In-order sample to establish the series.
+        let (r, s) = scenario.append(&mut *app, &s1, minutes(120), 120);
+        let s1_ref = r.expect("append");
+        let mut exp: Vec<Sample> = vec![s];
+
+        // First batch of 10 OOO samples (creates 2 mmapped OOO chunks with cap=5).
+        for i in 1..=10i64 {
+            let (r, s) = scenario.append(&mut *app, &s1, minutes(i), i);
+            r.expect("append");
+            exp.push(s);
+        }
+        assert!(app.commit().is_none(), "{sname}");
+
+        // Seed firstOOOChunkID near the wrap boundary.
+        let ms = db.head.series.get_by_id(s1_ref).expect("series");
+        {
+            let mut g = ms.lock();
+            g.ooo_mut().expect("ooo fields").first_ooo_chunk_id = OOO_CHUNK_ID_MASK - 1;
+        }
+
+        // Second batch of 10 OOO samples whose chunk IDs cross the boundary.
+        let mut app = db.appender(&ctx);
+        for i in 11..=20i64 {
+            let (r, s) = scenario.append(&mut *app, &s1, minutes(i), i);
+            r.expect("append");
+            exp.push(s);
+        }
+        assert!(app.commit().is_none(), "{sname}");
+
+        // Query all data and verify every sample is returned.
+        let querier = db.querier(0, minutes(200)).expect("querier");
+        let series_set = query(querier, &[Matcher::new(MatchType::Equal, "l", "v1").expect("matcher")]);
+
+        exp.sort_by_key(|s| s.t);
+        let mut expected = std::collections::BTreeMap::new();
+        expected.insert(s1.to_string(), exp);
+        require_equal_series(&expected, &series_set, true);
+    }
 }
