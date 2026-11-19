@@ -5,6 +5,8 @@
 # Writes bench/results/scale-<label>/: samples.csv (epoch,phase,rss_kb,pss_kb,cpu_ticks,procs), queries.json,
 # summary.json. Data dir in bench/tmp (deleted at the start of the next run with the same label).
 set -u; R=$(cd "$(dirname "$0")/.." && pwd); L=$1; B=$2; M=${3:-30}; Q=${4:-20}
+# One benchmark at a time (fixed ports 9100, 9390, 9001-9010); waits for the lock of another run.
+mkdir -p "$R/bench/tmp"; exec 9>"$R/bench/tmp/bench.lock"; flock 9
 O=$R/bench/results/scale-$L; D=$R/bench/tmp/scale-$L; rm -rf -- "$D"; mkdir -p "$O" "$D"
 av=(); for i in $(seq 1 10); do
   setsid nohup "$R/tools/bin/avalanche" --port=$((9000+i)) --gauge-metric-count=30 --counter-metric-count=30 \
