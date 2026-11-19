@@ -28,3 +28,5 @@ scrape = { path = "../scrape" }
 [dev-dependencies]
 # Test storage (promqltest.LoadedStorage) for the read handler tests.
 promql = { path = "../promql" }
+# The real TSDB for tests that use tsdb.Open / teststorage.New, and the e2e example (writes a WAL).
+tsdb = { path = "../tsdb" }
