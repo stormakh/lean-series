@@ -1,6 +1,6 @@
 //! Port of `tsdb/head_test.go` lines 3806..7602.
 //!
-//! Tests that need the DB (`tsdb.Open`, `db.Compact`, `db.Querier`) wait for the DB port; see the list at the end.
+//! The tests that need the DB are at the end.
 
 #![allow(clippy::type_complexity, clippy::let_and_return)]
 
@@ -2606,8 +2606,597 @@ fn test_wal_sample_and_exemplar_order() {
     }
 }
 
-// Not ported yet: they need the DB (`tsdb::db::open`, `db.compact`, `db.querier`), which is ported in parallel.
-// TestOutOfOrderSamplesMetric, TestOutOfOrderSamplesMetricNativeHistogramOOODisabled, TestChunkNotFoundHeadGCRace,
-// TestDataMissingOnQueryDuringCompaction, TestIsQuerierCollidingWithTruncation, TestWaitForPendingReadersInTimeRange,
-// TestQuerierDoesNotBlockHeadTruncation, TestQueryOOOHeadDuringTruncate, TestChunkQueryOOOHeadDuringTruncate,
-// TestAppendingDifferentEncodingToSameSeries.
+
+// ---------------------------------------------------------------------------------------------------------------
+// Tests that need the DB.
+
+use crate::common::TestDb;
+
+/// Go `Open(t.TempDir(), nil, nil, opts, nil)` with `t.Cleanup(db.Close)`.
+fn open_db(opts: tsdb::db::Options) -> TestDb {
+    let tmp = TempDir::new();
+    let db = tsdb::db::open(tmp.path(), None, Some(opts), None).expect("open db");
+    TestDb { db, tmp: Some(tmp) }
+}
+
+const DEFAULT_BLOCK_DURATION: i64 = tsdb::head::DEFAULT_BLOCK_DURATION;
+
+#[test]
+fn test_out_of_order_samples_metric() {
+    for (_, scenario) in crate::common::sample_type_scenarios() {
+        out_of_order_samples_metric_case(scenario, tsdb::db::default_options(), storage::ERR_OUT_OF_ORDER_SAMPLE);
+    }
+}
+
+#[test]
+fn test_out_of_order_samples_metric_native_histogram_ooo_disabled() {
+    for (_, scenario) in crate::common::sample_type_scenarios() {
+        if scenario.sample_type != "histogram" {
+            continue;
+        }
+        let options = tsdb::db::Options { out_of_order_time_window: 0, ..tsdb::db::default_options() };
+        out_of_order_samples_metric_case(scenario, options, storage::ERR_OUT_OF_ORDER_SAMPLE);
+    }
+}
+
+fn out_of_order_samples_metric_case(
+    scenario: crate::common::SampleTypeScenario,
+    options: tsdb::db::Options,
+    expect_out_of_order_error: Error,
+) {
+    let db = open_db(options);
+    db.disable_compactions();
+    let typ = scenario.sample_type;
+    let l = ls(&["a", "b"]);
+    let append_sample = |app: &mut Box<dyn Appender>, ts: i64| scenario.append(&mut **app, &l, ts, 99).0;
+    let ooo = |db: &TestDb| db.head().metrics.out_of_order_samples.with_label_values(typ).get();
+    let oob = |db: &TestDb| db.head().metrics.out_of_bound_samples.with_label_values(typ).get();
+    let ctx = bg();
+
+    let mut app = db.appender(&ctx);
+    for i in 1..=5 {
+        append_sample(&mut app, i).unwrap();
+    }
+    commit_ok(&mut app);
+
+    // Test out of order metric.
+    assert_eq!(0.0, ooo(&db));
+    let mut app = db.appender(&ctx);
+    assert_eq!(Some(expect_out_of_order_error.clone()), append_sample(&mut app, 2).err());
+    assert_eq!(1.0, ooo(&db));
+    assert_eq!(Some(expect_out_of_order_error.clone()), append_sample(&mut app, 3).err());
+    assert_eq!(2.0, ooo(&db));
+    assert_eq!(Some(expect_out_of_order_error.clone()), append_sample(&mut app, 4).err());
+    assert_eq!(3.0, ooo(&db));
+    commit_ok(&mut app);
+
+    // Compact Head to test out of bound metric.
+    let mut app = db.appender(&ctx);
+    append_sample(&mut app, DEFAULT_BLOCK_DURATION * 2).unwrap();
+    commit_ok(&mut app);
+
+    assert_eq!(i64::MIN, db.head().min_valid_time());
+    db.compact(&ctx).unwrap();
+    assert!(db.head().min_valid_time() > 0);
+
+    let mut app = db.appender(&ctx);
+    assert_eq!(Some(storage::ERR_OUT_OF_BOUNDS), append_sample(&mut app, db.head().min_valid_time() - 2).err());
+    assert_eq!(1.0, oob(&db));
+    assert_eq!(Some(storage::ERR_OUT_OF_BOUNDS), append_sample(&mut app, db.head().min_valid_time() - 1).err());
+    assert_eq!(2.0, oob(&db));
+    commit_ok(&mut app);
+
+    // Some more valid samples for out of order.
+    let mut app = db.appender(&ctx);
+    for i in 1..=5 {
+        append_sample(&mut app, db.head().min_valid_time() + DEFAULT_BLOCK_DURATION + i).unwrap();
+    }
+    commit_ok(&mut app);
+
+    // Test out of order metric.
+    let mut app = db.appender(&ctx);
+    for (d, exp) in [(2, 4.0), (3, 5.0), (4, 6.0)] {
+        let r = append_sample(&mut app, db.head().min_valid_time() + DEFAULT_BLOCK_DURATION + d);
+        assert_eq!(Some(expect_out_of_order_error.clone()), r.err());
+        assert_eq!(exp, ooo(&db));
+    }
+    commit_ok(&mut app);
+}
+
+/// Appends samples spanning 1.5 block ranges (7 chunks with 15s scrape interval) of series {a="b"}; returns the
+/// expected samples and the max time.
+fn append_one_and_a_half_blocks(db: &TestDb) -> (Vec<Sample>, i64) {
+    let mut app = db.appender(&bg());
+    let mut r: SeriesRef = 0;
+    let mut maxt = 0;
+    let mut exp_samples = Vec::new();
+    for i in 0..=120 * 7i64 {
+        let ts = i * DEFAULT_BLOCK_DURATION / (4 * 120);
+        r = app.append(r, &ls(&["a", "b"]), ts, i as f64).unwrap();
+        maxt = ts;
+        exp_samples.push(Sample::float(0, ts, i as f64));
+    }
+    commit_ok(&mut app);
+    (exp_samples, maxt)
+}
+
+// Tests https://github.com/prometheus/prometheus/issues/8221.
+#[test]
+fn test_chunk_not_found_head_gc_race() {
+    let db = crate::common::new_test_db(vec![]);
+    db.disable_compactions();
+    let (_, maxt) = append_one_and_a_half_blocks(&db);
+    let mint = 0;
+
+    // Get a querier before compaction (or when compaction is about to begin).
+    let mut q = db.querier(mint, maxt).unwrap();
+
+    // Query the compacted range and get the first series before compaction.
+    {
+        let mut ss = q.select(&bg(), true, None, &[m(MatchType::Equal, "a", "b")]);
+        assert!(ss.next());
+        let s = ss.at().clone();
+
+        let db2 = db.db.clone();
+        let wg = std::thread::spawn(move || {
+            // Compacting head while the querier spans the compaction time.
+            db2.compact(&bg()).unwrap();
+            assert!(!db2.blocks().is_empty());
+        });
+
+        // Give enough time for compaction to finish. We expect it to be blocked until querier is closed.
+        std::thread::sleep(std::time::Duration::from_secs(3));
+
+        // Now consume after compaction when it's gone.
+        {
+            let mut it = s.iterator(None);
+            while it.next() == ValueType::Float {
+                let _ = it.at();
+            }
+            // It should error here without any fix for the mentioned issue.
+            assert!(it.err().is_none());
+        }
+        while ss.next() {
+            let s = ss.at().clone();
+            let mut it = s.iterator(None);
+            while it.next() == ValueType::Float {
+                let _ = it.at();
+            }
+            assert!(it.err().is_none());
+        }
+        assert!(ss.err().is_none());
+        drop(ss);
+        assert!(q.close().is_none());
+        wg.join().unwrap();
+    }
+}
+
+// Tests https://github.com/prometheus/prometheus/issues/9079.
+#[test]
+fn test_data_missing_on_query_during_compaction() {
+    let db = crate::common::new_test_db(vec![]);
+    db.disable_compactions();
+    let (exp_samples, maxt) = append_one_and_a_half_blocks(&db);
+
+    // Get a querier before compaction (or when compaction is about to begin).
+    let q = db.querier(0, maxt).unwrap();
+
+    let db2 = db.db.clone();
+    let wg = std::thread::spawn(move || {
+        // Compacting head while the querier spans the compaction time.
+        db2.compact(&bg()).unwrap();
+        assert!(!db2.blocks().is_empty());
+    });
+
+    // Give enough time for compaction to finish. We expect it to be blocked until querier is closed.
+    std::thread::sleep(std::time::Duration::from_secs(3));
+
+    // Querying the querier that was got before compaction.
+    let series = query(q, &[m(MatchType::Equal, "a", "b")]);
+    assert_eq!(BTreeMap::from([("{a=\"b\"}".to_string(), exp_samples)]), series);
+
+    wg.join().unwrap();
+}
+
+#[test]
+fn test_is_querier_colliding_with_truncation() {
+    let db = crate::common::new_test_db(vec![]);
+    db.disable_compactions();
+
+    let mut app = db.appender(&bg());
+    let mut r: SeriesRef = 0;
+    for i in 0..=3000i64 {
+        r = app.append(r, &ls(&["a", "b"]), i, i as f64).unwrap();
+    }
+    commit_ok(&mut app);
+
+    // This mocks truncation.
+    db.head().mem_truncation_in_process.store(true, Ordering::SeqCst);
+    db.head().last_memory_truncation_time.store(2000, Ordering::SeqCst);
+
+    // Test that IsQuerierValid suggests correct querier ranges: (mint, maxt, expShouldClose, expGetNew, expNewMint).
+    let cases: [(i64, i64, bool, bool, i64); 5] = [
+        // Entirely below the truncation point: close without reopening, but newMint is still the truncation point
+        // so callers (e.g. the OOO wrapper) clamp their in-order read to it.
+        (-200, -100, true, false, 2000),
+        (-200, 300, true, false, 2000),
+        (100, 1900, true, false, 2000),
+        // Straddles the truncation point: close and reopen at the truncation point.
+        (1900, 2200, true, true, 2000),
+        // At/above the truncation point: no collision.
+        (2000, 2500, false, false, 0),
+    ];
+    for (mint, maxt, exp_should_close, exp_get_new, exp_new_mint) in cases {
+        let (should_close, get_new, new_mint) = db.head().is_querier_colliding_with_truncation(mint, maxt);
+        assert_eq!(exp_should_close, should_close, "mint={mint},maxt={maxt}");
+        assert_eq!(exp_get_new, get_new, "mint={mint},maxt={maxt}");
+        if should_close || get_new {
+            assert_eq!(exp_new_mint, new_mint, "mint={mint},maxt={maxt}");
+        }
+    }
+    db.head().mem_truncation_in_process.store(false, Ordering::SeqCst);
+}
+
+/// Starts `WaitForPendingReadersInTimeRange(mint, maxt)` in a thread; the flag is set once it returns.
+fn spawn_wait(head: Arc<Head>, mint: i64, maxt: i64) -> (Arc<AtomicBool>, std::thread::JoinHandle<()>) {
+    let wait_over = Arc::new(AtomicBool::new(false));
+    let w = wait_over.clone();
+    let h = std::thread::spawn(move || {
+        head.wait_for_pending_readers_in_time_range(mint, maxt);
+        w.store(true, Ordering::SeqCst);
+    });
+    (wait_over, h)
+}
+
+/// Waits up to `d` for the flag to be set.
+fn wait_flag(f: &AtomicBool, d: std::time::Duration) -> bool {
+    let start = std::time::Instant::now();
+    while !f.load(Ordering::SeqCst) {
+        if start.elapsed() > d {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    true
+}
+
+/// A querier or a chunk querier (both are Go `io.Closer`s and `storage.LabelQuerier`s).
+enum AnyQuerier {
+    Samples(storage::BoxQuerier),
+    Chunks(storage::BoxChunkQuerier),
+}
+
+impl AnyQuerier {
+    fn lq(&mut self) -> &mut dyn storage::LabelQuerier {
+        match self {
+            AnyQuerier::Samples(q) => &mut **q,
+            AnyQuerier::Chunks(q) => &mut **q,
+        }
+    }
+    fn close(&mut self) -> Option<Error> {
+        self.lq().close()
+    }
+}
+
+#[test]
+fn test_wait_for_pending_readers_in_time_range() {
+    let db = crate::common::new_test_db(vec![]);
+    db.disable_compactions();
+
+    let sample_ts = |i: i64| i * DEFAULT_BLOCK_DURATION / (4 * 120);
+    let mut app = db.appender(&bg());
+    let mut r: SeriesRef = 0;
+    for i in 0..=3000i64 {
+        r = app.append(r, &ls(&["a", "b"]), sample_ts(i), i as f64).unwrap();
+    }
+    commit_ok(&mut app);
+
+    let (trunc_mint, trunc_maxt) = (1000i64, 2000i64);
+    let cases = [
+        (0, 500, false),     // Before truncation range.
+        (500, 1500, true),   // Overlaps with truncation at the start.
+        (1200, 1700, true),  // Within truncation range.
+        (1800, 2500, true),  // Overlaps with truncation at the end.
+        (2000, 2500, false), // After truncation range.
+        (2100, 2500, false), // After truncation range.
+    ];
+    for (mint, maxt, should_wait) in cases {
+        let name = format!("mint={mint},maxt={maxt},shouldWait={should_wait}");
+        // adapted: Go uses synctest (fake time) to see whether the wait blocks; here real threads and short real
+        // waits check the same: the wait must block while an overlapping querier is open and return (within the
+        // 500ms poll interval) once it is closed, or return at once when there is no overlap.
+        let check_waiting = |mut cl: AnyQuerier| {
+            let (wait_over, h) = spawn_wait(db.head().clone(), trunc_mint, trunc_maxt);
+            if should_wait {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                assert!(
+                    !wait_over.load(Ordering::SeqCst),
+                    "{name}: WaitForPendingReadersInTimeRange should block while overlapping querier is open"
+                );
+                assert!(cl.close().is_none());
+                assert!(
+                    wait_flag(&wait_over, std::time::Duration::from_secs(2)),
+                    "{name}: WaitForPendingReadersInTimeRange should complete after querier is closed"
+                );
+            } else {
+                assert!(
+                    wait_flag(&wait_over, std::time::Duration::from_millis(400)),
+                    "{name}: WaitForPendingReadersInTimeRange should return immediately when no overlap"
+                );
+                assert!(cl.close().is_none());
+            }
+            h.join().unwrap();
+        };
+
+        check_waiting(AnyQuerier::Samples(db.querier(mint, maxt).unwrap()));
+        check_waiting(AnyQuerier::Chunks(db.chunk_querier(mint, maxt).unwrap()));
+    }
+}
+
+/// TestQuerierDoesNotBlockHeadTruncation verifies that a querier opened during an in-progress head truncation does
+/// not hold up the truncation for the range below the truncation point, for the plain in-order querier and the
+/// head+OOO querier.
+#[test]
+fn test_querier_does_not_block_head_truncation() {
+    const MAX_T: i64 = 3000;
+    const TRUNC_TIME: i64 = 2000;
+
+    // newDB builds a head with in-order samples spanning [0,maxT). When withOOO is set it also appends an OOO
+    // range over the same period, which forces db.Querier down the head+OOO path.
+    let new_db = |with_ooo: bool| {
+        let db = open_db(tsdb::db::Options { out_of_order_time_window: MAX_T, ..tsdb::db::default_options() });
+        db.disable_compactions();
+
+        let mut app = db.appender(&bg());
+        let mut r: SeriesRef = 0;
+        for i in (0..MAX_T).step_by(100) {
+            r = app.append(r, &ls(&["a", "b"]), i, i as f64).unwrap();
+        }
+        if with_ooo {
+            for i in (50..MAX_T).step_by(100) {
+                app.append(r, &ls(&["a", "b"]), i, i as f64).unwrap();
+            }
+        }
+        commit_ok(&mut app);
+
+        // Mock a head memory truncation in progress up to truncTime. At this point the block for [headMin,
+        // truncTime) has already been written and reloaded, so any querier whose range falls below truncTime must
+        // read from the block and must NOT pin the head.
+        db.head().last_memory_truncation_time.store(TRUNC_TIME, Ordering::SeqCst);
+        db.head().mem_truncation_in_process.store(true, Ordering::SeqCst);
+        db
+    };
+
+    // adapted: Go uses synctest (fake time); here a real thread and a short real wait.
+    let assert_does_not_block = |db: &TestDb, mut cl: AnyQuerier, name: &str| {
+        let (wait_over, h) = spawn_wait(db.head().clone(), db.head().min_time(), TRUNC_TIME);
+        // Let the thread run until it either finishes (no overlap) or blocks on sleep.
+        let blocked = !wait_flag(&wait_over, std::time::Duration::from_millis(400));
+
+        // Always release the querier and drain so the thread never leaks, regardless of outcome. Once the only
+        // overlapping read is gone the wait must complete.
+        assert!(cl.close().is_none());
+        assert!(wait_flag(&wait_over, std::time::Duration::from_secs(2)), "{name}: wait must complete once the querier is closed");
+        h.join().unwrap();
+
+        assert!(
+            !blocked,
+            "{name}: a querier whose range is below the truncation point must not block head truncation: its \
+             in-order isolation read must be clamped to the truncation point"
+        );
+    };
+
+    // Both ranges read in-order data below the truncation point: one straddles the truncation point, the other is
+    // entirely below it. Neither must pin the head.
+    let ranges = [("straddling truncation point", 1000, 2500), ("entirely below truncation point", 500, 1500)];
+    for with_ooo in [false, true] {
+        let name = if with_ooo { "in-order+OOO" } else { "in-order" };
+        let db = new_db(with_ooo);
+        for (rname, mint, maxt) in ranges {
+            let n = format!("{name}/{rname}");
+            assert_does_not_block(&db, AnyQuerier::Samples(db.querier(mint, maxt).unwrap()), &n);
+            assert_does_not_block(&db, AnyQuerier::Chunks(db.chunk_querier(mint, maxt).unwrap()), &n);
+        }
+        db.head().mem_truncation_in_process.store(false, Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn test_query_ooo_head_during_truncate() {
+    query_ooo_head_during_truncate(
+        |db, min_t, max_t| AnyQuerier::Samples(db.querier(min_t, max_t).unwrap()),
+        |q, min_t, _| {
+            // Samples
+            let AnyQuerier::Samples(q) = q else { panic!("not a querier") };
+            let mut ss = q.select(&bg(), false, None, &[m(MatchType::Equal, "a", "b")]);
+            assert!(ss.next());
+            let s = ss.at().clone();
+            assert!(!ss.next()); // One series.
+            let mut it = s.iterator(None);
+            assert_ne!(ValueType::None, it.next()); // Has some data.
+            assert_eq!(min_t, it.at_t()); // It is an in-order sample.
+            assert_ne!(ValueType::None, it.next()); // Has some data.
+            assert_eq!(min_t + 50, it.at_t()); // it is an out-of-order sample.
+            assert!(it.err().is_none());
+        },
+    );
+}
+
+#[test]
+fn test_chunk_query_ooo_head_during_truncate() {
+    query_ooo_head_during_truncate(
+        |db, min_t, max_t| AnyQuerier::Chunks(db.chunk_querier(min_t, max_t).unwrap()),
+        |q, min_t, _| {
+            // Chunks
+            let AnyQuerier::Chunks(q) = q else { panic!("not a chunk querier") };
+            let mut ss = q.select(&bg(), false, None, &[m(MatchType::Equal, "a", "b")]);
+            assert!(ss.next());
+            let s = ss.at().clone();
+            assert!(!ss.next()); // One series.
+            let mut meta_it = s.iterator(None);
+            assert!(meta_it.next());
+            let meta = meta_it.at().clone();
+            // Samples
+            let chk = meta.chunk.expect("chunk");
+            let mut it = chk.iterator(None);
+            assert_ne!(ValueType::None, it.next()); // Has some data.
+            assert_eq!(min_t, it.at_t()); // It is an in-order sample.
+            assert_ne!(ValueType::None, it.next()); // Has some data.
+            assert_eq!(min_t + 50, it.at_t()); // it is an out-of-order sample.
+            assert!(it.err().is_none());
+        },
+    );
+}
+
+fn query_ooo_head_during_truncate(
+    make_querier: fn(&TestDb, i64, i64) -> AnyQuerier,
+    verify: fn(&mut AnyQuerier, i64, i64),
+) {
+    const MAX_T: i64 = 6000;
+    let db = open_db(tsdb::db::Options {
+        out_of_order_time_window: MAX_T,
+        min_block_duration: MAX_T / 2, // So that head will compact up to 3000.
+        ..tsdb::db::default_options()
+    });
+    db.disable_compactions();
+
+    let mut app = db.appender(&bg());
+    // Add in-order samples at every 100ms starting at 0ms.
+    for i in (0..MAX_T).step_by(100) {
+        app.append(0, &ls(&["a", "b"]), i, 0.0).unwrap();
+    }
+    // Add out-of-order samples at every 100ms starting at 50ms.
+    for i in (50..MAX_T).step_by(100) {
+        app.append(0, &ls(&["a", "b"]), i, 0.0).unwrap();
+    }
+    commit_ok(&mut app);
+
+    // Go requireEqualOOOSamples.
+    let m_ = &db.head().metrics.out_of_order_samples_appended;
+    assert_eq!(
+        (MAX_T / 100 - 1) as f64,
+        m_.with_label_values("float").get() + m_.with_label_values("histogram").get(),
+        "number of ooo appended samples mismatch"
+    );
+
+    // Synchronization points.
+    let (allow_tx, allow_rx) = std::sync::mpsc::sync_channel::<()>(0);
+    let (started_tx, started_rx) = std::sync::mpsc::sync_channel::<()>(0);
+    let (finished_tx, finished_rx) = std::sync::mpsc::sync_channel::<()>(1);
+
+    let allow_tx = std::sync::Mutex::new(allow_tx);
+    let started_rx = std::sync::Mutex::new(started_rx);
+    *db.head().mem_truncation_call_back.lock().unwrap() = Some(Box::new(move || {
+        // Compaction has started, let the query start and wait for it to actually start to simulate race condition.
+        let _ = allow_tx.lock().unwrap().send(());
+        let _ = started_rx.lock().unwrap().recv();
+    }));
+
+    let db2 = db.db.clone();
+    let compaction = std::thread::spawn(move || {
+        let _ = db2.compact(&bg()); // Compact and write blocks up to 3000 (maxtT/2).
+        let _ = finished_tx.send(());
+    });
+
+    // Wait for the compaction to start.
+    allow_rx.recv().unwrap();
+
+    let mut q = make_querier(&db, 1500, 2500);
+    started_tx.send(()).unwrap(); // Unblock the compaction.
+    let ctx = bg();
+
+    // Label names.
+    let (res, annots, err) = q.lq().label_names(&ctx, None, &[m(MatchType::Equal, "a", "b")]);
+    assert!(err.is_none());
+    assert!(annots.is_empty());
+    assert_eq!(vec!["a".to_string()], res);
+
+    // Label values.
+    let (res, annots, err) = q.lq().label_values(&ctx, "a", None, &[m(MatchType::Equal, "a", "b")]);
+    assert!(err.is_none());
+    assert!(annots.is_empty());
+    assert_eq!(vec!["b".to_string()], res);
+
+    verify(&mut q, 1500, 2500);
+
+    // Cannot be deferred as the compaction waits for queries to close before finishing.
+    assert!(q.close().is_none());
+
+    finished_rx.recv().unwrap(); // Wait for compaction.
+    compaction.join().unwrap();
+    *db.head().mem_truncation_call_back.lock().unwrap() = None;
+}
+
+#[test]
+fn test_appending_different_encoding_to_same_series() {
+    let db = open_db(tsdb::db::default_options());
+    db.disable_compactions();
+
+    let hists = tu::generate_test_histograms(10);
+    let float_hists = tu::generate_test_float_histograms(10);
+    let lbls = ls(&["a", "b"]);
+
+    let mut exp_result: Vec<Sample> = Vec::new();
+    let check_exp_chunks = |count: usize| {
+        let (ms, created) = db.head().get_or_create(lbls.hash(), &lbls, false).unwrap();
+        assert!(!created);
+        assert_eq!(count, ms.lock().head_chunks.len());
+    };
+
+    let h = |t: i64, i: usize| h_sample(t, hists[i].clone());
+    let fh = |t: i64, i: usize| fh_sample(t, float_hists[i].clone());
+    let f = |t: i64, v: f64| Sample::float(0, t, v);
+    let ooo = Some(storage::ERR_OUT_OF_ORDER_SAMPLE);
+    // (samples, expChunks, err)
+    let appends: Vec<(Vec<Sample>, usize, Option<Error>)> = vec![
+        (vec![h(100, 0)], 1, None),
+        (vec![f(200, 2.0)], 2, None),
+        (vec![fh(210, 0)], 3, None),
+        (vec![h(220, 1)], 4, None),
+        (vec![fh(230, 3)], 5, None),
+        (vec![h(100, 2)], 0, ooo.clone()),
+        (vec![h(300, 3)], 6, None),
+        (vec![f(100, 2.0)], 0, ooo.clone()),
+        (vec![fh(100, 4)], 0, ooo.clone()),
+        // The three next tests all failed before #15177 was fixed.
+        // Each of the three samples above creates a new chunk because the type changes.
+        (vec![f(400, 4.0), h(500, 5), f(600, 6.0)], 9, None),
+        // Again each sample creates a new chunk.
+        (vec![h(700, 7), f(800, 8.0), h(900, 9)], 12, None),
+        // Even changes between float and integer histogram create new chunks.
+        (vec![fh(1000, 7), h(1100, 9)], 14, None),
+    ];
+
+    for (samples, exp_chunks, err) in appends {
+        let mut app = db.appender(&bg());
+        for s in &samples {
+            let r = if s.h.is_some() || s.fh.is_some() {
+                app.append_histogram(0, &lbls, s.t, s.h.as_deref(), s.fh.as_deref())
+            } else {
+                app.append(0, &lbls, s.t, s.f)
+            };
+            assert_eq!(err, r.err());
+        }
+        if err.is_none() {
+            commit_ok(&mut app);
+            exp_result.extend(samples);
+            check_exp_chunks(exp_chunks);
+        } else {
+            assert!(app.rollback().is_none());
+        }
+    }
+    for i in 1..exp_result.len() {
+        let (prev_h, prev_fh) = (exp_result[i - 1].h.is_none(), exp_result[i - 1].fh.is_none());
+        let s = &mut exp_result[i];
+        if let Some(h) = s.h.as_mut().filter(|_| prev_h) {
+            h.counter_reset_hint = CounterResetHint::UnknownCounterReset;
+        } else if let Some(fh) = s.fh.as_mut().filter(|_| prev_fh) {
+            fh.counter_reset_hint = CounterResetHint::UnknownCounterReset;
+        }
+    }
+
+    // Query back and expect same order of samples.
+    let q = db.querier(i64::MIN, i64::MAX).unwrap();
+    let series = query(q, &[m(MatchType::Equal, "a", "b")]);
+    assert_eq!(BTreeMap::from([(lbls.to_string(), exp_result)]), series);
+}
