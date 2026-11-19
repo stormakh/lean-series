@@ -3,16 +3,8 @@
 //! Rust notes:
 //! - `HeadOptions` is not `Clone` (it holds atomics). Go reuses `head.opts` when it reopens a head; here
 //!   [`clone_opts`] copies the options.
-//! - `head.opts.EnableMemorySnapshotOnShutdown` is a plain field of the options that the open head owns, so a
-//!   test cannot switch it on for the running head. Where Go switches it on before a restart, the port reopens
-//!   the head once with the flag set and then once more, so that the second restart writes and loads the
-//!   snapshot (marked `adapted`).
 //! - The head chunk count of a series is the length of its head chunk vector (Go keeps a separate atomic
 //!   counter).
-//!
-//! Not ported yet (need the DB, `tsdb::db::open`, or WAL replay internals that are ported in parallel):
-//! `test_head_mmap_head_chunks` (one subtest opens a DB, one calls `appendChunkAndMmap` of head_wal.go) and
-//! `test_query_ooo_head_during_truncate_across_wrap` (DB).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -921,12 +913,9 @@ fn test_head_num_stale_series() {
         assert_eq!(num_stale, head.num_stale_series());
         assert_eq!(num_series, head.num_series());
     };
-    let restart_and_verify = |th: &mut TestHead, opts: Option<HeadOptions>, num_stale: u64, num_series: u64| {
+    let restart_and_verify = |th: &mut TestHead, num_stale: u64, num_series: u64| {
         verify(th, num_stale, num_series);
-        match opts {
-            Some(o) => reopen(th, o),
-            None => reopen_same(th),
-        }
+        reopen_same(th);
         th.init(0).expect("init");
         verify(th, num_stale, num_series);
     };
@@ -950,12 +939,12 @@ fn test_head_num_stale_series() {
     // Make series2 stale as well.
     append_float(&head, &series2, 200, stale_nan());
     verify(&head, 2, 3);
-    restart_and_verify(&mut head, None, 2, 3);
+    restart_and_verify(&mut head, 2, 3);
 
     // Add a non-stale sample to series1. It should not be counted as stale now.
     append_float(&head, &series1, 300, 10.0);
     verify(&head, 1, 3);
-    restart_and_verify(&mut head, None, 1, 3);
+    restart_and_verify(&mut head, 1, 3);
 
     // Test that series3 doesn't become stale when we add another normal sample.
     append_float(&head, &series3, 200, 10.0);
@@ -977,7 +966,7 @@ fn test_head_num_stale_series() {
     let fh = tu::generate_test_float_histograms(1).remove(0);
     append_fhist(&head, &series5, 100, &fh);
     verify(&head, 2, 5);
-    restart_and_verify(&mut head, None, 2, 5);
+    restart_and_verify(&mut head, 2, 5);
 
     // Make float histogram series stale.
     let stale_fh = stale_fhist(&fh);
@@ -1000,15 +989,11 @@ fn test_head_num_stale_series() {
     // removing series 2, 3, 4, we should be left with 1 stale and 1 non-stale series.
     append_float(&head, &series1, 400, 10.0);
     append_fhist(&head, &series5, 400, &stale_fh);
-    restart_and_verify(&mut head, None, 3, 5);
+    restart_and_verify(&mut head, 3, 5);
 
     // This will test restarting with snapshot.
-    // adapted: the flag cannot be set on the open head; reopen once with it set, then restart again so that
-    // the close writes the snapshot and the new head loads it.
-    let mut o = clone_opts(&head.opts);
-    o.enable_memory_snapshot_on_shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
-    restart_and_verify(&mut head, Some(o), 3, 5);
-    restart_and_verify(&mut head, None, 3, 5);
+    head.opts.enable_memory_snapshot_on_shutdown.store(true, Ordering::Relaxed);
+    restart_and_verify(&mut head, 3, 5);
 
     // Test garbage collection behavior - stale series should be decremented when GC'd.
     // Force a garbage collection by truncating old data.
@@ -1093,7 +1078,7 @@ fn test_head_num_stale_series_mixed_type() {
         for (stale, resolve) in transitions {
             let name = format!("TestHead_NumStaleSeries_MixedType/{mode}/{stale}_to_{resolve}");
             let opts = new_test_head_default_options(1000, false);
-            let mut opts = opts;
+            let opts = opts;
             opts.enable_memory_snapshot_on_shutdown.store(mode == "snapshot", std::sync::atomic::Ordering::Relaxed);
             let mut head = new_test_head_with_options("num-stale-mixed", compression::Type::None, opts);
             head.init(0).expect("init");
@@ -1313,12 +1298,9 @@ fn test_head_num_native_histogram_series_and_buckets() {
         assert_eq!(nhb, head.num_native_histogram_buckets());
         assert_eq!(ns, head.num_series());
     };
-    let restart_and_verify = |th: &mut TestHead, opts: Option<HeadOptions>, nhs: u64, nhb: u64, ns: u64| {
+    let restart_and_verify = |th: &mut TestHead, nhs: u64, nhb: u64, ns: u64| {
         verify(th, nhs, nhb, ns);
-        match opts {
-            Some(o) => reopen(th, o),
-            None => reopen_same(th),
-        }
+        reopen_same(th);
         th.init(0).expect("init");
         verify(th, nhs, nhb, ns);
     };
@@ -1359,7 +1341,7 @@ fn test_head_num_native_histogram_series_and_buckets() {
     append_fhist(&head, &series2, 100, &std_float_hist[0]);
     verify(&head, 2, 16, 2);
 
-    restart_and_verify(&mut head, None, 2, 16, 2);
+    restart_and_verify(&mut head, 2, 16, 2);
 
     // A native histogram sample with fewer buckets adjusts the bucket gauge by the delta (8 -> 3).
     append_hist(&head, &series1, 130, &three_bucket_hist);
@@ -1369,7 +1351,7 @@ fn test_head_num_native_histogram_series_and_buckets() {
     append_float(&head, &series1, 140, 5.0);
     verify(&head, 1, 8, 2);
 
-    restart_and_verify(&mut head, None, 1, 8, 2);
+    restart_and_verify(&mut head, 1, 8, 2);
 
     // A proper staleness marker (an empty histogram) keeps the series counted as a native histogram series but
     // drops its buckets to zero.
@@ -1385,11 +1367,8 @@ fn test_head_num_native_histogram_series_and_buckets() {
     verify(&head, 1, 8, 2);
 
     // This will test restarting with snapshot.
-    // adapted: see test_head_num_stale_series (one restart sets the flag, the next one uses the snapshot).
-    let mut o = clone_opts(&head.opts);
-    o.enable_memory_snapshot_on_shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
-    restart_and_verify(&mut head, Some(o), 1, 8, 2);
-    restart_and_verify(&mut head, None, 1, 8, 2);
+    head.opts.enable_memory_snapshot_on_shutdown.store(true, Ordering::Relaxed);
+    restart_and_verify(&mut head, 1, 8, 2);
 
     // Garbage collection: a removed native histogram series decrements both gauges.
     // Keep series2 alive with a fresh sample, then truncate away the older series1.
@@ -1427,7 +1406,7 @@ fn test_head_num_native_histogram_series_and_buckets() {
                 let name = format!(
                     "TestHead_NumNativeHistogramSeriesAndBuckets/stale_payload_buckets_are_counted/appender_v2={appender_v2}/snapshot={snapshot}/{vname}"
                 );
-                let mut opts = new_test_head_default_options(1000, false);
+                let opts = new_test_head_default_options(1000, false);
                 opts.enable_memory_snapshot_on_shutdown.store(snapshot, std::sync::atomic::Ordering::Relaxed);
                 let mut test_head = new_test_head_with_options("stale-payload-buckets", compression::Type::None, opts);
                 test_head.init(0).expect("init");
@@ -2532,4 +2511,629 @@ fn test_ooo_restart_resets_first_ooo_chunk_id() {
         drop(g);
         h.close().expect("close");
     }
+}
+
+/// The sum of the per-stripe mmap-ready counters (Go `mmapReadyTotal`).
+fn mmap_ready_total(h: &Head) -> i32 {
+    (0..h.series.size).map(|i| h.series.test_mmap_ready(i)).sum()
+}
+
+/// The number of series with at least two head chunks (Go `countReady`).
+fn count_ready(h: &Head) -> i32 {
+    let mut n = 0;
+    h.series.for_each(|s| {
+        if s.lock().head_chunk_count() >= 2 {
+            n += 1;
+        }
+    });
+    n
+}
+
+/// Go `getCount`: the head chunk count of the series.
+fn head_chunk_count_of(h: &Head, lbls: &Labels) -> u32 {
+    let s = h.series.get_by_hash(lbls.hash(), lbls).unwrap_or_else(|| panic!("series {lbls} not found"));
+    s.lock().head_chunk_count()
+}
+
+/// The chunks of the head chunks of a series (to compare identity, Go `s.headChunks` pointer).
+fn head_chunk_arcs(s: &MemSeries) -> Vec<Arc<dyn chunkenc::Chunk>> {
+    s.lock().head_chunks.iter().map(|c| c.chunk.clone()).collect()
+}
+
+fn same_chunks(a: &[Arc<dyn chunkenc::Chunk>], b: &[Arc<dyn chunkenc::Chunk>]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| Arc::ptr_eq(x, y))
+}
+
+#[test]
+fn test_head_mmap_head_chunks() {
+    // Interval such that one chunk's worth of samples (DefaultSamplesPerChunk) spans DefaultBlockDuration/4.
+    let interval = DEFAULT_BLOCK_DURATION / (4 * DEFAULT_SAMPLES_PER_CHUNK as i64);
+    // Enough samples to cross the nextAt boundary multiple times, producing 3 head chunks per series.
+    let chunk_cut_iterations = 2 * DEFAULT_SAMPLES_PER_CHUNK + 10;
+
+    // basic
+    {
+        let h = new_test_head("mmap-basic", DEFAULT_BLOCK_DURATION, compression::Type::None, false);
+        h.init(0).expect("init");
+
+        let lbls_a = lbl(&["__name__", "seriesA"]);
+        let lbls_b = lbl(&["__name__", "seriesB"]);
+        let lbls_c = lbl(&["__name__", "seriesC"]);
+
+        let mut ts = 0i64;
+
+        // First chunk creation should set headChunkCount to 1.
+        let mut app = h.appender(&ctx());
+        app.append(0, &lbls_a, ts, 1.0).expect("append");
+        assert!(app.commit().is_none());
+        ts += interval;
+
+        assert_eq!(1, head_chunk_count_of(&h, &lbls_a), "first chunk should set headChunkCount to 1");
+        assert_eq!(0, count_ready(&h), "series with only a first chunk should not be ready");
+
+        // Appending enough samples to trigger chunk cuts should update headChunkCount.
+        let (mut ref_b, mut ref_c): (SeriesRef, SeriesRef) = (0, 0);
+        let mut app = h.appender(&ctx());
+        for _ in 0..chunk_cut_iterations {
+            ref_b = app.append(ref_b, &lbls_b, ts, ts as f64).expect("append");
+            ref_c = app.append(ref_c, &lbls_c, ts, ts as f64).expect("append");
+            ts += interval;
+        }
+        assert!(app.commit().is_none());
+
+        assert_eq!(2, count_ready(&h), "expected both series to be marked ready");
+        // With ~2*DefaultSamplesPerChunk samples, we expect 3 head chunks.
+        assert_eq!(3, head_chunk_count_of(&h, &lbls_b), "series B headChunkCount should reflect actual head chunk count");
+        assert_eq!(3, head_chunk_count_of(&h, &lbls_c), "series C headChunkCount should reflect actual head chunk count");
+
+        // mmapHeadChunks should reset headChunkCount to 1 (one head chunk remains).
+        h.mmap_head_chunks();
+
+        for lbls in [&lbls_b, &lbls_c] {
+            let s = h.series.get_by_hash(lbls.hash(), lbls).unwrap_or_else(|| panic!("series {lbls} not found"));
+            let g = s.lock();
+            assert!(!g.head_chunks.is_empty(), "series {lbls} should have head chunks");
+            assert_eq!(1, g.head_chunks.len(), "series {lbls} should not have prev mmapped");
+            assert!(!g.mmapped_chunks.is_empty(), "series {lbls} should have mmapped chunks");
+        }
+
+        assert_eq!(1, head_chunk_count_of(&h, &lbls_b), "headChunkCount should be 1 after mmap");
+        assert_eq!(1, head_chunk_count_of(&h, &lbls_c), "headChunkCount should be 1 after mmap");
+        assert_eq!(0, count_ready(&h), "ready set should be empty after mmapHeadChunks");
+
+        // A second call should be a no-op.
+        let before = h.metrics.mmap_chunks_total.get();
+        h.mmap_head_chunks();
+        let after = h.metrics.mmap_chunks_total.get();
+        assert_eq!(before, after, "second call should mmap 0 chunks");
+
+        // Only newly ready series should be processed.
+        let mut app = h.appender(&ctx());
+        for _ in 0..chunk_cut_iterations {
+            ref_b = app.append(ref_b, &lbls_b, ts, ts as f64).expect("append");
+            ts += interval;
+        }
+        assert!(app.commit().is_none());
+
+        assert_eq!(1, count_ready(&h), "only series B should be ready");
+        assert_eq!(3, head_chunk_count_of(&h, &lbls_b), "series B headChunkCount should reflect new chunks");
+        assert_eq!(1, head_chunk_count_of(&h, &lbls_c), "series C headChunkCount should be unchanged");
+
+        let before = h.metrics.mmap_chunks_total.get();
+        h.mmap_head_chunks();
+        let after = h.metrics.mmap_chunks_total.get();
+        assert!(after > before, "third call should mmap chunks from series B");
+        assert_eq!(1, head_chunk_count_of(&h, &lbls_b), "series B headChunkCount should be 1 after mmap");
+    }
+
+    // panic releases locks
+    //
+    // Regression test for https://github.com/prometheus/prometheus/issues/17941: if mmapChunks panics (via
+    // handleChunkWriteError) while mmapHeadChunks holds the stripe and series locks, those locks must still be
+    // released.
+    {
+        let h = new_test_head("mmap-panic", DEFAULT_BLOCK_DURATION, compression::Type::None, false);
+        h.init(0).expect("init");
+
+        let lbls = lbl(&["__name__", "series"]);
+        let mut ts = 0i64;
+        let mut r: SeriesRef = 0;
+        let mut app = h.appender(&ctx());
+        for _ in 0..chunk_cut_iterations {
+            r = app.append(r, &lbls, ts, ts as f64).expect("append");
+            ts += interval;
+        }
+        assert!(app.commit().is_none());
+
+        let s = h.series.get_by_hash(lbls.hash(), &lbls).expect("series");
+        assert!(s.lock().head_chunk_count() >= 2, "need >=2 head chunks pending mmap");
+
+        // Break the chunk write path in an OS agnostic way: dropping a segment file with a far higher sequence
+        // number into the head chunks directory makes the next cut file's sequence differ from the one the chunk
+        // reference was handed out for, which fails the write.
+        let rogue = tsdb::head::mmapped_chunks_dir(&h.opts.chunk_dir_root).join("000100");
+        std::fs::write(&rogue, b"").expect("write rogue file");
+
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| h.mmap_head_chunks()));
+        assert!(res.is_err(), "mmapHeadChunks must panic");
+
+        // The locks held while mmapChunks panicked must have been released.
+        assert!(s.test_try_lock(), "series lock leaked after panic");
+        for i in 0..h.series.size {
+            assert!(h.series.test_try_lock_shard(i), "stripe lock {i} leaked after panic");
+        }
+
+        // Go's cleanup closes the mapper first, so that Head.Close() -> mmapHeadChunks() does not panic again.
+        let _ = h.chunk_disk_mapper.close();
+        let _ = h.head.close();
+    }
+
+    // mmapHeadChunksInStripe releases the stripe lock before locking a series
+    //
+    // Regression test for https://github.com/prometheus/prometheus/issues/19445.
+    {
+        let h = new_test_head("mmap-stripe-lock", DEFAULT_BLOCK_DURATION, compression::Type::None, false);
+        h.init(0).expect("init");
+
+        let lbls = lbl(&["__name__", "series"]);
+        let mut app = h.appender(&ctx());
+        let (mut r, mut ts): (SeriesRef, i64) = (0, 0);
+        for _ in 0..DEFAULT_SAMPLES_PER_CHUNK + 10 {
+            r = app.append(r, &lbls, ts, ts as f64).expect("append");
+            ts += interval;
+        }
+        assert!(app.commit().is_none());
+
+        let series = h.series.get_by_id(r).expect("series");
+        assert!(series.lock().head_chunk_count() >= 2, "series must be mmap-ready");
+        let stripe = h.series.ref_stripe(r);
+
+        // gcSeries: hold the series lock.
+        let guard = series.lock();
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        std::thread::scope(|sc| {
+            let head = &h;
+            sc.spawn(move || {
+                head.mmap_head_chunks_in_stripe(stripe);
+                let _ = tx.send(());
+            });
+            if rx.recv_timeout(Duration::from_secs(1)).is_ok() {
+                panic!("mmapHeadChunksInStripe returned without ever blocking on the series lock");
+            }
+
+            // If mmapHeadChunksInStripe still holds the stripe's lock, this try-lock (write) fails.
+            let got_lock = h.series.test_try_lock_shard(stripe);
+
+            // Unblock mmapHeadChunksInStripe and wait for it to finish before asserting.
+            drop(guard);
+            rx.recv_timeout(Duration::from_secs(5))
+                .expect("mmapHeadChunksInStripe never completed after the series lock was released");
+
+            assert!(
+                got_lock,
+                "mmapHeadChunksInStripe held the stripe's RLock while blocked on a series lock; this deadlocks against a concurrent gcSeries"
+            );
+        });
+    }
+
+    // gcSeries preserves head chunks for active readers after WAL replay
+    {
+        let dir = TempDir::new();
+        let db = tsdb::db::open(dir.path(), None, Some(tsdb::db::default_options()), None).expect("open");
+        db.disable_compactions();
+
+        let mut app = db.appender(&ctx());
+        let r = app.append(0, &lbl(&["__name__", "series"]), 100, 1.0).expect("append");
+        assert!(app.commit().is_none());
+        db.close().expect("close");
+        drop(db);
+
+        let db = tsdb::db::open(dir.path(), None, Some(tsdb::db::default_options()), None).expect("open");
+        db.disable_compactions();
+        let h = db.head().clone();
+        let series = h.series.get_by_id(r).expect("series");
+        {
+            let g = series.lock();
+            let txs = g.txs.as_ref().expect("isolation is enabled");
+            assert_eq!(0, txs.tx_id_count);
+            assert_eq!(0, txs.tx_ids.len(), "WAL replay must leave the transaction ring empty");
+        }
+
+        let rh = tsdb::head::RangeHead::new(h.clone(), 100, 100);
+        let ir = tsdb::BlockReader::index(&rh).expect("index");
+        let cr = tsdb::BlockReader::chunks(&rh).expect("chunks");
+        let mut builder = ScratchBuilder::new(0);
+        let mut metas: Vec<Meta> = Vec::new();
+        ir.series(r, &mut builder, &mut metas).expect("series");
+        assert_eq!(1, metas.len());
+        let chk = match cr.chunk_or_iterable(&metas[0]).expect("chunk") {
+            ChunkOrIterable::Chunk(c) => c,
+            ChunkOrIterable::Iterable(_) => panic!("expected a chunk"),
+        };
+
+        // Retire the series directly to test the saved chunk independently of reader waiting.
+        let deleted = h.gc_series(&[r], 100, |_, _| true);
+        assert!(deleted.contains(&r));
+        assert_eq!(0, h.num_series());
+        assert!(h.series.get_by_id(r).is_none());
+
+        let mut it = chk.iterator(None);
+        assert_eq!(ValueType::Float, it.next());
+        assert_eq!((100, 1.0), it.at());
+        assert_eq!(ValueType::None, it.next());
+        assert!(it.err().is_none());
+        drop(it);
+
+        ir.close().expect("close index");
+        cr.close().expect("close chunks");
+        db.close().expect("close");
+    }
+
+    // gcSeries preserves head chunks and a stale mmap is a no-op
+    {
+        let h = new_test_head("mmap-gc-series", DEFAULT_BLOCK_DURATION, compression::Type::None, false);
+        h.init(0).expect("init");
+
+        let lbls = lbl(&["__name__", "series"]);
+        let mut app = h.appender(&ctx());
+        let (mut r, mut ts): (SeriesRef, i64) = (0, 0);
+        for _ in 0..DEFAULT_SAMPLES_PER_CHUNK + 10 {
+            r = app.append(r, &lbls, ts, ts as f64).expect("append");
+            ts += interval;
+        }
+        assert!(app.commit().is_none());
+
+        let series = h.series.get_by_id(r).expect("series");
+        let head_chunks_before = head_chunk_arcs(&series);
+        let head_chunk_count_before = series.lock().head_chunk_count();
+        let mmapped_chunks_before = series.lock().mmapped_chunks.len();
+        assert!(head_chunk_count_before >= 2, "series must be mmap-ready");
+        let stripe = h.series.ref_stripe(series.r#ref);
+        assert_eq!(1, h.series.test_mmap_ready(stripe));
+
+        let deleted = h.gc_series(&[r], i64::MAX, |_, _| true);
+        assert!(deleted.contains(&r));
+        assert!(h.series.get_by_id(r).is_none());
+        assert!(series.lock().is_gced());
+        assert!(same_chunks(&head_chunks_before, &head_chunk_arcs(&series)));
+        assert_eq!(head_chunk_count_before, series.lock().head_chunk_count());
+        assert_eq!(0, h.series.test_mmap_ready(stripe));
+
+        assert_eq!(0, h.mmap_series_chunks(&series), "mmapSeriesChunks must be a no-op on an evicted series");
+        assert!(same_chunks(&head_chunks_before, &head_chunk_arcs(&series)));
+        assert_eq!(head_chunk_count_before, series.lock().head_chunk_count());
+        assert_eq!(mmapped_chunks_before, series.lock().mmapped_chunks.len());
+        assert_eq!(0, h.series.test_mmap_ready(stripe));
+    }
+
+    // ooo does not inflate count
+    {
+        let h = new_test_head("mmap-ooo-count", DEFAULT_BLOCK_DURATION, compression::Type::None, true);
+        h.init(0).expect("init");
+
+        let lbls = lbl(&["__name__", "test"]);
+        let mut ts = 0i64;
+
+        // Create enough in-order samples to get headChunkCount >= 2.
+        let mut r: SeriesRef = 0;
+        let mut app = h.appender(&ctx());
+        for _ in 0..chunk_cut_iterations {
+            r = app.append(r, &lbls, ts, ts as f64).expect("append");
+            ts += interval;
+        }
+        assert!(app.commit().is_none());
+
+        let s = h.series.get_by_hash(lbls.hash(), &lbls).expect("series");
+        let count_before = s.lock().head_chunk_count();
+        assert!(count_before >= 2, "need multiple head chunks for this test");
+
+        // Append an OOO sample that creates an OOO chunk.
+        let ooo_ts = ts - 5 * 60 * 1000; // Within the 10m OOO window.
+        let mut app = h.appender(&ctx());
+        app.append(0, &lbls, ooo_ts, 999.0).expect("append");
+        assert!(app.commit().is_none());
+
+        // headChunkCount must not change from an OOO insert.
+        assert_eq!(count_before, s.lock().head_chunk_count(), "OOO insert should not inflate headChunkCount");
+    }
+
+    // ooo insert does not increment mmap ready
+    type AppendOne = fn(&mut dyn storage::Appender, &Labels, i64) -> Result<SeriesRef, storage::Error>;
+    let ooo_cases: Vec<(&str, AppendOne)> = vec![
+        ("floats", |app, lbls, ts| app.append(0, lbls, ts, ts as f64)),
+        ("histograms", |app, lbls, ts| {
+            app.append_histogram(0, lbls, ts, Some(&tu::generate_test_histograms(1)[0]), None)
+        }),
+        ("float histograms", |app, lbls, ts| {
+            app.append_histogram(0, lbls, ts, None, Some(&tu::generate_test_float_histograms(1)[0]))
+        }),
+    ];
+    for (name, append_sample) in &ooo_cases {
+        let h = new_test_head("mmap-ooo-ready", DEFAULT_BLOCK_DURATION, compression::Type::None, true);
+        h.init(0).expect("init");
+
+        // Create a series with one in-order sample.
+        let lbls = lbl(&["__name__", "test"]);
+        let mut ts = 0i64;
+        let mut app = h.appender(&ctx());
+        append_sample(&mut *app, &lbls, ts).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert!(app.commit().is_none());
+        ts += interval;
+
+        let s = h.series.get_by_hash(lbls.hash(), &lbls).expect("series");
+
+        // Force the exact state required to trigger the bug: series at headChunkCount == 2 (mmap-ready) with
+        // mmapReady already incremented.
+        // adapted: the head chunk count is the length of the head chunk vector, so a second head chunk (a copy
+        // of the first) is pushed instead of storing 2 into Go's counter.
+        {
+            let mut g = s.lock();
+            let c = g.head_chunks[0].clone();
+            g.head_chunks.push(c);
+            assert_eq!(2, g.head_chunk_count());
+        }
+        h.series.inc_mmap_ready(s.r#ref);
+        assert_eq!(1, mmap_ready_total(&h), "{name}");
+
+        // Append an OOO sample. This creates an OOO chunk (not a regular head chunk), so mmapReady must stay
+        // at 1.
+        let ooo_ts = ts - 5 * 60 * 1000;
+        let mut app = h.appender(&ctx());
+        append_sample(&mut *app, &lbls, ooo_ts).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert!(app.commit().is_none());
+
+        assert_eq!(1, mmap_ready_total(&h), "OOO chunk creation must not increment mmapReady ({name})");
+    }
+
+    // wal replay does not leak mmap ready
+    {
+        // Pre-generate varied histograms; reusing the same histogram every iteration compresses too well to
+        // trigger chunk cuts.
+        let histograms = tu::generate_test_histograms(chunk_cut_iterations);
+        let float_histograms = tu::generate_test_float_histograms(chunk_cut_iterations);
+        for kind in ["floats", "histograms", "float histograms"] {
+            let h = new_test_head("mmap-wal-replay-ready", DEFAULT_BLOCK_DURATION, compression::Type::None, false);
+            h.init(0).expect("init");
+
+            // Build a series naturally to headChunkCount >= 2 via the normal appender path. This sets
+            // mmapReady to 1.
+            let lbls = lbl(&["__name__", "test"]);
+            let mut ts = 0i64;
+            let mut app = h.appender(&ctx());
+            for i in 0..chunk_cut_iterations {
+                match kind {
+                    "floats" => app.append(0, &lbls, ts, ts as f64),
+                    "histograms" => app.append_histogram(0, &lbls, ts, Some(&histograms[i]), None),
+                    _ => app.append_histogram(0, &lbls, ts, None, Some(&float_histograms[i])),
+                }
+                .unwrap_or_else(|e| panic!("{kind}: {e}"));
+                ts += interval;
+            }
+            assert!(app.commit().is_none());
+
+            let s = h.series.get_by_hash(lbls.hash(), &lbls).expect("series");
+            assert!(s.lock().head_chunk_count() >= 2, "{kind}");
+            assert_eq!(1, mmap_ready_total(&h), "{kind}");
+
+            // Invoke the WAL-replay-style helper with a sample timestamped past the next chunk boundary to force
+            // a chunk cut.
+            let (_, chunk_created) = {
+                let mut g = s.lock();
+                let t = ts + h.chunk_range();
+                let o = tsdb::head_append::ChunkOpts {
+                    chunk_disk_mapper: Some(&h.chunk_disk_mapper),
+                    chunk_range: h.chunk_range(),
+                    samples_per_chunk: h.opts.samples_per_chunk,
+                    ..Default::default()
+                };
+                h.test_append_chunk_and_mmap(&s, &mut g, |g| match kind {
+                    "floats" => g.append(0, t, 0.0, 0, &o, &s.lset, s.r#ref),
+                    "histograms" => g.append_histogram(0, t, Arc::new(histograms[0].clone()), 0, &o, &s.lset, s.r#ref),
+                    _ => g.append_float_histogram(0, t, Arc::new(float_histograms[0].clone()), 0, &o, &s.lset, s.r#ref),
+                })
+            };
+            assert!(chunk_created, "test needs a chunk cut to be meaningful ({kind})");
+
+            // After the chunk cut + mmap, headChunkCount == 1. The series is no longer mmap-ready, so mmapReady
+            // must be 0.
+            assert_eq!(0, mmap_ready_total(&h), "WAL-replay-style chunk cut must decrement mmapReady when prev >= 2 ({kind})");
+        }
+    }
+
+    // counter consistency
+    {
+        let h = new_test_head("mmap-counter-consistency", DEFAULT_BLOCK_DURATION, compression::Type::None, false);
+        h.init(0).expect("init");
+
+        let require_counter_consistent = |msg: &str| {
+            let actual = count_ready(&h);
+            let counter = mmap_ready_total(&h);
+            assert_eq!(actual, counter, "{msg}: mmapReady counter ({counter}) != actual ready count ({actual})");
+        };
+
+        let lbls_a = lbl(&["__name__", "seriesA"]);
+        let lbls_b = lbl(&["__name__", "seriesB"]);
+        let lbls_c = lbl(&["__name__", "seriesC"]);
+        let lbls_hist = lbl(&["__name__", "seriesHist"]);
+        let lbls_fhist = lbl(&["__name__", "seriesFHist"]);
+
+        // Phase 1: Append enough samples to create multiple head chunks.
+        let mut ts = 0i64;
+        let (mut ref_a, mut ref_b, mut ref_c, mut ref_hist, mut ref_fhist): (SeriesRef, SeriesRef, SeriesRef, SeriesRef, SeriesRef) =
+            (0, 0, 0, 0, 0);
+        let histograms = tu::generate_test_histograms(chunk_cut_iterations);
+        let float_histograms = tu::generate_test_float_histograms(chunk_cut_iterations);
+        let mut app = h.appender(&ctx());
+        for i in 0..chunk_cut_iterations {
+            ref_a = app.append(ref_a, &lbls_a, ts, ts as f64).expect("append");
+            ref_b = app.append(ref_b, &lbls_b, ts, ts as f64).expect("append");
+            ref_c = app.append(ref_c, &lbls_c, ts, ts as f64).expect("append");
+            ref_hist = app.append_histogram(ref_hist, &lbls_hist, ts, Some(&histograms[i]), None).expect("append");
+            ref_fhist = app
+                .append_histogram(ref_fhist, &lbls_fhist, ts, None, Some(&float_histograms[i]))
+                .expect("append");
+            ts += interval;
+        }
+        assert!(app.commit().is_none());
+        require_counter_consistent("after initial appends with chunk cuts");
+        assert_eq!(5, mmap_ready_total(&h), "all five series should be ready");
+
+        // Phase 2: mmapHeadChunks should bring counter to 0.
+        h.mmap_head_chunks();
+        require_counter_consistent("after mmapHeadChunks");
+        assert_eq!(0, mmap_ready_total(&h), "counter should be 0 after mmap");
+
+        // Phase 3: Make only seriesA ready again.
+        let append_a = |ref_a: &mut SeriesRef, ts: &mut i64| {
+            let mut app = h.appender(&ctx());
+            for _ in 0..chunk_cut_iterations {
+                *ref_a = app.append(*ref_a, &lbls_a, *ts, *ts as f64).expect("append");
+                *ts += interval;
+            }
+            assert!(app.commit().is_none());
+        };
+        append_a(&mut ref_a, &mut ts);
+        require_counter_consistent("after making seriesA ready again");
+        assert_eq!(1, mmap_ready_total(&h), "only seriesA should be ready");
+
+        // Mmap to bring seriesA back to headChunkCount == 1, then append again so the next GC can test the
+        // counter decrement path.
+        h.mmap_head_chunks();
+        require_counter_consistent("after second mmap");
+        assert_eq!(0, mmap_ready_total(&h));
+
+        // Make seriesA ready a third time, then GC at a time that truncates the mmapped chunks but not the new
+        // head chunks.
+        append_a(&mut ref_a, &mut ts);
+        require_counter_consistent("after third round of appends");
+        assert_eq!(1, mmap_ready_total(&h));
+
+        // Set minTime to current ts so GC truncates old chunks.
+        h.min_time.store(ts, Ordering::SeqCst);
+        h.gc();
+        require_counter_consistent("after GC truncation");
+
+        // Phase 4: Stale-series deletion via truncateStaleSeries (gcStaleSeries path).
+        let mut app = h.appender(&ctx());
+        for _ in 0..chunk_cut_iterations {
+            ref_b = app.append(ref_b, &lbls_b, ts, ts as f64).expect("append");
+            ts += interval;
+        }
+        assert!(app.commit().is_none());
+
+        // Mark seriesB stale so truncateStaleSeries will remove it.
+        let mut app = h.appender(&ctx());
+        app.append(ref_b, &lbls_b, ts, stale_nan()).expect("append");
+        assert!(app.commit().is_none());
+        ts += interval;
+
+        let s_b = h.series.get_by_hash(lbls_b.hash(), &lbls_b).expect("series");
+        assert!(
+            s_b.lock().head_chunk_count() >= 2,
+            "seriesB must be mmap-ready at deletion time for this test to be meaningful"
+        );
+        require_counter_consistent("before stale series deletion");
+        let ready_before = mmap_ready_total(&h);
+
+        let stale_refs = vec![s_b.r#ref];
+        h.truncate_stale_series(&stale_refs, ts, &h.snapshot_fingerprints(&stale_refs, u64::MAX))
+            .expect("truncate stale series");
+        require_counter_consistent("after truncateStaleSeries");
+        assert!(mmap_ready_total(&h) < ready_before, "counter should have decreased after deleting a ready series");
+
+        // Phase 5: Verify mmapHeadChunks does not decrement when mmapChunks returns 0.
+        let lbls_d = lbl(&["__name__", "seriesD"]);
+        let mut app = h.appender(&ctx());
+        app.append(0, &lbls_d, ts, ts as f64).expect("append");
+        assert!(app.commit().is_none());
+
+        let s_d = h.series.get_by_hash(lbls_d.hash(), &lbls_d).expect("series");
+        assert_eq!(1, s_d.lock().head_chunk_count());
+        assert_eq!(1, s_d.lock().head_chunks.len(), "only one head chunk, prev must be nil");
+        let stripe_d = h.series.ref_stripe(s_d.r#ref);
+
+        // Simulate the race: set mmapReady to 1 (as the increment site would).
+        // adapted: Go also stores 2 into the series' headChunkCount while it has one head chunk; in Rust the
+        // count is the head chunk vector length, so only the stripe counter is inflated. mmapChunks still finds
+        // nothing to m-map and returns 0.
+        let before_d = h.series.test_mmap_ready(stripe_d);
+        h.series.inc_mmap_ready(s_d.r#ref);
+
+        h.mmap_head_chunks();
+
+        // mmapChunks returned 0. With the n > 0 guard, the counter stays incremented.
+        assert_eq!(
+            before_d + 1,
+            h.series.test_mmap_ready(stripe_d),
+            "mmapHeadChunks must not decrement when mmapChunks returns 0"
+        );
+
+        // Clean up: restore the real state.
+        h.series.dec_mmap_ready(s_d.r#ref);
+        require_counter_consistent("final state");
+    }
+}
+
+#[test]
+fn test_query_ooo_head_during_truncate_across_wrap() {
+    const MAX_T: i64 = 6000;
+
+    let mut opts = tsdb::db::default_options();
+    opts.out_of_order_time_window = MAX_T;
+    opts.min_block_duration = MAX_T / 2;
+
+    let db = common::new_test_db(vec![common::with_opts(opts)]);
+    db.disable_compactions();
+
+    let l = lbl(&["a", "b"]);
+    let mut app = db.appender(&ctx());
+
+    // In-order samples.
+    let r = app.append(0, &l, 0, 0.0).expect("append");
+    let mut i = 100;
+    while i < MAX_T {
+        app.append(r, &l, i, i as f64).expect("append");
+        i += 100;
+    }
+    // OOO samples interleaved between in-order ones.
+    let mut i = 50;
+    while i < MAX_T {
+        app.append(r, &l, i, i as f64).expect("append");
+        i += 100;
+    }
+    assert!(app.commit().is_none());
+
+    // Seed firstOOOChunkID near the wrap boundary.
+    let ms = db.head().series.get_by_id(r).expect("series");
+    {
+        let mut g = ms.lock();
+        let ooo = g.ooo_mut().expect("ooo fields");
+        ooo.first_ooo_chunk_id = OOO_CHUNK_ID_MASK - 1;
+    }
+
+    let count = |what: &str| {
+        let mut q = db.querier(0, MAX_T).expect("querier");
+        let mut n = 0;
+        {
+            let mut ss = q.select(&ctx(), false, None, &[eq_matcher("a", "b")]);
+            assert!(ss.next());
+            let series = ss.at().clone();
+            let mut it = series.iterator(None);
+            while it.next() != ValueType::None {
+                n += 1;
+            }
+            assert!(it.err().is_none());
+        }
+        assert!(n > 0, "{what}-truncation query should return data");
+        assert!(q.close().is_none());
+    };
+
+    // Pre-truncation query.
+    count("pre");
+
+    // Compact, which triggers truncation and wraps firstOOOChunkID.
+    db.compact(&ctx()).expect("compact");
+
+    // Post-truncation query.
+    count("post");
 }

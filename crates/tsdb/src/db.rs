@@ -1560,7 +1560,8 @@ impl DB {
     }
 
     /// Go `compactBlocks`: compacts all the eligible on-disk blocks. The cmtx must be held.
-    fn compact_blocks(&self, st: &CompactionState) -> Result<(), Error> {
+    #[doc(hidden)]
+    pub fn compact_blocks(&self, st: &CompactionState) -> Result<(), Error> {
         loop {
             // If we have a lot of blocks to compact the whole process might take long enough that we end up with
             // a head block that needs to be written. Stop compactions early in that case.
@@ -1823,7 +1824,8 @@ impl DB {
     }
 
     /// Go `generateCompactionDelay`.
-    fn generate_compaction_delay(&self) -> Duration {
+    #[doc(hidden)]
+    pub fn generate_compaction_delay(&self) -> Duration {
         let pct = rlock(&self.opts).compaction_delay_max_percent as i64;
         let n = self.head.chunk_range() * pct / 100;
         if n <= 0 {
@@ -2109,7 +2111,7 @@ fn fmt_paths(p: &[PathBuf]) -> String {
 fn to_wlog_err(e: &Error) -> wlog::Error {
     match e.downcast_ref::<wlog::Error>() {
         Some(w) => w.clone(),
-        // Go errors.As unwraps through errLoadWbl (Head.Init wraps the loadWBL error twice).
+        // Go `errors.As` unwraps through `errLoadWbl` (the WBL replay wraps its errors twice).
         None => match e.downcast_ref::<ErrLoadWbl>() {
             Some(inner) => to_wlog_err(&inner.0),
             None => wlog::Error::msg(&e.to_string()),

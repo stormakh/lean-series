@@ -1148,6 +1148,17 @@ impl StripeSeries {
         self.mmap_ready[i].load(Ordering::Relaxed)
     }
 
+    /// Go `locks[i].TryLock()` (tests): whether shard `i` can be write-locked now; a poisoned lock counts as
+    /// free.
+    #[doc(hidden)]
+    pub fn test_try_lock_shard(&self, i: usize) -> bool {
+        match self.shards[i].try_write() {
+            Ok(_) => true,
+            Err(std::sync::TryLockError::Poisoned(_)) => true,
+            Err(std::sync::TryLockError::WouldBlock) => false,
+        }
+    }
+
     /// Go `getByID`.
     #[inline]
     pub fn get_by_id(&self, id: HeadSeriesRef) -> Option<Arc<MemSeries>> {
@@ -1420,7 +1431,7 @@ pub struct Head {
     /// Mint allowed to be added to the head.
     pub min_valid_time: AtomicI64,
     pub last_wal_truncation_time: AtomicI64,
-    pub(crate) last_memory_truncation_time: AtomicI64,
+    pub last_memory_truncation_time: AtomicI64,
     pub last_series_id: AtomicU64,
     /// All the ooo m-map chunks should be after this.
     pub(crate) min_ooo_mmap_ref: AtomicU64,
@@ -1460,7 +1471,7 @@ pub struct Head {
     pub stats: Arc<HeadStats>,
     write_notified: RwLock<Option<Arc<dyn WriteNotified>>>,
 
-    pub(crate) mem_truncation_in_process: AtomicBool,
+    pub mem_truncation_in_process: AtomicBool,
     /// For testing purposes.
     #[doc(hidden)]
     pub mem_truncation_call_back: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
@@ -2247,7 +2258,7 @@ impl Head {
 
     /// Go `gcSeries`: removes eligible series from the head index and updates the metrics, postings,
     /// tombstones and WAL expiries. Returns the deleted references.
-    pub(crate) fn gc_series(
+    pub fn gc_series(
         &self,
         series_refs: &[SeriesRef],
         maxt: i64,
@@ -2594,7 +2605,8 @@ impl Head {
         self.metrics.mmap_chunks_total.add(count as f64);
     }
 
-    fn mmap_head_chunks_in_stripe(&self, i: usize) -> usize {
+    #[doc(hidden)]
+    pub fn mmap_head_chunks_in_stripe(&self, i: usize) -> usize {
         if self.series.mmap_ready[i].load(Ordering::Relaxed) == 0 {
             return 0; // No series in this stripe need mmapping.
         }
@@ -2609,7 +2621,8 @@ impl Head {
         count
     }
 
-    fn mmap_series_chunks(&self, s: &MemSeries) -> usize {
+    #[doc(hidden)]
+    pub fn mmap_series_chunks(&self, s: &MemSeries) -> usize {
         let mut g = s.lock();
         if g.is_gced() {
             return 0;

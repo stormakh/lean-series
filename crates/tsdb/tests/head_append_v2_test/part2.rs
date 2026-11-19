@@ -1,13 +1,7 @@
 //! Port of `tsdb/head_append_v2_test.go` lines 2832..end.
 //!
-//! Not ported yet (they need the DB, `db.rs`, which is not merged yet):
-//! - TestHeadAppenderV2_Append_DifferentEncodingSameSeries (`Open`, `db.AppenderV2`, `db.Querier`).
-//! - TestHeadAppenderV2_ExemplarAppenderV2 (its last part checks `(*DB).AppenderV2`).
-//!
-//! adapted (all tests): Go changes `head.opts` fields that are plain bools (`EnableMemorySnapshotOnShutdown`)
-//! on a live head and passes `head.opts` to the next `NewHead`. Here the options are moved into the head and
-//! the bools are not atomics, so each restart builds a copy of the options ([`copy_opts`]) with the changed
-//! field. The heads see the same values at the same points (the field is read only on `Init` and `Close`).
+//! Go passes `head.opts` (a pointer) to the next `NewHead` on a restart; here the options are moved into the
+//! head, so a restart builds a copy of the old head's options ([`copy_opts`]).
 
 use std::path::Path;
 use std::sync::atomic::Ordering;
@@ -15,7 +9,7 @@ use std::sync::Arc;
 
 use chunkenc::{AnyIterator, Appender as ChunkAppender, Chunk, ChunkIterator, Encoding, ValueType, XorChunk};
 use chunkenc::{CounterResetHeader, FloatHistogramChunk, HistogramChunk};
-use model::exemplar::Exemplar;
+use model::exemplar::{Exemplar, EXEMPLAR_MAX_LABEL_SET_LENGTH};
 use model::histogram::{CounterResetHint, FloatHistogram, Histogram};
 use model::labels::{self, Labels, ScratchBuilder};
 use model::matcher::{MatchType, Matcher};
@@ -1048,11 +1042,12 @@ fn test_gauge_float_histogram_wal_and_chunk_header_appender_v2() {
 
 #[test]
 fn test_snapshot_ahead_of_wal_error_appender_v2() {
-    // adapted: Go sets `head.opts.EnableMemorySnapshotOnShutdown = true` right after `newTestHead`; here the
-    // head is made with the option set (it is read only on Init and Close).
-    let mut opts = new_test_head_default_options(120 * 4, false);
-    opts.enable_memory_snapshot_on_shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
-    let mut th = new_test_head_with_options("snapshot-ahead", compression::Type::None, opts);
+    let mut th = new_test_head_with_options(
+        "snapshot-ahead",
+        compression::Type::None,
+        new_test_head_default_options(120 * 4, false),
+    );
+    th.head.opts.enable_memory_snapshot_on_shutdown.store(true, Ordering::SeqCst);
     let wal_dir = th.wal.as_ref().unwrap().dir().to_path_buf();
     let chunk_dir_root = th.head.opts.chunk_dir_root.clone();
 
@@ -1073,8 +1068,8 @@ fn test_snapshot_ahead_of_wal_error_appender_v2() {
     // Restart the WAL while keeping the old snapshot. The new head is created manually in this case in order to
     // keep using the same snapshot directory instead of a random one.
     std::fs::remove_dir_all(&wal_dir).expect("remove wal");
-    let mut opts = copy_opts(&th.head.opts);
-    opts.enable_memory_snapshot_on_shutdown.store(false, std::sync::atomic::Ordering::Relaxed);
+    th.head.opts.enable_memory_snapshot_on_shutdown.store(false, Ordering::SeqCst);
+    let opts = copy_opts(&th.head.opts);
     let w = new_wl(&wal_dir, compression::Type::None);
     let head = Head::new(Some(w.clone()), None, opts, None).expect("new head");
     th.head = head.clone();
@@ -1092,8 +1087,8 @@ fn test_snapshot_ahead_of_wal_error_appender_v2() {
     assert_eq!(2, idx);
 
     // Create new Head which should detect the incorrect index and delete the snapshot.
-    let mut opts = copy_opts(&head.opts);
-    opts.enable_memory_snapshot_on_shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
+    head.opts.enable_memory_snapshot_on_shutdown.store(true, Ordering::SeqCst);
+    let opts = copy_opts(&head.opts);
     let w = new_wl(&wal_dir, compression::Type::None);
     let head = Head::new(Some(w.clone()), None, opts, None).expect("new head");
     th.head = head.clone();
@@ -1632,17 +1627,12 @@ fn test_head_appender_v2_num_stale_series() {
         assert_eq!(num_stale_series, head.num_stale_series(), "stale series");
         assert_eq!(num_series, head.num_series(), "series");
     }
-    // Restarts the head with a copy of its options; `snapshot` changes EnableMemorySnapshotOnShutdown first.
+    // Restarts the head with the options of the old head (Go passes `head.opts` to `NewHead`).
     let restart_head_and_verify_series_counts =
-        |th: &mut crate::common::TestHead, num_stale_series: u64, num_series: u64, snapshot: Option<bool>| {
+        |th: &mut crate::common::TestHead, num_stale_series: u64, num_series: u64| {
             verify_series_counts(&th.head, num_stale_series, num_series);
 
-            // `snapshot` sets EnableMemorySnapshotOnShutdown on the options of the next head only (see the
-            // adapted note at the snapshot restart below).
-            let mut opts = copy_opts(&th.head.opts);
-            if let Some(s) = snapshot {
-                opts.enable_memory_snapshot_on_shutdown.store(s, std::sync::atomic::Ordering::Relaxed);
-            }
+            let opts = copy_opts(&th.head.opts);
             th.head.close().expect("close");
 
             let wal = new_wl(opts.chunk_dir_root.join("wal"), compression::Type::None);
@@ -1673,12 +1663,12 @@ fn test_head_appender_v2_num_stale_series() {
     // Make series2 stale as well.
     append_sample(&th.head, &series2, 200, stale());
     verify_series_counts(&th.head, 2, 3);
-    restart_head_and_verify_series_counts(&mut th, 2, 3, None);
+    restart_head_and_verify_series_counts(&mut th, 2, 3);
 
     // Add a non-stale sample to series1. It should not be counted as stale now.
     append_sample(&th.head, &series1, 300, 10.0);
     verify_series_counts(&th.head, 1, 3);
-    restart_head_and_verify_series_counts(&mut th, 1, 3, None);
+    restart_head_and_verify_series_counts(&mut th, 1, 3);
 
     // Test that series3 doesn't become stale when we add another normal sample.
     append_sample(&th.head, &series3, 200, 10.0);
@@ -1701,7 +1691,7 @@ fn test_head_appender_v2_num_stale_series() {
     let fh = tu::generate_test_float_histograms(1).remove(0);
     append_float_histogram(&th.head, &series5, 100, &fh);
     verify_series_counts(&th.head, 2, 5);
-    restart_head_and_verify_series_counts(&mut th, 2, 5, None);
+    restart_head_and_verify_series_counts(&mut th, 2, 5);
 
     // Make float histogram series stale.
     let mut stale_fh = fh.clone();
@@ -1725,14 +1715,11 @@ fn test_head_appender_v2_num_stale_series() {
     // removing series 2, 3, 4, we should be left with 1 stale and 1 non-stale series.
     append_sample(&th.head, &series1, 400, 10.0);
     append_float_histogram(&th.head, &series5, 400, &stale_fh);
-    restart_head_and_verify_series_counts(&mut th, 3, 5, None);
+    restart_head_and_verify_series_counts(&mut th, 3, 5);
 
     // This will test restarting with snapshot.
-    // adapted: Go sets the flag on the live head, whose Close then writes the snapshot that the next head
-    // loads. Here the flag can only be given to the next head, so one extra restart with the flag set makes the
-    // snapshot (written by the Close of a head with the flag), and the restart after it loads it.
-    restart_head_and_verify_series_counts(&mut th, 3, 5, Some(true));
-    restart_head_and_verify_series_counts(&mut th, 3, 5, Some(true));
+    th.head.opts.enable_memory_snapshot_on_shutdown.store(true, Ordering::SeqCst);
+    restart_head_and_verify_series_counts(&mut th, 3, 5);
 
     // Test garbage collection behavior - stale series should be decremented when GC'd.
     // Force a garbage collection by truncating old data.
@@ -2087,4 +2074,223 @@ fn test_head_appender_v2_exemplars_survive_truncation() {
         h.truncate(e.ts + 2).expect("truncate");
         assert!(h.series.get_by_id(r).is_none());
     }
+}
+
+#[test]
+fn test_head_appender_v2_append_different_encoding_same_series() {
+    let dir = TempDir::new();
+    let db = tsdb::db::open(dir.path(), None, Some(tsdb::db::default_options()), None).expect("open");
+    db.disable_compactions();
+
+    let hists = tu::generate_test_histograms(10);
+    let float_hists = tu::generate_test_float_histograms(10);
+    let lbls = ls(&["a", "b"]);
+
+    let mut exp_result: Vec<Sample> = Vec::new();
+    let check_exp_chunks = |count: usize| {
+        let (ms, created) = db.head().get_or_create(lbls.hash(), &lbls, false).expect("get or create");
+        assert!(!created);
+        assert_eq!(count, ms.lock().head_chunks.len());
+    };
+
+    let h = |t: i64, i: usize| Sample::histogram(0, t, hists[i].clone());
+    let fh = |t: i64, i: usize| Sample::float_histogram(0, t, float_hists[i].clone());
+    // (samples, expChunks, err).
+    type Append = (Vec<Sample>, usize, Option<Error>);
+    let appends: Vec<Append> = vec![
+        // Histograms that end up in the expected samples are copied here so that we can independently set the
+        // CounterResetHint later.
+        (vec![h(100, 0)], 1, None),
+        (vec![fs(200, 2.0)], 2, None),
+        (vec![fh(210, 0)], 3, None),
+        (vec![h(220, 1)], 4, None),
+        (vec![fh(230, 3)], 5, None),
+        (vec![h(100, 2)], 0, Some(storage::ERR_OUT_OF_ORDER_SAMPLE)),
+        (vec![h(300, 3)], 6, None),
+        (vec![fs(100, 2.0)], 0, Some(storage::ERR_OUT_OF_ORDER_SAMPLE)),
+        (vec![fh(100, 4)], 0, Some(storage::ERR_OUT_OF_ORDER_SAMPLE)),
+        // The three next tests all failed before #15177 was fixed.
+        // Each of the three samples below creates a new chunk because the type changes.
+        (vec![fs(400, 4.0), h(500, 5), fs(600, 6.0)], 9, None),
+        // Again each sample creates a new chunk.
+        (vec![h(700, 7), fs(800, 8.0), h(900, 9)], 12, None),
+        // Even changes between float and integer histogram create new chunks.
+        (vec![fh(1000, 7), h(1100, 9)], 14, None),
+    ];
+
+    for (samples, exp_chunks, exp_err) in appends {
+        let mut app = db.appender_v2(&ctx());
+        for s in &samples {
+            let r = if s.h.is_some() || s.fh.is_some() {
+                app.append(0, &lbls, 0, s.t, 0.0, s.h.as_deref(), s.fh.as_deref(), &AOptions::default())
+            } else {
+                app.append(0, &lbls, 0, s.t, s.f, None, None, &AOptions::default())
+            };
+            assert_eq!(exp_err, r.err());
+        }
+
+        if exp_err.is_none() {
+            assert!(app.commit().is_none());
+            exp_result.extend(samples);
+            check_exp_chunks(exp_chunks);
+        } else {
+            assert!(app.rollback().is_none());
+        }
+    }
+    for i in 1..exp_result.len() {
+        let prev_h_nil = exp_result[i - 1].h.is_none();
+        let prev_fh_nil = exp_result[i - 1].fh.is_none();
+        let s = &mut exp_result[i];
+        if let Some(hh) = s.h.as_mut() {
+            if prev_h_nil {
+                hh.counter_reset_hint = CounterResetHint::UnknownCounterReset;
+            }
+        } else if let Some(ff) = s.fh.as_mut()
+            && prev_fh_nil
+        {
+            ff.counter_reset_hint = CounterResetHint::UnknownCounterReset;
+        }
+    }
+
+    // Query back and expect same order of samples.
+    let q = db.querier(i64::MIN, i64::MAX).expect("querier");
+    let series = query(q, &[eq("a", "b")]);
+    let mut exp = std::collections::BTreeMap::new();
+    exp.insert(lbls.to_string(), exp_result);
+    assert_eq!(exp, series);
+
+    db.close().expect("close db");
+}
+
+#[test]
+fn test_head_appender_v2_exemplar_appender_v2() {
+    let opts = HeadOptions {
+        chunk_range: 1000,
+        enable_exemplar_storage: true,
+        ..HeadOptions::default()
+    };
+    opts.max_exemplars.store(100, Ordering::SeqCst);
+    let th = new_head_no_wal("exemplar-appender-v2", opts);
+    let h = th.head.clone();
+    h.init(0).expect("init");
+
+    let ex = |id: &str, v: f64, ts: i64| Exemplar {
+        labels: ls(&["trace_id", id]),
+        value: v,
+        ts,
+        has_ts: true,
+    };
+
+    // Create two initAppenderV2 instances before any sample initializes head.
+    let mut init_app = h.appender_v2(&ctx());
+    assert!(init_app.as_exemplar_appender_v2().is_some());
+    let mut init_app2 = h.appender_v2(&ctx());
+    assert!(init_app2.as_exemplar_appender_v2().is_some());
+
+    let missing = [Exemplar {
+        labels: ls(&["id", "1"]),
+        value: 1.0,
+        ts: 10,
+        has_ts: false,
+    }];
+    let err = init_app
+        .as_exemplar_appender_v2()
+        .unwrap()
+        .append_exemplars(0, &ls(&["__name__", "missing"]), &missing)
+        .expect_err("not found");
+    assert!(err.is(&storage::ERR_NOT_FOUND), "{err}");
+
+    let lset = ls(&["__name__", "test_metric", "job", "app"]);
+    let r = init_app.append(0, &lset, 0, 100, 42.0, None, None, &AOptions::default()).expect("append");
+
+    // Empty exemplars slice should still validate series and return non-zero SeriesRef.
+    let ret_ref = init_app.as_exemplar_appender_v2().unwrap().append_exemplars(r, &lset, &[]).expect("append");
+    assert_eq!(r, ret_ref);
+
+    // Append exemplar via SeriesRef (and duplicate exemplar in same slice).
+    let ex1 = ex("t1", 1.0, 100);
+    let ret_ref = init_app
+        .as_exemplar_appender_v2()
+        .unwrap()
+        .append_exemplars(r, &Labels::empty(), &[ex1.clone(), ex1.clone()])
+        .expect("append");
+    assert_eq!(r, ret_ref);
+    assert!(init_app.commit().is_none());
+
+    // initApp2 was created before head was initialized, so calling AppendExemplars on it now exercises lazy
+    // initialization of initApp2.app = a.head.appenderV2().
+    let ex2 = ex("t2", 2.0, 200);
+    let ret_ref = init_app2
+        .as_exemplar_appender_v2()
+        .unwrap()
+        .append_exemplars(r, &lset, std::slice::from_ref(&ex2))
+        .expect("append");
+    assert_eq!(r, ret_ref);
+    assert!(init_app2.commit().is_none());
+
+    // Now head is initialized; test headAppenderV2 with ref == 0, non-canonical labels, and partial error.
+    let mut head_app = h.appender_v2(&ctx());
+    assert!(head_app.as_exemplar_appender_v2().is_some());
+    let lset_with_empty = ls(&["__name__", "test_metric", "job", "app", "empty", ""]);
+    let too_long_label = "x".repeat(EXEMPLAR_MAX_LABEL_SET_LENGTH + 1);
+    let invalid_ex = ex(&too_long_label, 3.0, 250);
+    let ex3 = ex("t3", 3.0, 300);
+    // The ignored duplicate ex2 still counts towards the index of invalidEx.
+    let err = head_app
+        .as_exemplar_appender_v2()
+        .unwrap()
+        .append_exemplars(0, &lset_with_empty, &[ex2.clone(), invalid_ex, ex3.clone()])
+        .expect_err("partial error");
+    let p_err = err.as_append_partial().expect("AppendPartialError");
+    assert_eq!(1, p_err.exemplar_errors.len());
+    assert!(p_err.exemplar_errors[0].is(&storage::ERR_EXEMPLAR_LABEL_LENGTH));
+    assert_eq!(1, p_err.exemplar_errors[0].index);
+    // adapted: Go returns the series ref next to the error; here it is in the partial error.
+    assert_eq!(r, p_err.series_ref);
+
+    // Unknown series must return ErrNotFound even when exemplars is empty.
+    let err = head_app
+        .as_exemplar_appender_v2()
+        .unwrap()
+        .append_exemplars(0, &ls(&["__name__", "unknown"]), &[])
+        .expect_err("not found");
+    assert!(err.is(&storage::ERR_NOT_FOUND), "{err}");
+
+    // Disabled exemplar storage (MaxExemplars == 0) must still validate series and return valid SeriesRef.
+    h.opts.max_exemplars.store(0, Ordering::SeqCst);
+    let err = head_app
+        .as_exemplar_appender_v2()
+        .unwrap()
+        .append_exemplars(0, &ls(&["__name__", "unknown"]), std::slice::from_ref(&ex3))
+        .expect_err("not found");
+    assert!(err.is(&storage::ERR_NOT_FOUND), "{err}");
+    let ret_ref = head_app
+        .as_exemplar_appender_v2()
+        .unwrap()
+        .append_exemplars(r, &lset, std::slice::from_ref(&ex3))
+        .expect("append");
+    assert_eq!(r, ret_ref);
+    h.opts.max_exemplars.store(100, Ordering::SeqCst);
+    assert!(head_app.commit().is_none());
+
+    // Verify all 3 valid exemplars (ex1, ex2, ex3) were stored.
+    let q = h.exemplar_querier(&ctx()).expect("exemplar querier");
+    let res = q.select(0, 400, &[vec![eq("__name__", "test_metric")]]).expect("select");
+    assert_eq!(1, res.len());
+    assert_eq!(3, res[0].exemplars.len());
+
+    // Also verify (*tsdb.DB).AppenderV2 (dbAppenderV2) implements storage.ExemplarAppenderV2.
+    let dir = TempDir::new();
+    let db = tsdb::db::open(dir.path(), None, Some(tsdb::db::default_options()), None).expect("open");
+    let mut db_app = db.appender_v2(&ctx());
+    assert!(db_app.as_exemplar_appender_v2().is_some());
+    let db_ref = db_app.append(0, &lset, 0, 100, 1.0, None, None, &AOptions::default()).expect("append");
+    let db_ret_ref = db_app
+        .as_exemplar_appender_v2()
+        .unwrap()
+        .append_exemplars(db_ref, &lset, std::slice::from_ref(&ex1))
+        .expect("append");
+    assert_eq!(db_ref, db_ret_ref);
+    assert!(db_app.commit().is_none());
+    db.close().expect("close db");
 }
