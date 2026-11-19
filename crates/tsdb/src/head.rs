@@ -1077,11 +1077,129 @@ impl SeriesHashmap {
     }
 }
 
+/// The series of one shard by reference: open addressing with linear probing, indexed by the reference without
+/// hashing. References are handed out in sequence and the shard of a reference is `ref & (shards - 1)`, so the
+/// references of a shard are `ref >> shift` = 0, 1, 2, ... and land in consecutive slots: a lookup reads one
+/// 8-byte slot (a hash map reads a control group and a bucket) and then the series, which it needs anyway.
+pub struct RefTable {
+    slots: Vec<Option<Arc<MemSeries>>>,
+    len: usize,
+    shift: u32,
+}
+
+impl RefTable {
+    fn new(shift: u32) -> RefTable {
+        RefTable { slots: Vec::new(), len: 0, shift }
+    }
+
+    #[inline]
+    fn home(&self, r: HeadSeriesRef) -> usize {
+        (r >> self.shift) as usize & (self.slots.len() - 1)
+    }
+
+    /// The series with reference `r`.
+    #[inline]
+    pub fn get(&self, r: HeadSeriesRef) -> Option<&Arc<MemSeries>> {
+        if self.len == 0 {
+            return None;
+        }
+        let mask = self.slots.len() - 1;
+        let mut i = self.home(r);
+        loop {
+            match &self.slots[i] {
+                None => return None,
+                Some(s) if s.r#ref == r => return Some(s),
+                Some(_) => i = (i + 1) & mask,
+            }
+        }
+    }
+
+    /// Adds `s` (replacing a series with the same reference).
+    pub fn insert(&mut self, s: Arc<MemSeries>) {
+        if (self.len + 1) * 4 > self.slots.len() * 3 {
+            self.grow();
+        }
+        let mask = self.slots.len() - 1;
+        let mut i = self.home(s.r#ref);
+        loop {
+            match &self.slots[i] {
+                None => {
+                    self.slots[i] = Some(s);
+                    self.len += 1;
+                    return;
+                }
+                Some(x) if x.r#ref == s.r#ref => {
+                    self.slots[i] = Some(s);
+                    return;
+                }
+                Some(_) => i = (i + 1) & mask,
+            }
+        }
+    }
+
+    fn grow(&mut self) {
+        let old = std::mem::replace(&mut self.slots, Vec::new());
+        let n = (old.len() * 2).max(16);
+        self.slots.resize_with(n, || None);
+        self.len = 0;
+        for s in old.into_iter().flatten() {
+            self.insert(s);
+        }
+    }
+
+    /// Removes and returns the series with reference `r`.
+    pub fn remove(&mut self, r: HeadSeriesRef) -> Option<Arc<MemSeries>> {
+        if self.len == 0 {
+            return None;
+        }
+        let mask = self.slots.len() - 1;
+        let mut i = self.home(r);
+        loop {
+            match &self.slots[i] {
+                None => return None,
+                Some(s) if s.r#ref == r => break,
+                Some(_) => i = (i + 1) & mask,
+            }
+        }
+        let removed = self.slots[i].take();
+        self.len -= 1;
+        // Backward shift: move later entries of the probe run into the hole when their home allows it.
+        let mut j = i;
+        loop {
+            j = (j + 1) & mask;
+            let Some(s) = &self.slots[j] else { break };
+            let k = self.home(s.r#ref);
+            // The entry at j may move to i if its home k is not cyclically in (i, j].
+            let movable = if i <= j { k <= i || k > j } else { k <= i && k > j };
+            if movable {
+                self.slots[i] = self.slots[j].take();
+                i = j;
+            }
+        }
+        if self.len == 0 {
+            self.slots = Vec::new();
+        }
+        removed
+    }
+
+    /// The series, in no particular order.
+    pub fn values(&self) -> impl Iterator<Item = &Arc<MemSeries>> {
+        self.slots.iter().flatten()
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
 /// One shard of the series maps (Go: one stripe of `series`, `hashes` and `locks`).
-#[derive(Default)]
 pub struct Shard {
     /// Series by reference.
-    pub series: U64Map<Arc<MemSeries>>,
+    pub series: RefTable,
     /// Series by label hash.
     pub hashes: SeriesHashmap,
 }
@@ -1118,7 +1236,9 @@ impl StripeSeries {
         let size = stripe_size.max(1).next_power_of_two().min(want);
         StripeSeries {
             size,
-            shards: (0..size).map(|_| RwLock::new(Shard::default())).collect(),
+            shards: (0..size)
+                .map(|_| RwLock::new(Shard { series: RefTable::new(size.trailing_zeros()), hashes: SeriesHashmap::default() }))
+                .collect(),
             mmap_ready: (0..size).map(|_| AtomicI32::new(0)).collect(),
             series_lifecycle_callback: callback,
         }
@@ -1165,7 +1285,7 @@ impl StripeSeries {
     /// Go `getByID`.
     #[inline]
     pub fn get_by_id(&self, id: HeadSeriesRef) -> Option<Arc<MemSeries>> {
-        rlock(&self.shards[self.ref_stripe(id)]).series.get(&id).cloned()
+        rlock(&self.shards[self.ref_stripe(id)]).series.get(id).cloned()
     }
 
     /// Go `getByHash`.
@@ -1193,9 +1313,7 @@ impl StripeSeries {
             }
             g.hashes.set(hash, series.clone());
         }
-        wlock(&self.shards[self.ref_stripe(series.r#ref)])
-            .series
-            .insert(series.r#ref, series.clone());
+        wlock(&self.shards[self.ref_stripe(series.r#ref)]).series.insert(series.clone());
         (series, true)
     }
 
@@ -1210,7 +1328,7 @@ impl StripeSeries {
 
     /// Removes a series from the reference map (with the hash map entry already removed).
     pub(crate) fn remove_by_ref(&self, r: HeadSeriesRef) -> Option<Arc<MemSeries>> {
-        wlock(&self.shards[self.ref_stripe(r)]).series.remove(&r)
+        wlock(&self.shards[self.ref_stripe(r)]).series.remove(r)
     }
 
     /// The series of shard `i` (by reference), for iteration without holding the shard lock.
@@ -1256,14 +1374,11 @@ impl StripeSeries {
                     g.hashes.del(hash, series.r#ref);
                     let stripe = self.ref_stripe(series.r#ref);
                     if stripe == i {
-                        g.series.remove(&series.r#ref);
+                        g.series.remove(series.r#ref);
                     } else {
                         other_stripes.push(series.r#ref);
                     }
                     deleted_for_callback.insert(series.r#ref, series.lset.clone());
-                }
-                if g.series.is_empty() && g.series.capacity() > 0 {
-                    g.series = U64Map::default();
                 }
                 if g.hashes.unique.is_empty() && g.hashes.unique.capacity() > 0 {
                     g.hashes.unique = U64Map::default();
