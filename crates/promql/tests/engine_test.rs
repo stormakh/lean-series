@@ -2647,3 +2647,195 @@ fn test_histogram_counter_reset_hint() {
     }
 }
 
+
+#[test]
+fn test_evaluation_with_delayed_name_removal_disabled() {
+    thread::Builder::new()
+        .stack_size(64 << 20)
+        .spawn(|| {
+            let engine = Engine::new(EngineOpts {
+                enable_at_modifier: true,
+                max_samples: 10000,
+                timeout: Duration::from_secs(10),
+                enable_delayed_name_removal: false,
+                parser: Some(promql::parser::Parser::new(promqltest::test_parser_opts())),
+                ..Default::default()
+            });
+            if let Err(e) = promqltest::run_test(DELAYED_NAME_REMOVAL_DISABLED_SCRIPT, &engine) {
+                panic!("{}", e);
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+const DELAYED_NAME_REMOVAL_DISABLED_SCRIPT: &str = r#"
+load 5m
+	metric_total{env="1"}	0 60 120
+	another_metric{env="1"}	60 120 180
+
+# Does not drop __name__ for vector selector
+eval instant at 10m metric_total{env="1"}
+	metric_total{env="1"} 120
+
+# Drops __name__ for unary operators
+eval instant at 10m -metric_total
+	{env="1"} -120
+
+# Drops __name__ for binary operators
+eval instant at 10m metric_total + another_metric
+	{env="1"} 300
+
+# Does not drop __name__ for binary comparison operators
+eval instant at 10m metric_total <= another_metric
+	metric_total{env="1"} 120
+
+# Drops __name__ for binary comparison operators with "bool" modifier
+eval instant at 10m metric_total <= bool another_metric
+	{env="1"} 1
+
+# Drops __name__ for vector-scalar operations
+eval instant at 10m metric_total * 2
+	{env="1"} 240
+
+# Drops __name__ for instant-vector functions
+eval instant at 10m clamp(metric_total, 0, 100)
+	{env="1"} 100
+
+# Drops __name__ for round function
+eval instant at 10m round(metric_total)
+	{env="1"} 120
+
+# Drops __name__ for range-vector functions
+eval instant at 10m rate(metric_total{env="1"}[10m])
+	{env="1"} 0.2
+
+# Does not drop __name__ for last_over_time function
+eval instant at 10m last_over_time(metric_total{env="1"}[10m])
+	metric_total{env="1"} 120
+
+# Does not drop __name__ for first_over_time function
+eval instant at 10m first_over_time(metric_total{env="1"}[10m])
+	metric_total{env="1"} 60
+
+# Drops name for other _over_time functions
+eval instant at 10m max_over_time(metric_total{env="1"}[10m])
+	{env="1"} 120
+
+clear
+
+load 1m
+	float{a="b"}									2x10
+	classic_histogram_invalid{abe="0.1"}			2x10
+	native_histogram{a="b", c="d"}					{{sum:0 count:0}}x10
+    histogram_nan{case="100% NaNs"} 				{{schema:0 count:0 sum:0}} {{schema:0 count:3 sum:NaN}}
+    histogram_nan{case="20% NaNs"} 					{{schema:0 count:0 sum:0}} {{schema:0 count:15 sum:NaN buckets:[12]}}
+	conflicting_histogram{le="0.1"}					2x10
+	conflicting_histogram							{{sum:0}}x10
+	nonmonotonic_bucket{le="0.1"}   				0+2x10
+	nonmonotonic_bucket{le="1"}     				0+1x10
+	nonmonotonic_bucket{le="10"}    				0+5x10
+	nonmonotonic_bucket{le="100"}   				0+4x10
+	nonmonotonic_bucket{le="1000"}  				0+9x10
+	nonmonotonic_bucket{le="+Inf"}  				0+8x10
+
+eval instant at 1m histogram_quantile(0.5, classic_histogram_invalid)
+	expect warn msg: PromQL warning: bucket label "le" is missing or has a malformed value of "" (1:25)
+
+eval instant at 1m histogram_fraction(0.5, 1, conflicting_histogram)
+	expect warn msg: PromQL warning: vector contains a mix of classic and native histograms (1:28)
+
+eval instant at 1m histogram_quantile(0.5, nonmonotonic_bucket)
+	expect info regex: PromQL info: input to histogram_quantile needed to be fixed for monotonicity .* \(1:25\)
+	{} 8.5
+
+eval instant at 1m histogram_quantile(1, histogram_nan)
+    expect info msg: PromQL info: input to histogram_quantile has NaN observations, result is NaN (1:23)
+    {case="100% NaNs"} NaN
+    {case="20% NaNs"} NaN
+
+eval instant at 1m histogram_quantile(0.8, histogram_nan{case="20% NaNs"})
+    expect info msg: PromQL info: input to histogram_quantile has NaN observations, result is skewed higher (1:25)
+    {case="20% NaNs"} 1
+
+eval instant at 1m histogram_fraction(-Inf, 0.7071067811865475, histogram_nan)
+    expect info msg: PromQL info: input to histogram_fraction has NaN observations, which are excluded from all fractions (1:46)
+    {case="100% NaNs"} 0.0
+    {case="20% NaNs"} 0.4
+
+# Test unary negation with non-overlapping series that have different metric names.
+# After negation, the __name__ label is dropped, so series with different names
+# but same other labels should merge if they don't overlap in time.
+clear
+load 20m
+  http_requests{job="api"} 2 _
+  http_errors{job="api"} _ 4
+
+eval instant at 0 -{job="api"}
+  {job="api"} -2
+
+eval instant at 20m -{job="api"}
+  {job="api"} -4
+
+eval range from 0 to 20m step 20m -{job="api"}
+  {job="api"} -2 -4
+
+# Test unary negation failure with overlapping timestamps (same labelset at same time).
+clear
+load 1m
+  http_requests{job="api"} 1
+  http_errors{job="api"} 2
+
+eval_fail instant at 0 -{job="api"}
+
+# Test unary negation with "or" operator combining metrics with removed names.
+clear
+load 10m
+    metric_a   1  _
+    metric_b   3  4
+
+# Use "-" unary operator as a simple way to remove the metric name.
+eval range from 0 to 20m step 10m -metric_a or -metric_b
+    {} -1  -4
+
+# Test range vector functions with non-overlapping series that have the same labelset
+# after __name__ removal. This verifies the fix for issue #14695.
+# When evaluated as a range query, at each step only one series has data in the
+# window, so the results should merge correctly without collision.
+clear
+load 6m
+  metric_1{common="label"} 0 1 _ _ 4
+  metric_2{common="label"} _ _ 2 3 _
+
+eval range from 0 to 24m step 6m max_over_time({__name__=~"metric_.*"}[5m])
+  {common="label"} 0 1 2 3 4
+
+# Range vector function should fail when both series have data within the same window.
+clear
+load 6m
+  metric_1{common="label"} 0 1 2
+  metric_2{common="label"} 3 4 5
+
+eval_fail instant at 12m max_over_time({__name__=~"metric_.*"}[30m])
+
+# Test cross-type (float vs histogram) timestamp collision detection.
+# When one series has floats and another has histograms at the same labelset,
+# non-overlapping timestamps should merge successfully.
+clear
+load 6m
+  float_metric{common="label"} 0 1 _ _
+  hist_metric{common="label"} _ _ {{schema:0 sum:3 count:3}} {{schema:0 sum:4 count:4}}
+
+eval range from 0 to 18m step 6m sum_over_time({__name__=~".*_metric"}[5m])
+  {common="label"} 0 1 {{schema:0 sum:3 count:3}} {{schema:0 sum:4 count:4}}
+
+# Overlapping float and histogram at the same timestamp should fail.
+clear
+load 6m
+  float_metric{common="label"} 0 1 2
+  hist_metric{common="label"} {{schema:0 sum:1 count:1}} {{schema:0 sum:2 count:2}} {{schema:0 sum:3 count:3}}
+
+eval_fail range from 0 to 12m step 6m sum_over_time({__name__=~".*_metric"}[5m])
+
+"#;
