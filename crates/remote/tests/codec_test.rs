@@ -6,7 +6,7 @@ mod common;
 use std::io::{self, Cursor, Read, Write};
 use std::sync::{Arc, Mutex};
 
-use chunkenc::{ChunkIterator, Encoding, ValueType, XorChunk};
+use chunkenc::{ChunkIterator, Encoding, ValueType};
 use common::*;
 use model::histogram::{CounterResetHint, ErrorKind, FloatHistogram, Histogram, Span, EXPONENTIAL_SCHEMA_MAX};
 use model::metadata::{Metadata, MetricType as ModelMetricType};
@@ -567,30 +567,6 @@ fn test_stream_response() {
         prompb::ChunkedSeries { labels: lbs2, chunks: vec![chunk; 2] },
     ];
     assert_eq!(expect_data, writer.actual);
-}
-
-const NUM_TEST_CHUNKS: usize = 3;
-const NUM_SAMPLES_PER_TEST_CHUNK: usize = 5;
-
-fn build_test_chunks() -> Vec<prompb::Chunk> {
-    let mut chks = Vec::with_capacity(NUM_TEST_CHUNKS);
-    let mut time = 0i64;
-    for i in 0..NUM_TEST_CHUNKS {
-        let mut c = XorChunk::new();
-        let mut a = c.appender().unwrap();
-        let min_time_ms = time;
-        for j in 0..NUM_SAMPLES_PER_TEST_CHUNK {
-            a.append(&mut c, 0, time, (i + j) as f64);
-            time += 1000;
-        }
-        chks.push(prompb::Chunk {
-            min_time_ms,
-            max_time_ms: time,
-            r#type: prompb::ChunkEncoding::XOR,
-            data: c.bytes().to_vec(),
-        });
-    }
-    chks
 }
 
 #[test]
