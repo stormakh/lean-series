@@ -16,8 +16,8 @@ json = { path = "../json" }
 yaml = { path = "../yaml" }
 textparse = { path = "../textparse" }
 discovery = { path = "../discovery" }
+# go_duration_string for error texts.
+util = { path = "../util" }
 # Remote write/read bodies are Snappy block format.
 snap = "1"
 
-[dev-dependencies]
-util = { path = "../util" }
