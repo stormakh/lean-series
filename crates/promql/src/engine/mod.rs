@@ -1118,6 +1118,7 @@ pub fn with_test_evaluator<R>(ctx: &Context, budget: Option<&QueryBudget>, f: im
         querier: &*querier,
         ctx,
         state: &state,
+        ctx_checks: std::cell::Cell::new(0),
     };
     f(&mut ev)
 }
@@ -1153,6 +1154,7 @@ pub fn subquery_time_range_for(
         querier: &*querier,
         ctx: &ctx,
         state: &state,
+        ctx_checks: std::cell::Cell::new(0),
     };
     Some(ev.subquery_time_range(sq))
 }

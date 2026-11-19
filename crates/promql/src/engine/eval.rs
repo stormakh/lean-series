@@ -226,6 +226,9 @@ pub struct MatrixArg {
 }
 
 /// Evaluates expressions over fixed timestamps (Go `evaluator`).
+/// See [`Evaluator::check_ctx`].
+const CTX_CLOCK_EVERY: u32 = 16;
+
 pub struct Evaluator<'a> {
     pub(crate) start_timestamp: i64,
     pub(crate) end_timestamp: i64,
@@ -243,6 +246,8 @@ pub struct Evaluator<'a> {
     pub(crate) querier: &'a dyn Querier,
     pub(crate) ctx: &'a Context,
     pub(crate) state: &'a QueryState,
+    /// Calls of [`Evaluator::check_ctx`]; see there.
+    pub(crate) ctx_checks: std::cell::Cell<u32>,
 }
 
 /// Go `evaluator.recover`: turns the result of an evaluation, or its panic, into the returned error and
@@ -481,7 +486,15 @@ impl<'a> Evaluator<'a> {
     }
 
     #[inline]
+    /// Go `contextDone` per step. Cancellation is seen at once; a deadline is checked against the clock on the
+    /// first call and then every [`CTX_CLOCK_EVERY`] calls, since a clock read per step costs more than the
+    /// step of a small query (Go's context gets a timer instead and never reads the clock here).
     pub(crate) fn check_ctx(&self, env: &str) -> EvalResult<()> {
+        let n = self.ctx_checks.get();
+        self.ctx_checks.set(n.wrapping_add(1));
+        if n % CTX_CLOCK_EVERY != 0 && !self.ctx.is_canceled() {
+            return Ok(());
+        }
         context_done(self.ctx, env)
     }
 
@@ -547,6 +560,7 @@ impl<'a> Evaluator<'a> {
             querier: self.querier,
             ctx: self.ctx,
             state: self.state,
+            ctx_checks: std::cell::Cell::new(0),
         }
     }
 
@@ -2580,6 +2594,7 @@ impl Query {
             querier: &*querier,
             ctx,
             state: &state,
+            ctx_checks: std::cell::Cell::new(0),
         };
         let (val, warnings, err) = ev.eval_top(&s.expr);
         self.sample_stats = std::mem::take(&mut ev.samples_stats);
