@@ -2043,3 +2043,97 @@ fn test_query_cost_max_duration_reject_attribution() {
     }
 }
 
+
+#[test]
+fn test_query_cost_reject_metric_reason() {
+    let st = promqltest::loaded_storage(
+        "\nload 10s\n  bigmetric{a=\"1\"} 1+1x100\n  bigmetric{a=\"2\"} 1+1x100\n  bigmetric{a=\"3\"} 1+1x100\n",
+    )
+    .unwrap();
+    let cases: [(&str, &str, i64, u64, u64, PromqlError); 2] = [
+        ("max_series", "bigmetric", 0, 2, 0, PromqlError::TooManySeries(env())),
+        ("max_samples_read", "sum_over_time(bigmetric[100s])", 1000, 0, 1, PromqlError::TooManySamplesRead(env())),
+    ];
+    for (name, query, ts, max_series, max_samples_read, want) in cases {
+        // adapted: Go reads the counter from a Prometheus registry; the engine exposes it directly.
+        let engine = new_query_cost_engine();
+        engine.set_query_limits(max_series, max_samples_read, Duration::ZERO);
+        let err = exec_instant(&engine, &st, None, query, ts * 1000);
+        assert!(err_is(&err, &want), "{}: {:?}", name, err);
+        for reason in ["max_series", "max_samples_read", "max_duration"] {
+            let want = if reason == name { 1 } else { 0 };
+            assert_eq!(want, engine.query_rejected_total(reason), "rejection counter for {}", reason);
+        }
+    }
+}
+
+#[test]
+fn test_query_cost_samples_accounting_range() {
+    let s = promqltest::loaded_storage("\nload 10s\n  metric{instance=\"a\"} 1+1x100\n  metric{instance=\"b\"} 1+1x100\n").unwrap();
+    let engine = new_query_cost_engine();
+    let cases: Vec<(&str, i64, [i64; 4])> = vec![
+        ("metric", 8, [2, 2, 2, 2]),
+        ("rate(metric[20s])", 16, [4, 4, 4, 4]),
+        ("metric + metric @ 100", 10, [4, 4, 4, 4]),
+        ("sum_over_time(metric[10s:10s])", 20, [2, 2, 2, 2]),
+        ("sum_over_time(metric[10s:10s] offset 10s)", 20, [2, 2, 2, 2]),
+        ("sum_over_time(metric[10s:10s] offset -10s)", 20, [2, 2, 2, 2]),
+        ("last_over_time(sum_over_time(metric[60s])[10s:10s])", 30, [12, 12, 12, 12]),
+        ("last_over_time(last_over_time(sum_over_time(metric[60s])[10s:10s])[10s:10s])", 30, [12, 12, 12, 12]),
+        ("sum_over_time(metric[60s:10s])", 30, [12, 12, 12, 12]),
+        ("quantile_over_time(time() / 1000, metric[20s:10s] @ 200)", 4, [4, 4, 4, 4]),
+        ("quantile_over_time(time() / 1000, metric[20s:10s] @ 50)", 4, [4, 4, 4, 4]),
+        ("quantile_over_time(time() / 1000, metric[20s:10s] @ 200 offset 1m)", 4, [4, 4, 4, 4]),
+        ("quantile_over_time(time() / 1000, metric[20s:10s] @ 200 offset -1m)", 4, [4, 4, 4, 4]),
+        ("quantile_over_time(time() / 1000, metric[20s:10s] @ start())", 4, [4, 4, 4, 4]),
+        ("quantile_over_time(time() / 1000, metric[20s:10s] @ end())", 4, [4, 4, 4, 4]),
+    ];
+    let mut failures = Vec::new();
+    for (query, reads, totals) in cases {
+        for per_step in [false, true] {
+            let name = format!("{}/perStep={}", query, per_step);
+            let ctx = Context::background();
+            engine.set_query_limits(0, reads as u64, Duration::ZERO);
+            let opts = promql::QueryOpts::new(per_step, Duration::ZERO, None);
+            let mut q = engine.new_range_query(&ctx, Arc::new(s.clone()), Some(&opts), query, 100_000, 200_000, 30_000).unwrap();
+            let err = q.exec(&ctx).err;
+            if err.is_some() {
+                failures.push(format!("{}: {:?}", name, err));
+                continue;
+            }
+            let st = q.stats().samples.unwrap();
+            let series = if query == "metric + metric @ 100" { 4 } else { 2 };
+            if st.total_series != series {
+                failures.push(format!("{}: series {} != {}", name, st.total_series, series));
+            }
+            if st.samples_read != reads {
+                failures.push(format!("{}: reads {} != {}", name, st.samples_read, reads));
+            }
+            let total: i64 = totals.iter().sum();
+            if st.total_samples != total {
+                failures.push(format!("{}: total {} != {}", name, st.total_samples, total));
+            }
+            if per_step {
+                if st.total_samples_per_step != totals {
+                    failures.push(format!("{}: totals {:?} != {:?}", name, st.total_samples_per_step, totals));
+                }
+                let r: i64 = st.samples_read_per_step.iter().sum();
+                if r != st.samples_read {
+                    failures.push(format!("{}: per-step reads {} != {}", name, r, st.samples_read));
+                }
+                if query.starts_with("quantile_over_time(") && st.samples_read_per_step != [reads, 0, 0, 0] {
+                    failures.push(format!("{}: per-step reads {:?}", name, st.samples_read_per_step));
+                }
+            }
+            engine.set_query_limits(0, (reads - 1) as u64, Duration::ZERO);
+            let mut limited =
+                engine.new_range_query(&ctx, Arc::new(s.clone()), Some(&opts), query, 100_000, 200_000, 30_000).unwrap();
+            let err = limited.exec(&ctx).err;
+            if !err_is(&err, &PromqlError::TooManySamplesRead(env())) {
+                failures.push(format!("{}: limited: {:?}", name, err));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.join("\n"));
+}
+
