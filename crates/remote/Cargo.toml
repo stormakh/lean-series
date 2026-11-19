@@ -1,0 +1,23 @@
+[package]
+name = "remote"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+model = { path = "../model" }
+chunkenc = { path = "../chunkenc" }
+storage = { path = "../storage" }
+tsdb-format = { path = "../tsdb-format" }
+config = { path = "../config" }
+net = { path = "../net" }
+http = { path = "../http" }
+json = { path = "../json" }
+yaml = { path = "../yaml" }
+textparse = { path = "../textparse" }
+discovery = { path = "../discovery" }
+# Remote write/read bodies are Snappy block format.
+snap = "1"
+
+[dev-dependencies]
+util = { path = "../util" }
