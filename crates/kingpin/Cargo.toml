@@ -1,0 +1,10 @@
+[package]
+name = "kingpin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# A port of github.com/alecthomas/kingpin/v2 (v2.4.0) and util/documentcli, shared by promtool and prometheus.
+[dependencies]
+yaml = { path = "../yaml" }
+net = { path = "../net" }

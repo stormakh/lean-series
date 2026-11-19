@@ -30,9 +30,9 @@ pub mod promlint;
 pub mod web_config;
 
 pub mod app;
-pub mod cli;
+pub use kingpin as cli;
 pub mod debug;
-pub mod doctext;
+pub use kingpin::doctext;
 pub mod promslog;
 pub mod query;
 pub mod sd;

@@ -31,9 +31,11 @@ web = { path = "../web" }
 util = { path = "../util" }
 net = { path = "../net" }
 yaml = { path = "../yaml" }
+kingpin = { path = "../kingpin" }
 regex = "1.13"
 libc = "0.2"
 yaml-rust2 = { version = "0.13", default-features = false }
 
 [dev-dependencies]
+http = { path = "../http" }
 textparse = { path = "../textparse" }

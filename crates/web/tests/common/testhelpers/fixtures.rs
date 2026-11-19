@@ -1,17 +1,17 @@
 //! Port of `web/api/testhelpers/fixtures.go`: test fixture data.
 
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use model::histogram::{FloatHistogram, Span};
 use model::labels::{Labels, from_strings};
 use promql::{FPoint, HPoint};
 use storage::SeriesArc;
-use web::api::{AlertingRuleView, RuleGroupView, RuleRef, RuleView};
-use web::gotime::{MINUTE, Time};
+
+use web::api::RuleGroupView;
+use web::api::adapters::GroupView;
 
 use super::mocks::{FakeHistogramSeries, FakeSeries};
-use crate::common::doubles::{MockGroup, MockRule};
 
 /// Go `time.Now().UnixMilli()`.
 pub fn now_millis() -> i64 {
@@ -115,45 +115,36 @@ pub fn fixture_multiple_series() -> Vec<SeriesArc> {
 }
 
 /// Go `FixtureRuleGroups`: one group "example" with a recording rule and an alerting rule.
-///
-/// adapted: Go builds real `rules.RecordingRule`, `rules.AlertingRule` and `rules.Group` objects (the rules crate
-/// is not available here). The doubles expose what those never-evaluated objects expose: health "unknown", no
-/// error, zero evaluation time and timestamp, no active alerts (state "inactive"), limit 0.
 pub fn fixture_rule_groups() -> Vec<Arc<dyn RuleGroupView>> {
-    let unevaluated = |name: &str, query: &str, labels: Labels, hold| MockRule {
-        name: name.to_string(),
-        query: query.to_string(),
-        labels,
-        annotations: Labels::empty(),
-        hold,
-        health: "unknown".to_string(),
-        eval_duration: 0,
-        eval_timestamp: Time::ZERO,
-        alerts: Vec::new(),
-    };
-    // A simple recording rule.
-    let recording_rule: Arc<dyn RuleView> =
-        Arc::new(unevaluated("job:up:sum", "up == 1", Labels::empty(), 0));
-    // A simple alerting rule.
-    let alerting_rule: Arc<dyn AlertingRuleView> = Arc::new(unevaluated(
+    let parse = crate::common::doubles::parse_rule_expr;
+    // Create a simple recording rule.
+    let recording_rule: rules::RuleRef =
+        Arc::new(rules::RecordingRule::new("job:up:sum", parse("up == 1"), Labels::empty()));
+
+    // Create a simple alerting rule.
+    let alerting_rule: rules::RuleRef = Arc::new(rules::AlertingRule::new(
         "InstanceDown",
-        "up == 0",
+        parse("up == 0"),
+        Duration::from_secs(60),
+        Duration::ZERO,
         from_strings(&["severity", "critical"]),
-        MINUTE,
+        Labels::empty(),
+        Labels::empty(),
+        "Instance {{ $labels.instance }} is down",
+        true,
+        rules::log::Logger::nop(),
     ));
-    // A rule group.
-    let group = MockGroup {
+
+    // Create a rule group.
+    let group = rules::Group::new(rules::GroupOptions {
         name: "example".to_string(),
         file: "example.rules".to_string(),
-        interval: MINUTE,
-        eval_time: 0,
-        last_eval: Time::ZERO,
-        rules: vec![
-            RuleRef::Recording(recording_rule),
-            RuleRef::Alerting(alerting_rule),
-        ],
-    };
-    vec![Arc::new(group)]
+        interval: Duration::from_secs(60),
+        rules: vec![recording_rule, alerting_rule],
+        ..Default::default()
+    });
+
+    vec![Arc::new(GroupView::new(Arc::new(group)))]
 }
 
 /// Go `FixtureEmptyRuleGroups`.

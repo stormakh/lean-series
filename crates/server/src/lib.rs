@@ -2,11 +2,10 @@
 //! `prometheus` server binary. `main.rs` only calls [`run::main`].
 
 pub mod consoles;
-pub mod doctext;
 pub mod features;
 pub mod flags;
 pub mod helpers;
-pub mod kingpin;
+pub use kingpin;
 pub mod ready;
 pub mod reload;
 pub mod run;

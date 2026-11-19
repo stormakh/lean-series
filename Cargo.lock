@@ -205,6 +205,14 @@ name = "json"
 version = "0.1.0"
 
 [[package]]
+name = "kingpin"
+version = "0.1.0"
+dependencies = [
+ "net",
+ "yaml",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.191"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -312,6 +320,7 @@ dependencies = [
  "flate2",
  "http",
  "json",
+ "kingpin",
  "model",
  "net",
  "notifier",
@@ -528,6 +537,7 @@ dependencies = [
  "discovery",
  "http",
  "json",
+ "kingpin",
  "libc",
  "model",
  "net",

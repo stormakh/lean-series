@@ -11,6 +11,8 @@
 use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 
+pub mod doctext;
+
 use crate::doctext::to_text;
 
 /// The value type of a flag or argument (the kingpin parser chosen with `.String()`, `.Bool()`, ...).
@@ -121,7 +123,7 @@ impl Flag {
         if !self.default.is_empty() {
             let ellipsis = if self.default.len() > 1 { "..." } else { "" };
             if self.kind == Kind::String {
-                return format!("{}{}", promql::parser::quote::go_quote(&self.default[0]), ellipsis);
+                return format!("{}{}", yaml::go_quote(&self.default[0]), ellipsis);
             }
             return format!("{}{}", self.default[0], ellipsis);
         }
@@ -567,7 +569,7 @@ impl App {
                                 None => {
                                     return Err(format!(
                                         "expected command but got {}",
-                                        promql::parser::quote::go_quote(&name)
+                                        yaml::go_quote(&name)
                                     ));
                                 }
                             };
@@ -1086,7 +1088,7 @@ fn set_value(p: &mut Parsed, name: &str, kind: &Kind, v: &str) -> Result<(), Str
         }
         Kind::ExistingFile | Kind::ExistingFiles => match std::fs::metadata(v) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(format!("path '{v}' does not exist")),
-            Err(e) => return Err(format!("stat {v}: {}", crate::io_err_text(&e))),
+            Err(e) => return Err(format!("stat {v}: {}", net::types::go_io_error(&e))),
             Ok(m) if m.is_dir() => {
                 let base = std::path::Path::new(v).file_name().map(|s| s.to_string_lossy().to_string());
                 return Err(format!("'{}' is a directory", base.unwrap_or_else(|| v.to_string())));
@@ -1117,7 +1119,7 @@ fn set_value(p: &mut Parsed, name: &str, kind: &Kind, v: &str) -> Result<(), Str
                 .truncate(true)
                 .mode(0o644)
                 .open(v)
-                .map_err(|e| format!("open {v}: {}", crate::io_err_text(&e)))?;
+                .map_err(|e| format!("open {v}: {}", net::types::go_io_error(&e)))?;
         }
     }
     p.values.entry(name.to_string()).or_default().push(v.to_string());
@@ -1125,7 +1127,7 @@ fn set_value(p: &mut Parsed, name: &str, kind: &Kind, v: &str) -> Result<(), Str
 }
 
 fn go_q(s: &str) -> String {
-    promql::parser::quote::go_quote(s)
+    yaml::go_quote(s)
 }
 
 /// Go `strconv.ParseBool`.
