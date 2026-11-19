@@ -272,6 +272,23 @@ impl Labels {
         Iter { data: self.data(), i: 0 }
     }
 
+    /// Iterates `(name, value)` pairs in name order as bytes, without the UTF-8 checks of [`Labels::iter`] (for
+    /// hot loops that compare bytes).
+    #[inline]
+    pub fn iter_bytes(&self) -> impl Iterator<Item = (&[u8], &[u8])> + '_ {
+        let data = self.data();
+        let mut i = 0;
+        std::iter::from_fn(move || {
+            if i >= data.len() {
+                return None;
+            }
+            let (n, j) = decode_string(data, i);
+            let (v, j) = decode_string(data, j);
+            i = j;
+            Some((n, v))
+        })
+    }
+
     /// Calls `f` on each label (Go `Range`).
     #[inline]
     pub fn range(&self, mut f: impl FnMut(&str, &str)) {

@@ -814,11 +814,15 @@ impl Parser for PromParser<'_> {
         }
     }
 
-    fn next_if_series(&mut self, series: &[u8]) -> Result<bool, Error> {
+    fn next_if_series(&mut self, len: usize, is_series: &mut dyn FnMut(&[u8]) -> bool) -> Result<bool, Error> {
         let b = &self.b[..];
         let i = self.l.i;
-        let end = i + series.len();
-        if self.l.state != S_INIT || series.is_empty() || !is_m(series[0]) || end + 1 >= b.len() || b[i..end] != *series {
+        let end = i + len;
+        if self.l.state != S_INIT || len == 0 || end + 1 >= b.len() || !is_m(b[i]) {
+            return Ok(false);
+        }
+        let series = &b[i..end];
+        if !is_series(series) {
             return Ok(false);
         }
         // Lexing the same bytes from the start of a line gives the same tokens; they must end exactly at `end`.

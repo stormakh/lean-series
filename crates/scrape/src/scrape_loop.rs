@@ -1179,7 +1179,7 @@ impl ScrapeLoop {
         loop {
             let mut predicted: Option<EntryId> = None;
             let next = match if predict { s.predicted() } else { None } {
-                Some((id, key)) => match p.next_if_series(key) {
+                Some(id) => match p.next_if_series(s.entry(id).key_len(), &mut |t| s.entry(id).key_is(t)) {
                     Ok(true) => {
                         predicted = Some(id);
                         Ok(Entry::Series)
@@ -1475,7 +1475,7 @@ impl ScrapeLoop {
         loop {
             let mut predicted: Option<EntryId> = None;
             let next = match if predict { s.predicted() } else { None } {
-                Some((id, key)) => match p.next_if_series(key) {
+                Some(id) => match p.next_if_series(s.entry(id).key_len(), &mut |t| s.entry(id).key_is(t)) {
                     Ok(true) => {
                         predicted = Some(id);
                         Ok(Entry::Series)
