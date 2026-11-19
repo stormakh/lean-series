@@ -9,3 +9,12 @@ pub mod annotations {
 }
 
 pub mod teststorage;
+
+pub mod compression;
+pub mod httputil;
+pub mod junitxml;
+pub mod logging;
+pub mod netconnlimit;
+pub mod notifications;
+pub mod runtime;
+pub mod tracing;
