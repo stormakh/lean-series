@@ -99,7 +99,7 @@ pub type NotifyFunc = std::sync::Arc<dyn Fn(&Context, &str, Vec<Alert>) + Send +
 /// Go `AlertingRule`: generates alerts from its vector expression.
 pub struct AlertingRule {
     name: String,
-    vector: Expr,
+    vector: Option<Expr>,
     hold_duration: Duration,
     keep_firing_for: Duration,
     labels: Labels,
@@ -118,7 +118,7 @@ impl AlertingRule {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         name: &str,
-        vec: Expr,
+        vec: impl Into<Option<Expr>>,
         hold: Duration,
         keep_firing_for: Duration,
         labels: Labels,
@@ -130,7 +130,7 @@ impl AlertingRule {
     ) -> AlertingRule {
         AlertingRule {
             name: name.to_string(),
-            vector: vec,
+            vector: vec.into(),
             hold_duration: hold,
             keep_firing_for,
             labels,
@@ -264,7 +264,7 @@ impl AlertingRule {
                 alerts.push(alert.clone());
             }
         });
-        notify(ctx, &self.vector.to_string(), alerts);
+        notify(ctx, &self.expr_string(), alerts);
     }
 
     fn expand(&self, ctx: &Context, text: &str, smpl: &Sample, l: &HashMap<String, String>, ts: Time, query: &QueryFunc, external_url: Option<&str>) -> String {
@@ -281,6 +281,13 @@ impl AlertingRule {
     }
 }
 
+impl AlertingRule {
+    /// The expression as text (Go `vector.String()`).
+    pub fn expr_string(&self) -> String {
+        self.vector.as_ref().map(|e| e.to_string()).unwrap_or_default()
+    }
+}
+
 impl Rule for AlertingRule {
     fn name(&self) -> &str {
         &self.name
@@ -292,7 +299,7 @@ impl Rule for AlertingRule {
     /// Go `Eval`: evaluates the expression, creates pending alerts and fires or removes earlier ones.
     fn eval(&self, ctx: &Context, query_offset: Duration, ts: Time, query: &QueryFunc, external_url: Option<&str>, limit: i64) -> Result<Vector, Error> {
         let ctx = new_origin_context(ctx, new_rule_detail(self));
-        let res = query(&ctx, &self.vector.to_string(), ts.sub_dur(query_offset))?;
+        let res = query(&ctx, &self.expr_string(), ts.sub_dur(query_offset))?;
 
         // Create pending alerts for any new vector elements in the alert expression or update the expression
         // value for existing elements.
@@ -413,7 +420,7 @@ impl Rule for AlertingRule {
     fn string(&self) -> String {
         rulefmt::Rule {
             alert: self.name.clone(),
-            expr: self.vector.to_string(),
+            expr: self.expr_string(),
             r#for: yaml::Duration(dur_nanos(self.hold_duration)),
             keep_firing_for: yaml::Duration(dur_nanos(self.keep_firing_for)),
             labels: self.labels.map().into_iter().collect(),
@@ -423,7 +430,7 @@ impl Rule for AlertingRule {
         .to_yaml()
     }
     fn query(&self) -> Option<&Expr> {
-        Some(&self.vector)
+        self.vector.as_ref()
     }
     fn set_last_error(&self, err: Option<Error>) {
         self.state.set_last_error(err)

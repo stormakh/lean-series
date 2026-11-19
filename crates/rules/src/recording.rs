@@ -20,21 +20,28 @@ pub const ERR_DUPLICATE_RECORDING_LABEL_SET: Error = Error::Sentinel(&DUPLICATE_
 /// Go `RecordingRule`: records its vector expression into new time series.
 pub struct RecordingRule {
     name: String,
-    vector: Expr,
+    vector: Option<Expr>,
     labels: Labels,
     state: RuleState,
 }
 
 impl RecordingRule {
     /// Go `NewRecordingRule`.
-    pub fn new(name: &str, vector: Expr, lset: Labels) -> RecordingRule {
-        RecordingRule { name: name.to_string(), vector, labels: lset, state: RuleState::default() }
+    pub fn new(name: &str, vector: impl Into<Option<Expr>>, lset: Labels) -> RecordingRule {
+        RecordingRule { name: name.to_string(), vector: vector.into(), labels: lset, state: RuleState::default() }
     }
 }
 
 /// Go `vector.ContainsSameLabelset()`.
 pub(crate) fn contains_same_labelset(v: &Vector) -> bool {
     promql::contains_same_labelset(v.iter().map(|s| &s.metric))
+}
+
+impl RecordingRule {
+    /// The expression as text (Go `vector.String()`).
+    pub fn expr_string(&self) -> String {
+        self.vector.as_ref().map(|e| e.to_string()).unwrap_or_default()
+    }
 }
 
 impl Rule for RecordingRule {
@@ -47,7 +54,7 @@ impl Rule for RecordingRule {
 
     fn eval(&self, ctx: &Context, query_offset: Duration, ts: Time, query: &QueryFunc, _external_url: Option<&str>, limit: i64) -> Result<Vector, Error> {
         let ctx = new_origin_context(ctx, new_rule_detail(self));
-        let mut vector = query(&ctx, &self.vector.to_string(), ts.sub_dur(query_offset))?;
+        let mut vector = query(&ctx, &self.expr_string(), ts.sub_dur(query_offset))?;
 
         // Override the metric name and labels.
         let mut lb = Builder::new(labels::empty_labels());
@@ -76,11 +83,11 @@ impl Rule for RecordingRule {
     }
 
     fn string(&self) -> String {
-        rulefmt::Rule { record: self.name.clone(), expr: self.vector.to_string(), labels: self.labels.map().into_iter().collect(), ..Default::default() }
+        rulefmt::Rule { record: self.name.clone(), expr: self.expr_string(), labels: self.labels.map().into_iter().collect(), ..Default::default() }
             .to_yaml()
     }
     fn query(&self) -> Option<&Expr> {
-        Some(&self.vector)
+        self.vector.as_ref()
     }
     fn set_last_error(&self, err: Option<Error>) {
         self.state.set_last_error(err)

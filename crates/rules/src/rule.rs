@@ -219,6 +219,10 @@ pub trait Rule: Any + Send + Sync {
     fn dependency_rules(&self) -> Vec<RuleRef>;
     /// For type checks (Go type switches on `*AlertingRule` / `*RecordingRule`).
     fn as_any(&self) -> &dyn Any;
+    /// The type name (Go `%T`), for the panic of `new_rule_detail`.
+    fn type_name(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
 }
 
 impl dyn Rule {
@@ -331,7 +335,7 @@ pub fn new_rule_detail(r: &dyn Rule) -> RuleDetail {
     } else if r.as_recording().is_some() {
         KIND_RECORDING
     } else {
-        panic!("unknown rule type \"{}\"", std::any::type_name_of_val(r.as_any()));
+        panic!("unknown rule type \"{}\"", r.type_name());
     };
     RuleDetail {
         name: r.name().to_string(),
