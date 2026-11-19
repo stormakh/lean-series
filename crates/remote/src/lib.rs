@@ -2,6 +2,8 @@
 //! watcher integration, write handler), remote read (client, handler, codecs), the OTLP write handler and
 //! translator, and Azure AD / SigV4 authentication for remote write.
 
+pub mod azuread;
 pub mod client;
+pub mod dial_context;
 pub mod prompb;
 pub mod stats;
