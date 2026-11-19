@@ -5,3 +5,5 @@
 pub mod client;
 pub mod prompb;
 pub mod stats;
+pub mod otlptranslator;
+pub mod write_otlp_handler;

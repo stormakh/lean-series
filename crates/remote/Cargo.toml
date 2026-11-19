@@ -18,6 +18,8 @@ textparse = { path = "../textparse" }
 discovery = { path = "../discovery" }
 # Remote write/read bodies are Snappy block format.
 snap = "1"
+# OTLP write requests may be gzip-compressed (same pin as the http crate).
+flate2 = "=1.1.10"
 
 [dev-dependencies]
 util = { path = "../util" }
