@@ -848,3 +848,65 @@ pub fn sample_type_scenarios() -> Vec<(&'static str, SampleTypeScenario)> {
         (GAUGE_FLOAT_HISTOGRAM, sc("histogram", |ts, v| Sample::float_histogram(0, ts, tu::generate_test_gauge_float_histogram(v)))),
     ]
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// requireEqualSamples / requireEqualSeries (testutil.go).
+
+/// Go `chunks.Sample.Type().String()`.
+fn sample_type_string(s: &Sample) -> &'static str {
+    if s.h.is_some() {
+        "histogram"
+    } else if s.fh.is_some() {
+        "floathistogram"
+    } else {
+        "float"
+    }
+}
+
+/// Go `requireEqualSamples` (testutil.go); `ignore_counter_resets` is the option
+/// `requireEqualSamplesIgnoreCounterResets`.
+pub fn require_equal_samples(name: &str, expected: &[Sample], actual: &[Sample], ignore_counter_resets: bool) {
+    assert_eq!(expected.len(), actual.len(), "Length not equal to expected for {name}");
+    for (i, (e, a)) in expected.iter().zip(actual).enumerate() {
+        assert_eq!(e.t, a.t, "Different timestamps for {name}[{i}]");
+        assert_eq!(sample_type_string(e), sample_type_string(a), "Different types for {name}[{i}] at ts {}", e.t);
+        if let Some(eh) = &e.h {
+            let mut eh = (**eh).clone();
+            let mut ah = (**a.h.as_ref().unwrap()).clone();
+            if ignore_counter_resets && eh.counter_reset_hint != CounterResetHint::GaugeType {
+                eh.counter_reset_hint = CounterResetHint::UnknownCounterReset;
+                ah.counter_reset_hint = CounterResetHint::UnknownCounterReset;
+            } else {
+                assert_eq!(eh.counter_reset_hint, ah.counter_reset_hint, "Sample header doesn't match for {name}[{i}] at ts {}", e.t);
+            }
+            assert_eq!(eh, ah, "Sample doesn't match for {name}[{i}] at ts {}", e.t);
+        } else if let Some(efh) = &e.fh {
+            let mut efh = (**efh).clone();
+            let mut afh = (**a.fh.as_ref().unwrap()).clone();
+            if ignore_counter_resets {
+                efh.counter_reset_hint = CounterResetHint::UnknownCounterReset;
+                afh.counter_reset_hint = CounterResetHint::UnknownCounterReset;
+            } else {
+                assert_eq!(efh.counter_reset_hint, afh.counter_reset_hint, "Sample header doesn't match for {name}[{i}] at ts {}", e.t);
+            }
+            assert_eq!(efh, afh, "Sample doesn't match for {name}[{i}] at ts {}", e.t);
+        } else {
+            assert_eq!(e.f, a.f, "Sample doesn't match for {name}[{i}] at ts {}", e.t);
+        }
+    }
+}
+
+/// Go `requireEqualSeries` (testutil.go).
+pub fn require_equal_series(
+    expected: &BTreeMap<String, Vec<Sample>>,
+    actual: &BTreeMap<String, Vec<Sample>>,
+    ignore_counter_resets: bool,
+) {
+    for (name, e) in expected {
+        let a = actual.get(name).unwrap_or_else(|| panic!("Expected series {name} not found"));
+        require_equal_samples(name, e, a, ignore_counter_resets);
+    }
+    for name in actual.keys() {
+        assert!(expected.contains_key(name), "Unexpected series {name}");
+    }
+}
