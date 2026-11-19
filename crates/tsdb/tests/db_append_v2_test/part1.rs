@@ -6,13 +6,15 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use chunkenc::{ChunkIterator, ValueType};
-use model::histogram::{FloatHistogram, Histogram, Span};
+use model::exemplar::Exemplar;
+use model::metadata::{Metadata, MetricType};
+use model::histogram::{CounterResetHint, FloatHistogram, Histogram, Span};
 use model::labels::{self, Labels};
 use model::matcher::{MatchType, Matcher};
 use storage::{AppendV2Options, AppenderV2, Context, Sample, SeriesArc};
 use tsdb::db::{self, DB};
 use tsdb_format::record;
-use tsdb_format::tombstones::Interval;
+use tsdb_format::tombstones::{self, Interval};
 use tsdb_format::wlog;
 
 use crate::common::{create_block, fs, gen_series, new_test_db, query, with_dir, with_opts, with_rngs, TempDir, TestDb};
@@ -2634,4 +2636,739 @@ fn test_db_panic_on_mmapping_head_chunk_append_v2() {
     add_samples(&db, num_samples);
 
     db.close().unwrap();
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Helpers of the fourth group of tests.
+
+/// A WAL record decoded by [`read_test_wal`] (Go returns `[]any`).
+#[derive(Debug, PartialEq)]
+enum Rec {
+    Series(Vec<record::RefSeries>),
+    Samples(Vec<record::RefSample>),
+    Histograms(Vec<record::RefHistogramSample>),
+    FloatHistograms(Vec<record::RefFloatHistogramSample>),
+    Tombstones(Vec<tombstones::Stone>),
+    Metadata(Vec<record::RefMetadata>),
+    Exemplars(Vec<record::RefExemplar>),
+}
+
+/// Go `readTestWAL` (head_test.go).
+fn read_test_wal(dir: &Path) -> Vec<Rec> {
+    let sr = wlog::new_segments_reader(dir).expect("segments reader");
+    let mut dec = record::Decoder::new(tsdb::Logger::nop());
+    let mut r = wlog::Reader::new(sr);
+    let mut recs = Vec::new();
+    while r.next() {
+        let rec = r.record();
+        match dec.r#type(rec) {
+            record::Type::Series => {
+                let mut v = Vec::new();
+                dec.series(rec, &mut v).unwrap();
+                recs.push(Rec::Series(v));
+            }
+            record::Type::Samples | record::Type::SamplesV2 => {
+                let mut v = Vec::new();
+                dec.samples(rec, &mut v).unwrap();
+                recs.push(Rec::Samples(v));
+            }
+            record::Type::HistogramSamples | record::Type::CustomBucketsHistogramSamples | record::Type::HistogramSamplesV2 => {
+                let mut v = Vec::new();
+                dec.histogram_samples(rec, &mut v).unwrap();
+                recs.push(Rec::Histograms(v));
+            }
+            record::Type::FloatHistogramSamples
+            | record::Type::CustomBucketsFloatHistogramSamples
+            | record::Type::FloatHistogramSamplesV2 => {
+                let mut v = Vec::new();
+                dec.float_histogram_samples(rec, &mut v).unwrap();
+                recs.push(Rec::FloatHistograms(v));
+            }
+            record::Type::Tombstones => {
+                let mut v = Vec::new();
+                dec.tombstones(rec, &mut v).unwrap();
+                recs.push(Rec::Tombstones(v));
+            }
+            record::Type::Metadata => {
+                let mut v = Vec::new();
+                dec.metadata(rec, &mut v).unwrap();
+                recs.push(Rec::Metadata(v));
+            }
+            record::Type::Exemplars => {
+                let mut v = Vec::new();
+                dec.exemplars(rec, &mut v).unwrap();
+                recs.push(Rec::Exemplars(v));
+            }
+            record::Type::MinValidTime => {
+                dec.min_valid_time(rec).unwrap();
+            }
+            t => panic!("unknown record type {t:?}"),
+        }
+    }
+    assert!(r.err().is_none(), "{:?}", r.err());
+    recs
+}
+
+fn md(typ: MetricType, unit: &str, help: &str) -> Metadata {
+    Metadata { typ, unit: unit.to_string(), help: help.to_string() }
+}
+
+fn ref_md(r: u64, m: &Metadata) -> record::RefMetadata {
+    record::RefMetadata { r#ref: r, r#type: record::get_metric_type(m.typ), unit: m.unit.clone(), help: m.help.clone() }
+}
+
+fn app_md(app: &mut dyn AppenderV2, l: &Labels, t: i64, m: Option<&Metadata>) -> Result<u64, storage::Error> {
+    app.append(0, l, 0, t, 0.0, None, None, &AppendV2Options { metadata: m, ..Default::default() })
+}
+
+fn series_meta(db: &DB, l: &Labels) -> Option<Metadata> {
+    let s = db.head().series.get_by_hash(l.hash(), l).unwrap();
+    let g = s.lock();
+    g.meta().filter(|h| !model::metadata::is_zero_handle(h)).map(|h| h.value().clone())
+}
+
+/// Go `requireEqualSamples` (testutil.go), with the `requireEqualSamplesIgnoreCounterResets` option.
+fn require_equal_samples(name: &str, expected: &[Sample], actual: &[Sample], ignore_counter_resets: bool) {
+    assert_eq!(expected.len(), actual.len(), "Length not equal to expected for {name}");
+    for (i, (e, a)) in expected.iter().zip(actual).enumerate() {
+        assert_eq!(e.t, a.t, "Different timestamps for {name}[{i}]");
+        assert_eq!(sample_type(e), sample_type(a), "Different types for {name}[{i}] at ts {}", e.t);
+        if let Some(eh) = &e.h {
+            let (mut eh, mut ah) = ((**eh).clone(), (**a.h.as_ref().unwrap()).clone());
+            if ignore_counter_resets && eh.counter_reset_hint != CounterResetHint::GaugeType {
+                eh.counter_reset_hint = CounterResetHint::UnknownCounterReset;
+                ah.counter_reset_hint = CounterResetHint::UnknownCounterReset;
+            } else {
+                assert_eq!(eh.counter_reset_hint, ah.counter_reset_hint, "Sample header doesn't match for {name}[{i}] at ts {}", e.t);
+            }
+            assert_eq!(eh, ah, "Sample doesn't match for {name}[{i}] at ts {}", e.t);
+        } else if let Some(efh) = &e.fh {
+            let (mut efh, mut afh) = ((**efh).clone(), (**a.fh.as_ref().unwrap()).clone());
+            if ignore_counter_resets {
+                efh.counter_reset_hint = CounterResetHint::UnknownCounterReset;
+                afh.counter_reset_hint = CounterResetHint::UnknownCounterReset;
+            } else {
+                assert_eq!(efh.counter_reset_hint, afh.counter_reset_hint, "Sample header doesn't match for {name}[{i}] at ts {}", e.t);
+            }
+            assert_eq!(efh, afh, "Sample doesn't match for {name}[{i}] at ts {}", e.t);
+        } else {
+            assert!(e.f == a.f, "Sample doesn't match for {name}[{i}] at ts {}: {} != {}", e.t, e.f, a.f);
+        }
+    }
+}
+
+/// Go `requireEqualSeries` (testutil.go).
+fn require_equal_series(expected: &BTreeMap<String, Vec<Sample>>, actual: &BTreeMap<String, Vec<Sample>>, ignore_counter_resets: bool) {
+    for (name, expected_item) in expected {
+        let actual_item = actual.get(name).unwrap_or_else(|| panic!("Expected series {name} not found"));
+        require_equal_samples(name, expected_item, actual_item, ignore_counter_resets);
+    }
+    for name in actual.keys() {
+        assert!(expected.contains_key(name), "Unexpected series {name}");
+    }
+}
+
+/// Go `requireEqualOOOSamples` (testutil.go).
+fn require_equal_ooo_samples(expected_samples: usize, db: &DB) {
+    let m = &db.head().metrics.out_of_order_samples_appended;
+    assert_eq!(expected_samples as f64, m.float.get() + m.histogram.get(), "number of ooo appended samples mismatch");
+}
+
+/// Go `queryChunks` (db_test.go): closes the querier.
+fn query_chunks(mut q: storage::BoxChunkQuerier, matchers: &[Matcher]) -> BTreeMap<String, Vec<storage::Meta>> {
+    let mut result = BTreeMap::new();
+    {
+        let mut ss = q.select(&ctx(), false, None, matchers);
+        while ss.next() {
+            let series = ss.at().clone();
+            let mut chks = Vec::new();
+            let mut it = series.iterator(None);
+            while it.next() {
+                chks.push(it.at().clone());
+            }
+            assert!(it.err().is_none());
+            result.insert(series.labels().to_string(), chks);
+        }
+        assert!(ss.err().is_none());
+        assert!(ss.warnings().is_empty());
+    }
+    assert!(q.close().is_none());
+    result
+}
+
+/// Go `scenario.appendFunc(storage.AppenderV2AsLimitedV1(app), ...)`: appends the scenario's sample through
+/// the V2 appender.
+fn scenario_append(sc: &crate::common::SampleTypeScenario, app: &mut dyn AppenderV2, l: &Labels, ts: i64, value: i64) -> Result<u64, storage::Error> {
+    let s = (sc.sample_func)(ts, value);
+    app.append(0, l, 0, ts, s.f, s.h.as_deref(), s.fh.as_deref(), &ao())
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Tests (fourth group).
+
+#[test]
+fn test_metadata_in_wal_appender_v2() {
+    let mut opts = db::default_options();
+    opts.enable_metadata_wal_records = true;
+    let db = new_test_db(vec![with_opts(opts)]);
+
+    // Add some series so we can attach metadata to them.
+    let s1 = ls(&["a", "b"]);
+    let s2 = ls(&["c", "d"]);
+    let s3 = ls(&["e", "f"]);
+    let s4 = ls(&["g", "h"]);
+
+    // Add a first round of metadata to the first three series.
+    let m1 = md(MetricType::Gauge, "unit_1", "help_1");
+    let m2 = md(MetricType::Gauge, "unit_2", "help_2");
+    let m3 = md(MetricType::Gauge, "unit_3", "help_3");
+
+    let mut app = db.appender_v2(&ctx());
+    let mut ts = 0i64;
+    app_md(&mut *app, &s1, ts, Some(&m1)).unwrap();
+    app_md(&mut *app, &s2, ts, Some(&m2)).unwrap();
+    app_md(&mut *app, &s3, ts, Some(&m3)).unwrap();
+    app_md(&mut *app, &s4, ts, None).unwrap();
+    assert!(app.commit().is_none());
+
+    // Add a replicated metadata entry to the first series, a completely new metadata entry for the fourth series,
+    // and a changed metadata entry to the second series.
+    let m4 = md(MetricType::Counter, "unit_4", "help_4");
+    let m5 = md(MetricType::Counter, "unit_5", "help_5");
+    let mut app = db.appender_v2(&ctx());
+    ts += 1;
+    app_md(&mut *app, &s1, ts, Some(&m1)).unwrap();
+    app_md(&mut *app, &s4, ts, Some(&m4)).unwrap();
+    app_md(&mut *app, &s2, ts, Some(&m5)).unwrap();
+    assert!(app.commit().is_none());
+
+    // Read the WAL to see if the disk storage format is correct.
+    let recs = read_test_wal(&db.dir().join("wal"));
+    let got_metadata_blocks: Vec<Vec<record::RefMetadata>> = recs
+        .into_iter()
+        .filter_map(|r| match r {
+            Rec::Metadata(m) => Some(m),
+            _ => None,
+        })
+        .collect();
+
+    let expected_metadata = vec![ref_md(1, &m1), ref_md(2, &m2), ref_md(3, &m3), ref_md(4, &m4), ref_md(2, &m5)];
+    assert_eq!(2, got_metadata_blocks.len());
+    assert_eq!(expected_metadata[..3], got_metadata_blocks[0][..]);
+    assert_eq!(expected_metadata[3..], got_metadata_blocks[1][..]);
+
+    // stale samples
+    let stale_nan = f64::from_bits(model::value::STALE_NAN);
+    let exemplars_at = |ts: i64| vec![Exemplar { labels: ls(&["trace_id", "abc"]), value: 1.0, ts, has_ts: true }];
+    struct Tc {
+        name: &'static str,
+        samples: Vec<Sample>,
+        // One per sample: (metadata, exemplars).
+        append_opts: Vec<(Metadata, Vec<Exemplar>)>,
+        want_metadata: Vec<Metadata>,
+    }
+    let smp_f = |f: f64| Sample { f, ..Default::default() };
+    let smp_h = |h: Histogram| Sample { h: Some(Box::new(h)), ..Default::default() };
+    let smp_fh = |fh: FloatHistogram| Sample { fh: Some(Box::new(fh)), ..Default::default() };
+    let tcs = vec![
+        Tc {
+            name: "stale float",
+            samples: vec![smp_f(stale_nan)],
+            append_opts: vec![(m1.clone(), exemplars_at(0))],
+            want_metadata: vec![],
+        },
+        Tc {
+            name: "stale histogram",
+            samples: vec![smp_h(Histogram { sum: stale_nan, ..Default::default() })],
+            append_opts: vec![(m1.clone(), exemplars_at(0))],
+            want_metadata: vec![],
+        },
+        Tc {
+            name: "stale float histogram",
+            samples: vec![smp_fh(FloatHistogram { sum: stale_nan, ..Default::default() })],
+            append_opts: vec![(m1.clone(), exemplars_at(0))],
+            want_metadata: vec![],
+        },
+        Tc {
+            name: "stale float after histogram",
+            samples: vec![smp_h(storage::tsdbutil::generate_test_histogram(1)), smp_f(stale_nan)],
+            append_opts: vec![(m1.clone(), vec![]), (m2.clone(), exemplars_at(1))],
+            want_metadata: vec![m1.clone()],
+        },
+        Tc {
+            name: "stale float after float histogram",
+            samples: vec![smp_fh(storage::tsdbutil::generate_test_float_histogram(1)), smp_f(stale_nan)],
+            append_opts: vec![(m1.clone(), vec![]), (m2.clone(), exemplars_at(1))],
+            want_metadata: vec![m1.clone()],
+        },
+    ];
+    for tc in tcs {
+        let mut opts = db::default_options();
+        opts.enable_metadata_wal_records = true;
+        opts.enable_exemplar_storage = true;
+        opts.max_exemplars = 10;
+        let db = new_test_db(vec![with_opts(opts)]);
+
+        let mut app = db.appender_v2(&ctx());
+        for (i, s) in tc.samples.iter().enumerate() {
+            let (m, ex) = &tc.append_opts[i];
+            let o = AppendV2Options { metadata: Some(m), exemplars: ex, ..Default::default() };
+            app.append(0, &s1, 0, i as i64, s.f, s.h.as_deref(), s.fh.as_deref(), &o).unwrap();
+        }
+        assert!(app.commit().is_none(), "{}", tc.name);
+
+        let want_metadata: Vec<record::RefMetadata> = tc.want_metadata.iter().map(|m| ref_md(1, m)).collect();
+        let mut got_metadata = Vec::new();
+        let mut got_exemplars = Vec::new();
+        for rec in read_test_wal(&db.dir().join("wal")) {
+            match rec {
+                Rec::Metadata(m) => got_metadata.extend(m),
+                Rec::Exemplars(e) => got_exemplars.extend(e),
+                _ => {}
+            }
+        }
+        assert_eq!(want_metadata, got_metadata, "{}", tc.name);
+        assert!(got_exemplars.is_empty(), "{}", tc.name);
+    }
+}
+
+#[test]
+fn test_metadata_checkpointing_only_keeps_latest_entry_append_v2() {
+    for enable_st_storage in [false, true] {
+        let num_samples = 10000i64;
+        let hopts = tsdb::head::HeadOptions {
+            chunk_range: num_samples * 10,
+            enable_exemplar_storage: true,
+            // adapted: Go sets `hb.opts.EnableMetadataWALRecords = true` after newTestHead; here the option is set
+            // before the head is created (the options are owned by the head).
+            enable_metadata_wal_records: true,
+            ..Default::default()
+        };
+        hopts.max_exemplars.store(100_000, Ordering::Relaxed);
+        let hb = crate::common::new_test_head_with_options("metadata-checkpoint", wlog::compression::Type::None, hopts);
+        let w = hb.wal.clone().unwrap();
+
+        // Add some series so we can append metadata to them.
+        let s1 = ls(&["a", "b"]);
+        let s2 = ls(&["c", "d"]);
+        let s3 = ls(&["e", "f"]);
+        let s4 = ls(&["g", "h"]);
+
+        let m1 = md(MetricType::Gauge, "unit_1", "help_1");
+        let m2 = md(MetricType::Gauge, "unit_2", "help_2");
+        let m3 = md(MetricType::Gauge, "unit_3", "help_3");
+        let m4 = md(MetricType::Gauge, "unit_4", "help_4");
+
+        let mut app = hb.appender_v2(&ctx());
+        let mut ts = 0i64;
+        app_md(&mut *app, &s1, ts, Some(&m1)).unwrap();
+        app_md(&mut *app, &s2, ts, Some(&m2)).unwrap();
+        app_md(&mut *app, &s3, ts, Some(&m3)).unwrap();
+        app_md(&mut *app, &s4, ts, Some(&m4)).unwrap();
+        assert!(app.commit().is_none());
+
+        // Update metadata for first series.
+        let m5 = md(MetricType::Counter, "unit_5", "help_5");
+        let mut app = hb.appender_v2(&ctx());
+        ts += 1;
+        app_md(&mut *app, &s1, ts, Some(&m5)).unwrap();
+        assert!(app.commit().is_none());
+
+        // Switch back-and-forth metadata for second series.
+        // Since it ended on a new metadata record, we expect a single new entry.
+        let m6 = md(MetricType::Counter, "unit_6", "help_6");
+
+        for m in [&m6, &m2, &m6, &m2, &m6] {
+            let mut app = hb.appender_v2(&ctx());
+            ts += 1;
+            app_md(&mut *app, &s2, ts, Some(m)).unwrap();
+            assert!(app.commit().is_none());
+        }
+
+        // Let's create a checkpoint.
+        let (first, last) = wlog::segments(w.dir()).unwrap();
+        let keep = |id: u64| id != 3;
+        wlog::checkpoint(&w, first, last - 1, &keep, 0, enable_st_storage, false).unwrap();
+
+        // Confirm there's been a checkpoint.
+        let (cdir, _) = wlog::last_checkpoint(w.dir()).unwrap();
+
+        // Read in checkpoint and WAL.
+        let recs = read_test_wal(&cdir);
+        let mut got_metadata_blocks: Vec<Vec<record::RefMetadata>> = recs
+            .into_iter()
+            .filter_map(|r| match r {
+                Rec::Metadata(m) => Some(m),
+                _ => None,
+            })
+            .collect();
+
+        // There should only be 1 metadata block present, with only the latest metadata kept around.
+        let want_metadata = vec![ref_md(1, &m5), ref_md(2, &m6), ref_md(4, &m4)];
+        assert_eq!(1, got_metadata_blocks.len());
+        assert_eq!(3, got_metadata_blocks[0].len());
+        let got_metadata_block = &mut got_metadata_blocks[0];
+
+        got_metadata_block.sort_by_key(|m| m.r#ref);
+        assert_eq!(want_metadata, *got_metadata_block);
+        hb.close().unwrap();
+    }
+}
+
+#[test]
+fn test_metadata_assert_in_memory_data_append_v2() {
+    let mut opts = db::default_options();
+    opts.enable_metadata_wal_records = true;
+    let db = new_test_db(vec![with_opts(opts)]);
+
+    // Add some series so we can append metadata to them.
+    let s1 = ls(&["a", "b"]);
+    let s2 = ls(&["c", "d"]);
+    let s3 = ls(&["e", "f"]);
+    let s4 = ls(&["g", "h"]);
+
+    // Add a first round of metadata to the first three series. The in-memory data held in the db Head should hold
+    // the metadata.
+    let m1 = md(MetricType::Gauge, "unit_1", "help_1");
+    let m2 = md(MetricType::Gauge, "unit_2", "help_2");
+    let m3 = md(MetricType::Gauge, "unit_3", "help_3");
+
+    let mut app = db.appender_v2(&ctx());
+    let mut ts = 0i64;
+    app_md(&mut *app, &s1, ts, Some(&m1)).unwrap();
+    app_md(&mut *app, &s2, ts, Some(&m2)).unwrap();
+    app_md(&mut *app, &s3, ts, Some(&m3)).unwrap();
+    app_md(&mut *app, &s4, ts, None).unwrap();
+    assert!(app.commit().is_none());
+
+    assert_eq!(Some(m1.clone()), series_meta(&db, &s1));
+    assert_eq!(Some(m2.clone()), series_meta(&db, &s2));
+    assert_eq!(Some(m3.clone()), series_meta(&db, &s3));
+    // Go `metadata.IsZeroHandle(series4.meta)`.
+    assert_eq!(None, series_meta(&db, &s4));
+
+    // Add a replicated metadata entry to the first series, a changed metadata entry to the second series, and a
+    // completely new metadata entry for the fourth series. The in-memory data held in the db Head should be
+    // correctly updated.
+    let m4 = md(MetricType::Counter, "unit_4", "help_4");
+    let m5 = md(MetricType::Counter, "unit_5", "help_5");
+    let mut app = db.appender_v2(&ctx());
+    ts += 1;
+    app_md(&mut *app, &s1, ts, Some(&m1)).unwrap();
+    app_md(&mut *app, &s4, ts, Some(&m4)).unwrap();
+    app_md(&mut *app, &s2, ts, Some(&m5)).unwrap();
+    assert!(app.commit().is_none());
+
+    assert_eq!(Some(m1.clone()), series_meta(&db, &s1));
+    assert_eq!(Some(m5.clone()), series_meta(&db, &s2));
+    assert_eq!(Some(m3.clone()), series_meta(&db, &s3));
+    assert_eq!(Some(m4.clone()), series_meta(&db, &s4));
+
+    db.close().unwrap();
+
+    // Reopen the DB, replaying the WAL. The Head must have been replayed correctly in memory.
+    let reopen_db = db::open(db.dir(), None, None, None).unwrap();
+
+    reopen_db.head().wal().unwrap().size().unwrap();
+
+    assert_eq!(Some(m1.clone()), series_meta(&reopen_db, &s1));
+    assert_eq!(Some(m5.clone()), series_meta(&reopen_db, &s2));
+    assert_eq!(Some(m3.clone()), series_meta(&reopen_db, &s3));
+    assert_eq!(Some(m4.clone()), series_meta(&reopen_db, &s4));
+    reopen_db.close().unwrap();
+}
+
+#[test]
+fn test_multiple_encodings_commit_order_append_v2() {
+    let mut opts = db::default_options();
+    opts.out_of_order_cap_max = 30;
+    opts.out_of_order_time_window = 24 * 3600 * 1000;
+
+    let db = new_test_db(vec![with_opts(opts)]);
+    db.disable_compactions();
+
+    let series1 = ls(&["foo", "bar1"]);
+    let add_sample = |app: &mut dyn AppenderV2, ts: i64, val_type: ValueType| -> Sample {
+        let l = ls(&["foo", "bar1"]);
+        if val_type == ValueType::Float {
+            app.append(0, &l, 0, ts, ts as f64, None, None, &ao()).unwrap();
+            return fs(ts, ts as f64);
+        }
+        if val_type == ValueType::Histogram {
+            let h = storage::tsdbutil::generate_test_histogram(ts);
+            app.append(0, &l, 0, ts, 0.0, Some(&h), None, &ao()).unwrap();
+            return Sample::histogram(0, ts, h);
+        }
+        let fh = storage::tsdbutil::generate_test_float_histogram(ts);
+        app.append(0, &l, 0, ts, 0.0, None, Some(&fh), &ao()).unwrap();
+        Sample::float_histogram(0, ts, fh)
+    };
+
+    let verify_samples = |min_t: i64, max_t: i64, exp_samples: &[Sample], ooo_count: usize| {
+        require_equal_ooo_samples(ooo_count, &db);
+
+        // Verify samples querier.
+        let series_set = query(querier(&db, min_t, max_t), &[meq("foo", "bar1")]);
+        assert_eq!(1, series_set.len());
+        let got_samples = &series_set[&series1.to_string()];
+        require_equal_samples(&series1.to_string(), exp_samples, got_samples, true);
+
+        // Verify chunks querier.
+        let chunk_querier = db.chunk_querier(min_t, max_t).unwrap();
+        let chks = query_chunks(chunk_querier, &[meq("foo", "bar1")]);
+        assert!(chks.contains_key(&series1.to_string()));
+        assert_eq!(1, chks.len());
+        let mut got_chunk_samples = Vec::new();
+        for chunk in &chks[&series1.to_string()] {
+            let c = chunk.chunk.as_ref().unwrap();
+            let mut it = c.iterator(None);
+            let smpls = storage::expand_samples(&mut it).unwrap();
+            got_chunk_samples.extend(smpls);
+            assert!(it.err().is_none());
+        }
+        require_equal_samples(&series1.to_string(), exp_samples, &got_chunk_samples, true);
+    };
+
+    let mut exp_samples = Vec::new();
+
+    // Append samples with different encoding types and then commit them at once.
+    let mut app = db.appender_v2(&ctx());
+    for i in 100..105 {
+        exp_samples.push(add_sample(&mut *app, i, ValueType::Float));
+    }
+    for i in 110..120 {
+        exp_samples.push(add_sample(&mut *app, i, ValueType::Histogram));
+    }
+    for i in 120..130 {
+        exp_samples.push(add_sample(&mut *app, i, ValueType::FloatHistogram));
+    }
+    for i in 140..150 {
+        exp_samples.push(add_sample(&mut *app, i, ValueType::FloatHistogram));
+    }
+    // These samples will be marked as out-of-order.
+    for i in 130..135 {
+        exp_samples.push(add_sample(&mut *app, i, ValueType::Float));
+    }
+    assert!(app.commit().is_none());
+
+    exp_samples.sort_by_key(|s| s.t);
+
+    // oooCount = 5 for the samples 130 to 134.
+    verify_samples(100, 150, &exp_samples, 5);
+
+    // Append and commit some in-order histograms by themselves.
+    let mut app = db.appender_v2(&ctx());
+    for i in 150..160 {
+        exp_samples.push(add_sample(&mut *app, i, ValueType::Histogram));
+    }
+    assert!(app.commit().is_none());
+
+    // oooCount remains at 5.
+    verify_samples(100, 160, &exp_samples, 5);
+
+    // Append and commit samples for all encoding types. This time all samples will be treated as OOO because
+    // samples with newer timestamps have already been committed.
+    let mut app = db.appender_v2(&ctx());
+    for i in 50..55 {
+        exp_samples.push(add_sample(&mut *app, i, ValueType::Float));
+    }
+    for i in 60..70 {
+        exp_samples.push(add_sample(&mut *app, i, ValueType::Histogram));
+    }
+    for i in 70..75 {
+        exp_samples.push(add_sample(&mut *app, i, ValueType::Float));
+    }
+    for i in 80..90 {
+        exp_samples.push(add_sample(&mut *app, i, ValueType::FloatHistogram));
+    }
+    assert!(app.commit().is_none());
+
+    // Sort samples again because OOO samples have been added.
+    exp_samples.sort_by_key(|s| s.t);
+
+    // oooCount = 35 as we've added 30 more OOO samples.
+    verify_samples(50, 160, &exp_samples, 35);
+}
+
+#[test]
+fn test_ooo_compaction_append_v2() {
+    for (name, scenario) in crate::common::sample_type_scenarios() {
+        ooo_compaction_appender_v2(name, scenario, false);
+        ooo_compaction_appender_v2(name, scenario, true);
+    }
+}
+
+fn ooo_compaction_appender_v2(name: &str, scenario: crate::common::SampleTypeScenario, add_extra_samples: bool) {
+    let minute = 60 * 1000i64;
+    let mut opts = db::default_options();
+    opts.out_of_order_cap_max = 30;
+    opts.out_of_order_time_window = 300 * minute;
+    let db = new_test_db(vec![with_opts(opts)]);
+    db.disable_compactions(); // We want to manually call it.
+
+    let series1 = ls(&["foo", "bar1"]);
+    let series2 = ls(&["foo", "bar2"]);
+
+    let add_sample = {
+        let (series1, series2) = (series1.clone(), series2.clone());
+        move |db: &DB, from_mins: i64, to_mins: i64| {
+            let mut app = db.appender_v2(&ctx());
+            for m in from_mins..=to_mins {
+                let ts = m * minute;
+                scenario_append(&scenario, &mut *app, &series1, ts, ts).unwrap();
+                scenario_append(&scenario, &mut *app, &series2, ts, 2 * ts).unwrap();
+            }
+            assert!(app.commit().is_none());
+        }
+    };
+
+    // Add an in-order samples.
+    add_sample(&db, 250, 300);
+
+    // Verify that the in-memory ooo chunk is empty.
+    let check_empty_ooo_chunk = |lbls: &Labels| {
+        let (ms, created) = db.head().get_or_create(lbls.hash(), lbls, false).unwrap();
+        assert!(!created);
+        assert!(ms.lock().ooo().is_none());
+    };
+    check_empty_ooo_chunk(&series1);
+    check_empty_ooo_chunk(&series2);
+
+    // Add ooo samples that creates multiple chunks.
+    // 90 to 300 spans across 3 block ranges: [0, 120), [120, 240), [240, 360)
+    add_sample(&db, 90, 300);
+    // Adding same samples to create overlapping chunks.
+    // Since the active chunk won't start at 90 again, all the new chunks will have different time ranges than the
+    // previous chunks.
+    add_sample(&db, 90, 300);
+
+    let mut highest = 300i64;
+
+    let verify_db_samples = |highest: i64| {
+        let (mut series1_samples, mut series2_samples) = (Vec::new(), Vec::new());
+        for (from_mins, to_mins) in [(90, 119), (120, 239), (240, highest)] {
+            for m in from_mins..=to_mins {
+                let ts = m * minute;
+                series1_samples.push((scenario.sample_func)(ts, ts));
+                series2_samples.push((scenario.sample_func)(ts, 2 * ts));
+            }
+        }
+        let exp_res: BTreeMap<String, Vec<Sample>> =
+            [(series1.to_string(), series1_samples), (series2.to_string(), series2_samples)].into_iter().collect();
+
+        let act_res = query(querier(&db, i64::MIN, i64::MAX), &[m(MatchType::Regexp, "foo", "bar.*")]);
+        require_equal_series(&exp_res, &act_res, true);
+    };
+
+    verify_db_samples(highest); // Before any compaction.
+
+    // Verify that the in-memory ooo chunk is not empty.
+    let check_non_empty_ooo_chunk = |lbls: &Labels| {
+        let (ms, created) = db.head().get_or_create(lbls.hash(), lbls, false).unwrap();
+        assert!(!created);
+        let g = ms.lock();
+        let ooo = g.ooo().unwrap();
+        assert!(ooo.ooo_head_chunk.as_ref().unwrap().chunk.num_samples() > 0);
+        assert_eq!(13, ooo.ooo_mmapped_chunks.len(), "{name}"); // 7 original, 6 duplicate.
+    };
+    check_non_empty_ooo_chunk(&series1);
+    check_non_empty_ooo_chunk(&series2);
+
+    // No blocks before compaction.
+    assert!(db.blocks().is_empty());
+
+    // There is a 0th WBL file.
+    let wbl = db.head().wbl().unwrap();
+    wbl.sync().unwrap(); // Syncing to make sure wbl is flushed in windows.
+    let wbl_files = |dir: &Path| {
+        let mut files: Vec<(String, u64)> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap())
+            .map(|e| (e.file_name().to_string_lossy().into_owned(), e.metadata().unwrap().len()))
+            .collect();
+        files.sort();
+        files
+    };
+    let files = wbl_files(wbl.dir());
+    assert_eq!(1, files.len());
+    assert_eq!("00000000", files[0].0);
+    assert!(files[0].1 > 100);
+
+    if add_extra_samples {
+        let dbc = db.db.clone();
+        let add = add_sample.clone();
+        *db.compact_ooo_head_testing_callback.lock().unwrap() = Some(Box::new(move || {
+            add(&dbc, 90, 120); // Back in time, to generate a new OOO chunk.
+            add(&dbc, 300, 330); // Now some samples after the previous highest timestamp.
+            add(&dbc, 300, 330); // Repeat to generate an OOO chunk at these timestamps.
+        }));
+        highest = 330;
+    }
+
+    // OOO compaction happens here.
+    db.compact_ooo_head(&ctx()).unwrap();
+
+    // 3 blocks exist now. [0, 120), [120, 240), [240, 360)
+    assert_eq!(3, db.blocks().len());
+
+    verify_db_samples(highest); // Blocks created out of OOO head now.
+
+    // 0th WBL file will be deleted and 1st will be the only present.
+    let files = wbl_files(wbl.dir());
+    assert_eq!(1, files.len());
+    assert_eq!("00000001", files[0].0);
+
+    if !add_extra_samples {
+        assert_eq!(0, files[0].1);
+        // OOO stuff should not be present in the Head now.
+        check_empty_ooo_chunk(&series1);
+        check_empty_ooo_chunk(&series2);
+    }
+
+    let verify_samples = |block: &tsdb::block::Block, from_mins: i64, to_mins: i64| {
+        let (mut series1_samples, mut series2_samples) = (Vec::new(), Vec::new());
+        for m in from_mins..=to_mins {
+            let ts = m * minute;
+            series1_samples.push((scenario.sample_func)(ts, ts));
+            series2_samples.push((scenario.sample_func)(ts, 2 * ts));
+        }
+        let exp_res: BTreeMap<String, Vec<Sample>> =
+            [(series1.to_string(), series1_samples), (series2.to_string(), series2_samples)].into_iter().collect();
+
+        let q = tsdb::querier::new_block_querier(block, i64::MIN, i64::MAX).unwrap();
+        let act_res = query(q, &[m(MatchType::Regexp, "foo", "bar.*")]);
+        require_equal_series(&exp_res, &act_res, true);
+    };
+
+    // Checking for expected data in the blocks.
+    verify_samples(&db.blocks()[0], 90, 119);
+    verify_samples(&db.blocks()[1], 120, 239);
+    verify_samples(&db.blocks()[2], 240, 299);
+
+    // There should be a single m-map file.
+    let mmap_dir = tsdb::head::mmapped_chunks_dir(&db.head().opts.chunk_dir_root);
+    assert_eq!(1, std::fs::read_dir(&mmap_dir).unwrap().count());
+
+    // Compact the in-order head and expect another block.
+    // Since this is a forced compaction, this block is not aligned with 2h.
+    db.compact_head(&tsdb::head::RangeHead::new(db.head().clone(), 250 * minute, 350 * minute)).unwrap();
+    assert_eq!(4, db.blocks().len()); // [0, 120), [120, 240), [240, 360), [250, 351)
+    verify_samples(&db.blocks()[3], 250, highest);
+
+    verify_db_samples(highest); // Blocks created out of normal and OOO head now. But not merged.
+
+    // The compaction also clears out the old m-map files. Including the file that has ooo chunks.
+    let files: Vec<String> =
+        std::fs::read_dir(&mmap_dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    assert_eq!(vec!["000001".to_string()], files);
+
+    // This will merge overlapping block.
+    db.compact(&ctx()).unwrap();
+
+    assert_eq!(3, db.blocks().len()); // [0, 120), [120, 240), [240, 360)
+    verify_samples(&db.blocks()[0], 90, 119);
+    verify_samples(&db.blocks()[1], 120, 239);
+    verify_samples(&db.blocks()[2], 240, highest); // Merged block.
+
+    verify_db_samples(highest); // Final state. Blocks from normal and OOO head are merged.
 }
