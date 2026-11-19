@@ -39,6 +39,37 @@ pub fn new_default() -> TestStorage {
     new(Vec::new())
 }
 
+/// A shared [`TestStorage`] that is closed (and its directory removed) when this handle is dropped, even if
+/// clones of the `Arc` still live elsewhere, for example in a scrape thread that has not ended yet (Go
+/// `teststorage.New(t)` closes it in `t.Cleanup`).
+pub struct Shared(Arc<TestStorage>);
+
+impl Deref for Shared {
+    type Target = Arc<TestStorage>;
+    fn deref(&self) -> &Arc<TestStorage> {
+        &self.0
+    }
+}
+
+impl Drop for Shared {
+    fn drop(&mut self) {
+        // Ignore errors, as it could be a double close.
+        let _ = self.0.close();
+    }
+}
+
+/// Go `teststorage.New(t, o...)` for a storage that is shared with appendables (see [`Shared`]).
+#[track_caller]
+pub fn new_shared(o: Vec<StorageOption>) -> Shared {
+    Shared(Arc::new(new(o)))
+}
+
+/// Go `teststorage.New(t)` for a storage that is shared with appendables (see [`Shared`]).
+#[track_caller]
+pub fn new_shared_default() -> Shared {
+    new_shared(Vec::new())
+}
+
 /// Go `NewWithError`.
 pub fn new_with_error(o: Vec<StorageOption>) -> Result<TestStorage, Error> {
     // Tests just load data for a series sequentially. Thus we need a long appendable window.
