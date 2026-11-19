@@ -66,6 +66,16 @@ pub struct QueryCostComparison {
     pub actual: CostEstimate,
 }
 
+impl QueryCostComparison {
+    pub fn write_json(&self, out: &mut String) {
+        out.push_str("{\"estimated\":");
+        self.estimated.write_json(out);
+        out.push_str(",\"actual\":");
+        self.actual.write_json(out);
+        out.push('}');
+    }
+}
+
 /// Go `QueryCostData`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct QueryCostData {
@@ -118,11 +128,8 @@ impl QueryData {
             s.write_json(out);
         }
         if let Some(c) = &self.cost {
-            out.push_str(",\"cost\":{\"estimated\":");
-            c.estimated.write_json(out);
-            out.push_str(",\"actual\":");
-            c.actual.write_json(out);
-            out.push('}');
+            out.push_str(",\"cost\":");
+            c.write_json(out);
         }
         out.push('}');
     }

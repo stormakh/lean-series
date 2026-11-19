@@ -802,3 +802,725 @@ fn test_get_rule_group_next_token() {
     assert_ne!(token, get_rule_group_next_token("/path/to/file", "other"));
     assert_ne!(token, get_rule_group_next_token("/other/file", "group"));
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Query cost.
+
+/// The test API of the query-cost tests and the parts tests change.
+struct CostApi {
+    st: TestDb,
+    engine: Arc<promql::Engine>,
+    opts: ApiOptions,
+}
+
+impl CostApi {
+    fn api(&self) -> Api {
+        Api::new(self.opts.clone())
+    }
+}
+
+/// Go `newQueryCostTestAPI`.
+fn new_query_cost_test_api(enabled: bool, is_agent: bool) -> CostApi {
+    let st = loaded_storage(
+        r#"
+		load 1m
+			test_metric1{foo="bar"} 0+100x100
+			test_metric1{foo="boo"} 1+0x100
+			test_metric2{foo="boo"} 1+0x100
+	"#,
+    );
+    let now = Time::now();
+    let engine = Arc::new(promql::promqltest::new_test_engine_with_opts(promql::EngineOpts {
+        max_samples: 10000,
+        timeout: Duration::from_secs(100),
+        no_step_subquery_interval_fn: Some(Arc::new(|_| 60 * 1000)),
+        enable_at_modifier: true,
+        enable_negative_offset: true,
+        enable_per_step_stats: true,
+        enable_query_cost: enabled,
+        ..Default::default()
+    }));
+    let opts = ApiOptions {
+        queryable: Some(st.db.clone()),
+        cost_sampling: Some(st.db.clone()),
+        query_engine: Some(engine.clone()),
+        now: Some(Arc::new(move || now)),
+        config: Some(Arc::new(sample_config)),
+        enable_query_cost: enabled,
+        is_agent,
+        ..base_opts()
+    };
+    CostApi { st, engine, opts }
+}
+
+/// Go `queryCostConfig`.
+fn query_cost_config(max_series: u64, max_samples_read: u64, max_duration: Duration) -> Arc<config::Config> {
+    let mut cfg = config::Config::default();
+    cfg.global_config.query_max_series = max_series;
+    cfg.global_config.query_max_samples_read = max_samples_read;
+    cfg.global_config.query_max_duration = yaml::types::Duration(max_duration.as_nanos() as i64);
+    Arc::new(cfg)
+}
+
+/// Go `queryCostRequest`: parameters in the URL (GET) or as a form body (POST).
+fn query_cost_request(method: &str, params: &[(String, String)]) -> ApiRequest {
+    let p: Vec<(&str, &str)> = params.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    if method == "GET" { ApiRequest::new(method, &p, &[]) } else { ApiRequest::new(method, &[], &p) }
+}
+
+/// Go `withParams`: a copy of `base` with the pairs set.
+fn with_params(base: &[(String, String)], kv: &[&str]) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = base.to_vec();
+    for p in kv.chunks(2) {
+        if p.len() < 2 {
+            break;
+        }
+        match out.iter_mut().find(|(k, _)| k == p[0]) {
+            Some(e) => e.1 = p[1].to_string(),
+            None => out.push((p[0].to_string(), p[1].to_string())),
+        }
+    }
+    out
+}
+
+/// Go `jsonFields`: the field names of the JSON object.
+fn json_fields(write: impl Fn(&mut String)) -> Vec<String> {
+    let mut s = String::new();
+    write(&mut s);
+    let v = json::Json::parse(&s).unwrap();
+    v.as_obj().unwrap().iter().map(|(k, _)| k.clone()).collect()
+}
+
+fn elements_match(a: &[&str], b: &[String]) -> bool {
+    let mut x: Vec<String> = a.iter().map(|s| s.to_string()).collect();
+    let mut y = b.to_vec();
+    x.sort();
+    y.sort();
+    x == y
+}
+
+type Handler = fn(&Api, &ApiRequest) -> ApiFuncResult;
+
+/// Go `queryCostEndpoints`.
+fn query_cost_endpoints() -> Vec<(&'static str, Handler, Vec<(String, String)>)> {
+    let p = |v: &[(&str, &str)]| v.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Vec<_>>();
+    let instant = p(&[("query", "test_metric1"), ("time", "120")]);
+    let range = p(&[("query", "test_metric1"), ("start", "0"), ("end", "120"), ("step", "60")]);
+    vec![
+        ("query", Api::query as Handler, instant.clone()),
+        ("query_range", Api::query_range as Handler, range.clone()),
+        ("query_cost", Api::query_cost as Handler, instant),
+        ("query_range_cost", Api::query_range_cost as Handler, range),
+    ]
+}
+
+fn run(res: &mut ApiFuncResult) {
+    if let Some(f) = res.finalizer.take() {
+        f();
+    }
+}
+
+#[test]
+fn test_query_cost_estimate_endpoint() {
+    let c = new_query_cost_test_api(true, false);
+    let api = c.api();
+    for (name, h, params) in query_cost_endpoints() {
+        if name != "query_cost" && name != "query_range_cost" {
+            continue;
+        }
+        for method in ["GET", "POST"] {
+            let res = h(&api, &query_cost_request(method, &params));
+            assert!(res.err.is_none(), "{} {}: {:?}", name, method, res.err);
+            let Some(Data::QueryCost(data)) = &res.data else { panic!("expected QueryCostData, got {:?}", res.data) };
+            assert!(data.estimate.series_touched >= 1);
+            assert!(data.estimate.samples_read >= 1);
+            assert_eq!(0, data.estimate.peak_samples);
+            assert_eq!(vec!["estimate".to_string()], json_fields(|s| res.data.as_ref().unwrap().write_json(s)));
+            assert!(elements_match(&["seriesTouched", "samplesRead"], &json_fields(|s| data.estimate.write_json(s))));
+        }
+    }
+}
+
+#[test]
+fn test_query_cost_endpoint_parameter_parity() {
+    let c = new_query_cost_test_api(true, false);
+    let api = c.api();
+    let cases: Vec<(&str, Vec<&str>, ErrorType, bool)> = vec![
+        ("valid limit", vec!["limit", "10"], ERROR_NONE, false),
+        ("invalid limit", vec!["limit", "notanumber"], ERROR_BAD_DATA, false),
+        ("negative limit", vec!["limit", "-1"], ERROR_BAD_DATA, false),
+        ("valid stats", vec!["stats", "all"], ERROR_NONE, false),
+        ("deprecated stats value warns", vec!["stats", "bogus"], ERROR_NONE, true),
+        ("valid cost", vec!["cost", "true"], ERROR_NONE, false),
+        ("invalid cost", vec!["cost", "maybe"], ERROR_BAD_DATA, false),
+        ("invalid max_series", vec!["max_series", "notanumber"], ERROR_BAD_DATA, false),
+        ("invalid max_samples_read", vec!["max_samples_read", "-1"], ERROR_BAD_DATA, false),
+        ("invalid max_query_duration", vec!["max_query_duration", "notaduration"], ERROR_BAD_DATA, false),
+        ("malformed query", vec!["query", "up{"], ERROR_BAD_DATA, false),
+        ("zero timeout", vec!["timeout", "0s"], ERROR_BAD_DATA, false),
+        ("negative timeout", vec!["timeout", "-1"], ERROR_BAD_DATA, false),
+        ("negative max_query_duration", vec!["max_query_duration", "-1"], ERROR_BAD_DATA, false),
+    ];
+    for (name, params, err_type, warning) in cases {
+        for (ep, h, base) in query_cost_endpoints() {
+            let mut res = h(&api, &query_cost_request("GET", &with_params(&base, &params)));
+            assert_api_error(&res, err_type);
+            if warning {
+                assert!(!res.warnings.is_empty(), "{} {}", name, ep);
+            }
+            run(&mut res);
+        }
+    }
+}
+
+#[test]
+fn test_query_range_cost_endpoint_validation() {
+    let c = new_query_cost_test_api(true, false);
+    let api = c.api();
+    let cases: Vec<(&str, Vec<(&str, &str)>, ErrorType)> = vec![
+        ("zero step", vec![("query", "test_metric1"), ("start", "0"), ("end", "120"), ("step", "0")], ERROR_BAD_DATA),
+        ("negative step", vec![("query", "test_metric1"), ("start", "0"), ("end", "120"), ("step", "-1")], ERROR_BAD_DATA),
+        ("end before start", vec![("query", "test_metric1"), ("start", "120"), ("end", "0"), ("step", "60")], ERROR_BAD_DATA),
+        ("matrix expression", vec![("query", "test_metric1[5m]"), ("start", "0"), ("end", "120"), ("step", "60")], ERROR_BAD_DATA),
+        ("string expression", vec![("query", r#""hello""#), ("start", "0"), ("end", "120"), ("step", "60")], ERROR_BAD_DATA),
+        ("valid range", vec![("query", "test_metric1"), ("start", "0"), ("end", "120"), ("step", "60")], ERROR_NONE),
+    ];
+    for (name, q, err_type) in cases {
+        let res = api.query_range_cost(&ApiRequest::get(&q));
+        assert_api_error(&res, err_type);
+        if err_type == ERROR_NONE {
+            assert!(matches!(res.data, Some(Data::QueryCost(_))), "{}: {:?}", name, res.data);
+        }
+    }
+}
+
+/// Go `failEstimateQueryable`: fails the chunk probes of the cost estimation.
+struct FailEstimateQueryable {
+    inner: Arc<tsdb::db::DB>,
+}
+
+impl storage::Queryable for FailEstimateQueryable {
+    fn querier(&self, mint: i64, maxt: i64) -> Result<storage::BoxQuerier, Error> {
+        storage::Queryable::querier(self.inner.as_ref(), mint, maxt)
+    }
+}
+
+impl storage::ChunkQueryable for FailEstimateQueryable {
+    fn chunk_querier(&self, mint: i64, maxt: i64) -> Result<storage::BoxChunkQuerier, Error> {
+        let inner = storage::ChunkQueryable::chunk_querier(self.inner.as_ref(), mint, maxt)?;
+        Ok(Box::new(FailEstimateChunkQuerier { inner }))
+    }
+}
+
+impl storage::CostSamplingQueryable for FailEstimateQueryable {
+    fn cost_sampling_queryable(&self) -> (Option<&dyn storage::SampleAndChunkQueryable>, bool) {
+        (Some(self), true)
+    }
+}
+
+struct FailEstimateChunkQuerier {
+    inner: storage::BoxChunkQuerier,
+}
+
+impl storage::LabelQuerier for FailEstimateChunkQuerier {
+    fn label_values(&self, ctx: &Context, name: &str, hints: Option<&storage::LabelHints>, ms: &[model::labels::Matcher]) -> storage::LabelResult {
+        self.inner.label_values(ctx, name, hints, ms)
+    }
+    fn label_names(&self, ctx: &Context, hints: Option<&storage::LabelHints>, ms: &[model::labels::Matcher]) -> storage::LabelResult {
+        self.inner.label_names(ctx, hints, ms)
+    }
+    fn close(&mut self) -> Option<Error> {
+        self.inner.close()
+    }
+}
+
+impl storage::ChunkQuerier for FailEstimateChunkQuerier {
+    fn select(&self, _: &Context, _: bool, _: Option<&storage::SelectHints>, _: &[model::labels::Matcher]) -> storage::BoxChunkSeriesSet {
+        storage::err_chunk_series_set(Error::msg("injected estimation failure"))
+    }
+}
+
+#[test]
+fn test_query_cost_comparison_gating() {
+    let cases: Vec<(&str, bool, &str, bool, ErrorType, bool)> = vec![
+        ("present when cost=1 and feature enabled", true, "1", false, ERROR_NONE, true),
+        ("absent without cost param", true, "", false, ERROR_NONE, false),
+        ("absent when feature disabled even with cost=1", false, "1", false, ERROR_NONE, false),
+        ("absent when cost=false", true, "false", false, ERROR_NONE, false),
+        ("rejected when cost is not a boolean", true, "maybe", false, ERROR_BAD_DATA, false),
+        ("absent with a warning when estimation fails", true, "1", true, ERROR_NONE, false),
+    ];
+    for (name, enabled, cost, fail_estimate, err_type, want_cost) in cases {
+        let mut c = new_query_cost_test_api(enabled, false);
+        if fail_estimate {
+            let q = Arc::new(FailEstimateQueryable { inner: c.st.db.clone() });
+            c.opts.queryable = Some(q.clone());
+            c.opts.cost_sampling = Some(q);
+        }
+        let api = c.api();
+        for (ep, h, base) in query_cost_endpoints() {
+            if ep != "query" && ep != "query_range" {
+                continue;
+            }
+            let params = if cost.is_empty() { base.clone() } else { with_params(&base, &["cost", cost]) };
+            let mut res = h(&api, &query_cost_request("GET", &params));
+            assert_api_error(&res, err_type);
+            if err_type == ERROR_NONE {
+                let Some(Data::Query(data)) = &res.data else { panic!("{} {}: expected QueryData, got {:?}", name, ep, res.data) };
+                if want_cost {
+                    let cst = data.cost.as_ref().expect("cost");
+                    assert!(cst.estimated.series_touched >= 1);
+                    assert!(cst.actual.series_touched >= 1);
+                } else {
+                    assert!(data.cost.is_none(), "{} {}", name, ep);
+                }
+                if fail_estimate {
+                    assert!(!res.warnings.is_empty(), "{} {}", name, ep);
+                }
+            }
+            run(&mut res);
+        }
+    }
+}
+
+#[test]
+fn test_query_cost_routes_unavailable_in_agent_mode() {
+    // agent mode returns error
+    let c = new_query_cost_test_api(true, true);
+    let api = Arc::new(c.api());
+    let r = api.router("");
+    for (path, query) in [("/query_cost", "query=test_metric1&time=120"), ("/query_range_cost", "query=test_metric1&start=0&end=120&step=60")] {
+        let resp = r.serve(http::Request { method: "GET".into(), path: path.into(), query: query.into(), ..Default::default() });
+        let body = String::from_utf8_lossy(resp.body_bytes()).into_owned();
+        assert!(body.contains("unavailable with Prometheus Agent"), "{}", body);
+    }
+
+    // routes not registered when feature disabled
+    let c = new_query_cost_test_api(false, false);
+    let api = Arc::new(c.api());
+    let r = api.router("");
+    let resp = r.serve(http::Request { method: "GET".into(), path: "/query_cost".into(), query: "query=test_metric1&time=120".into(), ..Default::default() });
+    assert_eq!(404, resp.status);
+}
+
+#[test]
+fn test_query_cost_limit_exceeded() {
+    for (name, max_series, max_samples_read) in [("max_series", 1u64, 0u64), ("max_samples_read", 0, 1)] {
+        // instant query
+        let c = new_query_cost_test_api(true, false);
+        c.engine.set_query_limits(max_series, max_samples_read, Duration::ZERO);
+        let res = c.api().query(&ApiRequest::get(&[("query", "test_metric1"), ("time", "120")]));
+        let e = res.err.as_ref().unwrap_or_else(|| panic!("{}: expected an error", name));
+        assert_eq!(ERROR_COST_LIMIT, e.typ, "{}", name);
+        assert_eq!(422, default_error_code(e.typ));
+
+        // range query
+        let c = new_query_cost_test_api(true, false);
+        c.engine.set_query_limits(max_series, max_samples_read, Duration::ZERO);
+        let res = c.api().query_range(&ApiRequest::get(&[("query", "test_metric1"), ("start", "0"), ("end", "120"), ("step", "60")]));
+        let e = res.err.as_ref().unwrap_or_else(|| panic!("{}: expected an error", name));
+        assert_eq!(ERROR_COST_LIMIT, e.typ, "{}", name);
+        assert_eq!(422, default_error_code(e.typ));
+    }
+}
+
+#[test]
+fn test_query_cost_comparison_shape() {
+    let c = new_query_cost_test_api(true, false);
+    let api = c.api();
+    for (ep, h, base) in query_cost_endpoints() {
+        if ep != "query" && ep != "query_range" {
+            continue;
+        }
+        for method in ["GET", "POST"] {
+            let mut res = h(&api, &query_cost_request(method, &with_params(&base, &["cost", "true"])));
+            assert!(res.err.is_none(), "{} {}: {:?}", ep, method, res.err);
+            let Some(Data::Query(data)) = res.data.clone() else { panic!("expected QueryData") };
+            let cost = data.cost.clone().expect("cost");
+            assert!(elements_match(&["estimated", "actual"], &json_fields(|s| cost.write_json(s))));
+            assert!(elements_match(&["seriesTouched", "samplesRead"], &json_fields(|s| cost.estimated.write_json(s))));
+            assert!(elements_match(&["seriesTouched", "samplesRead", "peakSamples"], &json_fields(|s| cost.actual.write_json(s))));
+            assert!(cost.actual.peak_samples > 0);
+            run(&mut res);
+
+            let mut stats_result = h(&api, &query_cost_request(method, &with_params(&base, &["stats", "true"])));
+            assert!(stats_result.err.is_none());
+            let Some(Data::Query(stats_data)) = stats_result.data.clone() else { panic!("expected QueryData") };
+            assert!(stats_data.cost.is_none());
+            let samples = stats_data.stats.as_ref().unwrap().builtin().samples.unwrap();
+            assert_eq!(cost.actual.series_touched, samples.series_touched);
+            assert_eq!(cost.actual.samples_read, samples.samples_read);
+            assert!(samples.series_touched > 0);
+            assert!(json_fields(|s| samples.write_json(s)).contains(&"seriesTouched".to_string()));
+            run(&mut stats_result);
+        }
+    }
+}
+
+#[test]
+fn test_query_cost_override_above_ceiling_rejected() {
+    const SERIES_CEILING: u64 = 10;
+    const SAMPLES_CEILING: u64 = 100;
+    let duration_ceiling = Duration::from_secs(30);
+    let new_api = || {
+        let mut c = new_query_cost_test_api(true, false);
+        let cfg = query_cost_config(SERIES_CEILING, SAMPLES_CEILING, duration_ceiling);
+        c.opts.config = Some(Arc::new(move || cfg.clone()));
+        c
+    };
+    for (limit, above, at_ceiling) in [("max_series", "11", "10"), ("max_samples_read", "101", "100"), ("max_query_duration", "31s", "30s")] {
+        let c = new_api();
+        let api = c.api();
+        for (ep, h, base) in query_cost_endpoints() {
+            let mut res = h(&api, &query_cost_request("GET", &with_params(&base, &[limit, above])));
+            let e = res.err.as_ref().unwrap_or_else(|| panic!("{} {}: expected an error", limit, ep));
+            assert_eq!(ERROR_BAD_DATA, e.typ, "{} {}", limit, ep);
+            assert_eq!(400, default_error_code(e.typ));
+            assert!(e.err.to_string().contains(limit), "{}", e.err);
+            run(&mut res);
+
+            let mut res = h(&api, &query_cost_request("GET", &with_params(&base, &[limit, at_ceiling])));
+            assert!(res.err.is_none(), "{} {}: {:?}", limit, ep, res.err);
+            run(&mut res);
+        }
+    }
+
+    // below the ceiling the override applies
+    let c = new_api();
+    let api = c.api();
+    let req = ApiRequest::get(&[("max_series", "5"), ("max_samples_read", "50"), ("max_query_duration", "10s")]);
+    let opts = api.extract_query_opts(&req).unwrap();
+    assert_eq!(5, opts.max_series);
+    assert_eq!(50, opts.max_samples_read);
+    assert_eq!(Duration::from_secs(10), opts.max_query_duration);
+
+    // below the ceiling the override is enforced
+    let c = new_api();
+    c.engine.set_query_limits(SERIES_CEILING, SAMPLES_CEILING, Duration::ZERO);
+    let api = c.api();
+    for (ep, h, base) in query_cost_endpoints() {
+        if ep != "query" && ep != "query_range" {
+            continue;
+        }
+        let res = h(&api, &query_cost_request("GET", &with_params(&base, &["max_series", "1"])));
+        let e = res.err.as_ref().unwrap_or_else(|| panic!("{}: expected an error", ep));
+        assert_eq!(ERROR_COST_LIMIT, e.typ, "{}", ep);
+    }
+}
+
+#[test]
+fn test_query_cost_disabled_ignores_ceilings() {
+    let mut c = new_query_cost_test_api(false, false);
+    let cfg = query_cost_config(10, 100, Duration::from_secs(30));
+    c.opts.config = Some(Arc::new(move || cfg.clone()));
+    let api = c.api();
+    for (name, params) in [
+        ("above the ceiling", [("max_series", "1000000"), ("max_samples_read", "1000000"), ("max_query_duration", "1h")]),
+        ("malformed", [("max_series", "notanumber"), ("max_samples_read", "notanumber"), ("max_query_duration", "notaduration")]),
+    ] {
+        let opts = api.extract_query_opts(&ApiRequest::get(&params)).unwrap_or_else(|e| panic!("{}: {}", name, e));
+        assert_eq!(0, opts.max_series, "{}", name);
+        assert_eq!(0, opts.max_samples_read, "{}", name);
+        assert_eq!(Duration::ZERO, opts.max_query_duration, "{}", name);
+    }
+}
+
+#[test]
+fn test_query_cost_construction_error_mapped() {
+    // limit above the ceiling is bad data
+    let c = new_query_cost_test_api(true, false);
+    c.engine.set_query_limits(10, 0, Duration::ZERO);
+    let api = c.api();
+    for (ep, h, base) in query_cost_endpoints() {
+        if ep != "query" && ep != "query_range" {
+            continue;
+        }
+        let res = h(&api, &query_cost_request("GET", &with_params(&base, &["max_series", "11"])));
+        let e = res.err.as_ref().unwrap_or_else(|| panic!("{}: expected an error", ep));
+        assert_eq!(ERROR_BAD_DATA, e.typ);
+        assert!(e.err.to_string().contains("max_series"));
+        assert!(!e.err.to_string().contains(r#"invalid parameter "query""#));
+    }
+
+    // waiting for a query slot
+    let dir = temp_dir("tracker");
+    let tracker = Arc::new(promql::query_logger::ActiveQueryTracker::new(&dir, 1).unwrap());
+    let mut c = new_query_cost_test_api(true, false);
+    let eng = Arc::new(promql::promqltest::new_test_engine_with_opts(promql::EngineOpts {
+        max_samples: 10000,
+        timeout: Duration::from_millis(100),
+        no_step_subquery_interval_fn: Some(Arc::new(|_| 60 * 1000)),
+        active_query_tracker: Some(tracker),
+        enable_query_cost: true,
+        ..Default::default()
+    }));
+    c.opts.query_engine = Some(eng.clone());
+    let api = c.api();
+    let held = eng.acquire_query_slot(&Context::background(), "held").unwrap();
+    let (canceled, cancel) = Context::background().with_cancel();
+    cancel.cancel();
+    for (name, ctx, want) in [("deadline exceeded", Context::background(), ERROR_TIMEOUT), ("request canceled", canceled, ERROR_CANCELED)] {
+        for (ep, h, base) in query_cost_endpoints() {
+            if ep != "query" && ep != "query_range" {
+                continue;
+            }
+            let req = query_cost_request("GET", &base).with_ctx(ctx.clone());
+            let res = h(&api, &req);
+            let e = res.err.as_ref().unwrap_or_else(|| panic!("{} {}: expected an error", name, ep));
+            assert_eq!(want, e.typ, "{} {}: {}", name, ep, e.err);
+            assert!(!e.err.to_string().contains(r#"invalid parameter "query""#));
+        }
+    }
+    drop(held);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Go `estimationSlotEngine`: tracks the slot reserved for estimation.
+#[derive(Default)]
+struct SlotState {
+    active: bool,
+    acquired: usize,
+    released: usize,
+    wait: bool,
+    executed: bool,
+    acquired_after_exec: bool,
+    built: bool,
+    built_at: Option<std::time::Instant>,
+    acquired_before_build: bool,
+}
+
+struct EstimationSlotEngine {
+    inner: Arc<promql::Engine>,
+    st: Arc<std::sync::Mutex<SlotState>>,
+}
+
+struct ExecTrackingQuery {
+    inner: Box<dyn ApiQuery>,
+    st: Arc<std::sync::Mutex<SlotState>>,
+}
+
+impl ApiQuery for ExecTrackingQuery {
+    fn exec(&mut self, ctx: &Context) -> promql::QueryResult {
+        self.st.lock().unwrap().executed = true;
+        self.inner.exec(ctx)
+    }
+    fn close(&mut self) {
+        self.inner.close()
+    }
+    fn stats(&self) -> Option<util::stats::Statistics> {
+        self.inner.stats()
+    }
+}
+
+struct SlotRelease(Arc<std::sync::Mutex<SlotState>>);
+
+impl Drop for SlotRelease {
+    fn drop(&mut self) {
+        let mut s = self.0.lock().unwrap();
+        s.active = false;
+        s.released += 1;
+    }
+}
+
+impl QueryEngine for EstimationSlotEngine {
+    fn new_instant_query(&self, ctx: &Context, q: Arc<dyn storage::Queryable>, opts: Option<&QueryOpts>, qs: &str, ts: i64) -> Result<Box<dyn ApiQuery>, Error> {
+        let qry = QueryEngine::new_instant_query(self.inner.as_ref(), ctx, q, opts, qs, ts)?;
+        {
+            let mut s = self.st.lock().unwrap();
+            s.built = true;
+            s.built_at = Some(std::time::Instant::now());
+        }
+        Ok(Box::new(ExecTrackingQuery { inner: qry, st: self.st.clone() }))
+    }
+    fn new_range_query(&self, ctx: &Context, q: Arc<dyn storage::Queryable>, opts: Option<&QueryOpts>, qs: &str, start: i64, end: i64, step: i64) -> Result<Box<dyn ApiQuery>, Error> {
+        let qry = QueryEngine::new_range_query(self.inner.as_ref(), ctx, q, opts, qs, start, end, step)?;
+        {
+            let mut s = self.st.lock().unwrap();
+            s.built = true;
+            s.built_at = Some(std::time::Instant::now());
+        }
+        Ok(Box::new(ExecTrackingQuery { inner: qry, st: self.st.clone() }))
+    }
+    fn acquire_query_slot(&self, ctx: &Context, _qs: &str) -> Option<Result<QuerySlotGuard, Error>> {
+        let wait = {
+            let mut s = self.st.lock().unwrap();
+            s.acquired += 1;
+            s.acquired_after_exec = s.acquired_after_exec || s.executed;
+            s.acquired_before_build = s.acquired_before_build || !s.built;
+            s.wait
+        };
+        let release = SlotRelease(self.st.clone());
+        if wait {
+            while !ctx.is_done() {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let e = ctx.err().unwrap();
+            drop(release);
+            return Some(Err(e));
+        }
+        self.st.lock().unwrap().active = true;
+        Some(Ok(Box::new(release)))
+    }
+}
+
+/// Go `estimationBoundsQueryable`: checks the slot and the deadline of the estimation probes.
+struct EstimationBoundsQueryable {
+    inner: Arc<tsdb::db::DB>,
+    st: Arc<std::sync::Mutex<SlotState>>,
+    duration: Duration,
+    observed: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl storage::Queryable for EstimationBoundsQueryable {
+    fn querier(&self, mint: i64, maxt: i64) -> Result<storage::BoxQuerier, Error> {
+        storage::Queryable::querier(self.inner.as_ref(), mint, maxt)
+    }
+}
+
+impl storage::ChunkQueryable for EstimationBoundsQueryable {
+    fn chunk_querier(&self, mint: i64, maxt: i64) -> Result<storage::BoxChunkQuerier, Error> {
+        let inner = storage::ChunkQueryable::chunk_querier(self.inner.as_ref(), mint, maxt)?;
+        Ok(Box::new(EstimationBoundsQuerier { inner, st: self.st.clone(), duration: self.duration, observed: self.observed.clone() }))
+    }
+}
+
+impl storage::CostSamplingQueryable for EstimationBoundsQueryable {
+    fn cost_sampling_queryable(&self) -> (Option<&dyn storage::SampleAndChunkQueryable>, bool) {
+        (Some(self), true)
+    }
+}
+
+struct EstimationBoundsQuerier {
+    inner: storage::BoxChunkQuerier,
+    st: Arc<std::sync::Mutex<SlotState>>,
+    duration: Duration,
+    observed: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl storage::LabelQuerier for EstimationBoundsQuerier {
+    fn label_values(&self, ctx: &Context, name: &str, hints: Option<&storage::LabelHints>, ms: &[model::labels::Matcher]) -> storage::LabelResult {
+        self.inner.label_values(ctx, name, hints, ms)
+    }
+    fn label_names(&self, ctx: &Context, hints: Option<&storage::LabelHints>, ms: &[model::labels::Matcher]) -> storage::LabelResult {
+        self.inner.label_names(ctx, hints, ms)
+    }
+    fn close(&mut self) -> Option<Error> {
+        self.inner.close()
+    }
+}
+
+impl storage::ChunkQuerier for EstimationBoundsQuerier {
+    fn select(&self, ctx: &Context, sorted: bool, hints: Option<&storage::SelectHints>, ms: &[model::labels::Matcher]) -> storage::BoxChunkSeriesSet {
+        self.observed.store(true, std::sync::atomic::Ordering::Relaxed);
+        let s = self.st.lock().unwrap();
+        assert!(s.active, "estimation must hold a concurrency slot");
+        let deadline = ctx.deadline().expect("estimation must have a deadline");
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        assert!(remaining <= self.duration, "estimation must honor the shortest duration limit");
+        assert!(remaining > self.duration / 2, "estimation must not apply a shorter duration limit");
+        if s.built {
+            assert!(deadline <= s.built_at.unwrap() + self.duration, "estimation must not outlast the query's duration limit");
+        }
+        drop(s);
+        self.inner.select(ctx, sorted, hints, ms)
+    }
+}
+
+#[test]
+fn test_query_cost_estimation_bounds() {
+    let cases: Vec<(&str, Duration, Vec<&str>, Duration)> = vec![
+        ("flag fallback", Duration::ZERO, vec![], Duration::from_secs(60)),
+        ("configured ceiling", Duration::from_secs(30), vec![], Duration::from_secs(30)),
+        ("query duration", Duration::from_secs(30), vec!["max_query_duration", "1s"], Duration::from_secs(1)),
+        ("request timeout", Duration::from_secs(30), vec!["timeout", "1s"], Duration::from_secs(1)),
+        ("request timeout above the configured ceiling", Duration::from_secs(30), vec!["timeout", "1m"], Duration::from_secs(30)),
+        ("request timeout above the flag", Duration::ZERO, vec!["timeout", "5m"], Duration::from_secs(60)),
+    ];
+    for (name, ceiling, params, duration) in cases {
+        let mut c = new_query_cost_test_api(true, false);
+        let cfg = query_cost_config(0, 0, ceiling);
+        c.opts.config = Some(Arc::new(move || cfg.clone()));
+        c.opts.query_timeout_flag = 60 * SECOND;
+        let st = Arc::new(std::sync::Mutex::new(SlotState::default()));
+        c.opts.query_engine = Some(Arc::new(EstimationSlotEngine { inner: c.engine.clone(), st: st.clone() }));
+        let observed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let q = Arc::new(EstimationBoundsQueryable { inner: c.st.db.clone(), st: st.clone(), duration, observed: observed.clone() });
+        c.opts.queryable = Some(q.clone());
+        c.opts.cost_sampling = Some(q);
+        let api = c.api();
+        for (ep, h, base) in query_cost_endpoints() {
+            observed.store(false, std::sync::atomic::Ordering::Relaxed);
+            {
+                let mut s = st.lock().unwrap();
+                s.executed = false;
+                s.acquired_after_exec = false;
+                s.built = false;
+                s.acquired_before_build = false;
+            }
+            let p = with_params(&with_params(&base, &["cost", "true"]), &params);
+            let mut res = h(&api, &query_cost_request("GET", &p));
+            assert!(res.err.is_none(), "{} {}: {:?}", name, ep, res.err);
+            assert!(observed.load(std::sync::atomic::Ordering::Relaxed), "{} {}", name, ep);
+            {
+                let s = st.lock().unwrap();
+                assert!(!s.active);
+                assert_eq!(s.acquired, s.released);
+                assert!(!s.acquired_after_exec, "estimation must run before the query executes");
+                if ep == "query" || ep == "query_range" {
+                    assert!(!s.acquired_before_build, "the query must be built before it is estimated");
+                }
+            }
+            run(&mut res);
+        }
+    }
+
+    // malformed query is rejected before estimating
+    let mut c = new_query_cost_test_api(true, false);
+    let st = Arc::new(std::sync::Mutex::new(SlotState::default()));
+    c.opts.query_engine = Some(Arc::new(EstimationSlotEngine { inner: c.engine.clone(), st: st.clone() }));
+    let api = c.api();
+    for (ep, h, base) in query_cost_endpoints() {
+        if ep != "query" && ep != "query_range" {
+            continue;
+        }
+        st.lock().unwrap().acquired = 0;
+        let res = h(&api, &query_cost_request("GET", &with_params(&base, &["cost", "true", "query", "sum("])));
+        assert_api_error(&res, ERROR_BAD_DATA);
+        assert_eq!(0, st.lock().unwrap().acquired, "a malformed query must not wait for an estimation slot");
+    }
+}
+
+#[test]
+fn test_query_cost_estimation_queue_timeout() {
+    let (canceled, cancel) = Context::background().with_cancel();
+    cancel.cancel();
+    let cases: Vec<(&str, Duration, Vec<&str>, Context, ErrorType, ErrorType)> = vec![
+        ("duration limit", Duration::from_millis(10), vec![], Context::background(), ERROR_NONE, ERROR_TIMEOUT),
+        ("request timeout", Duration::ZERO, vec!["timeout", "50ms"], Context::background(), ERROR_TIMEOUT, ERROR_TIMEOUT),
+        ("request canceled", Duration::ZERO, vec![], canceled, ERROR_CANCELED, ERROR_CANCELED),
+    ];
+    for (name, ceiling, params, ctx, query_err, cost_err) in cases {
+        let mut c = new_query_cost_test_api(true, false);
+        let cfg = query_cost_config(0, 0, ceiling);
+        c.opts.config = Some(Arc::new(move || cfg.clone()));
+        let st = Arc::new(std::sync::Mutex::new(SlotState { wait: true, ..Default::default() }));
+        c.opts.query_engine = Some(Arc::new(EstimationSlotEngine { inner: c.engine.clone(), st: st.clone() }));
+        let api = c.api();
+        for (ep, h, base) in query_cost_endpoints() {
+            let p = with_params(&with_params(&base, &["cost", "true"]), &params);
+            let mut res = h(&api, &query_cost_request("GET", &p).with_ctx(ctx.clone()));
+            let want = if ep == "query" || ep == "query_range" { query_err } else { cost_err };
+            assert_api_error(&res, want);
+            if want == ERROR_NONE {
+                let Some(Data::Query(d)) = &res.data else { panic!("{} {}: expected QueryData", name, ep) };
+                assert!(d.cost.is_none());
+                assert!(!res.warnings.is_empty());
+            }
+            {
+                let s = st.lock().unwrap();
+                assert_eq!(s.acquired, s.released, "{} {}", name, ep);
+            }
+            run(&mut res);
+        }
+    }
+}
