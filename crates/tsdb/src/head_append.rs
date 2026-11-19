@@ -983,7 +983,7 @@ impl HeadAppenderBase {
     fn commit_floats(&self, b: &mut AppendBatch, acc: &mut AppenderCommitContext<'_>, has_wbl: bool) {
         let floats = std::mem::take(&mut b.floats);
         let float_series = std::mem::take(&mut b.float_series);
-        for (s, series) in floats.iter().zip(float_series.iter()) {
+        for (s, series) in floats.iter().zip(float_series) {
             let mut g = series.lock();
             if is_stale_nan(s.v) {
                 // A float staleness marker for a series whose last sample is a histogram is converted to the
@@ -1084,7 +1084,7 @@ impl HeadAppenderBase {
                 self.head.on_chunk_created(series.r#ref, prev_head_chunk_count, g.head_chunk_count());
             }
             g.cleanup_append_ids_below(self.cleanup_append_ids_below);
-            self.release_pending_commit(series, &mut g);
+            self.release_pending_commit(&series, &mut g);
         }
     }
 
@@ -1092,7 +1092,7 @@ impl HeadAppenderBase {
     fn commit_histograms(&self, b: &mut AppendBatch, acc: &mut AppenderCommitContext<'_>, has_wbl: bool) {
         let histograms = std::mem::take(&mut b.histograms);
         let histogram_series = std::mem::take(&mut b.histogram_series);
-        for (s, series) in histograms.into_iter().zip(histogram_series.iter()) {
+        for (s, series) in histograms.into_iter().zip(histogram_series) {
             let mut g = series.lock();
             let (ooo_sample, _, err) =
                 g.appendable_histogram(s.t, &s.h, self.head_maxt, self.min_valid_time, self.ooo_time_window);
@@ -1162,7 +1162,7 @@ impl HeadAppenderBase {
                 self.head.on_chunk_created(series.r#ref, prev_head_chunk_count, g.head_chunk_count());
             }
             g.cleanup_append_ids_below(self.cleanup_append_ids_below);
-            self.release_pending_commit(series, &mut g);
+            self.release_pending_commit(&series, &mut g);
         }
     }
 
@@ -1170,7 +1170,7 @@ impl HeadAppenderBase {
     fn commit_float_histograms(&self, b: &mut AppendBatch, acc: &mut AppenderCommitContext<'_>, has_wbl: bool) {
         let histograms = std::mem::take(&mut b.float_histograms);
         let histogram_series = std::mem::take(&mut b.float_histogram_series);
-        for (s, series) in histograms.into_iter().zip(histogram_series.iter()) {
+        for (s, series) in histograms.into_iter().zip(histogram_series) {
             let mut g = series.lock();
             let (ooo_sample, _, err) =
                 g.appendable_float_histogram(s.t, &s.fh, self.head_maxt, self.min_valid_time, self.ooo_time_window);
@@ -1240,7 +1240,7 @@ impl HeadAppenderBase {
                 self.head.on_chunk_created(series.r#ref, prev_head_chunk_count, g.head_chunk_count());
             }
             g.cleanup_append_ids_below(self.cleanup_append_ids_below);
-            self.release_pending_commit(series, &mut g);
+            self.release_pending_commit(&series, &mut g);
         }
     }
 
