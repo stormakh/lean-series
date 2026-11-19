@@ -82,11 +82,15 @@ pub fn clean_path(p: &str) -> String {
     out
 }
 
+/// Go `route.Router.WithInstrumentation`'s function: wraps a handler, given its handler name.
+pub type InstrumentFn = Arc<dyn Fn(&str, HandlerFn) -> HandlerFn + Send + Sync>;
+
 /// A router with a path prefix (Go `route.Router`).
 #[derive(Default, Clone)]
 pub struct Router {
     trees: HashMap<String, Arc<http::Router<HandlerFn>>>,
     pending: HashMap<String, Vec<(String, HandlerFn)>>,
+    instr: Option<(String, InstrumentFn)>,
 }
 
 impl Router {
@@ -94,8 +98,18 @@ impl Router {
         Router::default()
     }
 
+    /// Go `WithInstrumentation`: routes added from now on are wrapped with `f`. The handler name is the route path
+    /// without `strip` (Go's route prefix is not part of handler names).
+    pub fn set_instrumentation(&mut self, strip: &str, f: InstrumentFn) {
+        self.instr = Some((strip.to_string(), f));
+    }
+
     /// Adds a route; `path` is the full path including any prefix.
     pub fn handle(&mut self, method: &str, path: &str, h: HandlerFn) {
+        let h = match &self.instr {
+            Some((strip, f)) => f(path.strip_prefix(strip.as_str()).unwrap_or(path), h),
+            None => h,
+        };
         self.pending.entry(method.to_string()).or_default().push((path.to_string(), h));
         let mut r = http::Router::new();
         for (p, h) in &self.pending[method] {

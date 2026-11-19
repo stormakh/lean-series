@@ -9,8 +9,12 @@
 //!   (implemented for `scrape::Manager`), [`api::AlertmanagerRetriever`], [`api::RulesRetriever`] (rules and
 //!   notifier), [`api::TsdbAdminStats`], [`api::QueryEngine`] (implemented for `promql::Engine`).
 pub mod api;
+pub mod expfmt;
+pub mod federate;
 pub mod gotime;
 pub mod httputil;
 pub mod metrics;
 pub mod notifications;
 pub mod route;
+pub mod ui;
+pub mod web;
