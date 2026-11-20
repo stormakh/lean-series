@@ -155,6 +155,7 @@ enum TermEvent {
 
 /// Go `main()`.
 pub fn main() {
+    sys::set_malloc_tunables();
     sys::tune_malloc();
     // Before any thread starts: every thread inherits the blocked signals, which only the signal thread takes.
     sys::block_signals();
@@ -1186,6 +1187,8 @@ pub fn main() {
                 wh.set_ready(web::web::ReadyStatus::Ready);
                 nf.delete_notification(web::notifications::STARTING_UP);
                 l.info("Server is ready to receive web requests.", &[]);
+                // Startup is over: give back its heap and the pages of code that only startup ran.
+                sys::on_idle();
                 cancel_ev.wait();
                 Ok(())
             },
