@@ -840,7 +840,8 @@ impl Parser for OpenMetricsParser<'_> {
         // Lexing the same bytes from the start of a line gives the same tokens; they must end exactly at `end`.
         let name_end = lexutil::scan_while(series, 1, lexutil::MD);
         if name_end == series.len() {
-            if lexutil::is(b[end], lexutil::MD) {
+            // A name alone: only a space (then the value) ends it; a brace would start labels.
+            if b[end] != b' ' {
                 return Ok(false);
             }
         } else if series[name_end] != b'{' || series[series.len() - 1] != b'}' {
