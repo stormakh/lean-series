@@ -7,7 +7,7 @@ R=$(cd "$(dirname "$0")/../.." && pwd)
 E="$R/bench/sd-cloud-e2e"
 S="$R/bench/tmp/w2-sd-cloud/e2e"
 PROM=${PROM:-$R/upstream-bin/prometheus-3.16.0.linux-amd64/prometheus}
-[ -x "$PROM" ] || PROM=/home/kamrot/code/prometheus-rs/upstream-bin/prometheus-3.16.0.linux-amd64/prometheus
+[ -x "$PROM" ] || PROM=$R/upstream-bin/prometheus-3.16.0.linux-amd64/prometheus
 mkdir -p "$S"
 find "$S" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
 mkdir -p "$S/home" "$S/data"

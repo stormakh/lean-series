@@ -86,4 +86,4 @@ require (
 	k8s.io/utils v0.0.0-20260626114624-be93311217bd // indirect
 )
 
-replace github.com/prometheus/prometheus => /home/kamrot/code/prometheus-rs/upstream
+replace github.com/prometheus/prometheus => ../../upstream

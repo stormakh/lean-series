@@ -29,4 +29,4 @@ require (
 	google.golang.org/protobuf v1.36.12 // indirect
 )
 
-replace github.com/prometheus/prometheus => /home/kamrot/code/prometheus-rs/upstream
+replace github.com/prometheus/prometheus => ../../../../upstream

@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-const TD: &str = "/home/kamrot/code/prometheus-rs/tools/gopath/pkg/mod/github.com/prometheus/common@v0.72.1/config/testdata";
+const TD: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../tools/gopath/pkg/mod/github.com/prometheus/common@v0.72.1/config/testdata");
 
 struct Case {
     name: &'static str,

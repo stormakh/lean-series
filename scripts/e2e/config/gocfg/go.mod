@@ -267,4 +267,4 @@ require (
 
 require github.com/prometheus/prometheus v0.0.0-00010101000000-000000000000
 
-replace github.com/prometheus/prometheus => /home/kamrot/code/prometheus-rs/upstream
+replace github.com/prometheus/prometheus => ../../../../upstream

@@ -12,7 +12,7 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$here/../../.." && pwd)"
-prom="${PROMETHEUS_BIN:-/home/kamrot/code/prometheus-rs/upstream-bin/prometheus-3.16.0.linux-amd64/prometheus}"
+prom="${PROMETHEUS_BIN:-$(cd "$(dirname "$0")/../../.." && pwd)/upstream-bin/prometheus-3.16.0.linux-amd64/prometheus}"
 tmp="$root/bench/tmp/w3-remote/e2e"
 parts="${1:-all}"
 pids=()

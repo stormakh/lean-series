@@ -4,7 +4,7 @@
 # Usage: bench/promql/go_cpu.sh [bench regexp] (default: the hundred-series cases with 1000 steps).
 set -e
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
-. /home/kamrot/code/prometheus-rs/tools/goenv.sh
+. "$(cd "$(dirname "$0")/../.." && pwd)/tools/goenv.sh"
 OUT=${OUT:-$ROOT/bench/tmp/w2-promql}
 mkdir -p "$OUT"
 BIN=$OUT/promql.test

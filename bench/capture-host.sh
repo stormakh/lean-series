@@ -9,5 +9,5 @@ read pp _ < <("$R/bench/prom.sh" "$PB" "$T/data" 9391 "$T/p.yml")
 node "$R/scripts/record-proxy.mjs" "$OUT" 9390 9391 > "$T/proxy.log" 2>&1 & px=$!
 cp -r "$LD" "$T/ls"; read lp _ < <(~/code/grafana-rs/bench/grafana-rs.sh "$T/ls" 3400)
 sleep 20   # some data first
-node ~/code/grafana-rs/bench/realload.mjs /tmp/claude-1000/-home-kamrot/8a06f3ea-ae5f-4f59-ba85-a3c2acd62392/scratchpad/real/rec-rs.jsonl http://localhost:3400 "$U" 1 1.2 "$T/req.jsonl" 2> "$T/load.log"
+node ~/code/grafana-rs/bench/realload.mjs "${LS_REC:?set LS_REC to a Lean Sight request recording}" http://localhost:3400 "$U" 1 1.2 "$T/req.jsonl" 2> "$T/load.log"
 kill $lp $px $pp $ne; wait 2>/dev/null; echo "captured $(wc -l < "$OUT") requests; tmp $T"
