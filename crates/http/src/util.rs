@@ -26,6 +26,16 @@ fn decode(s: &str, plus: bool) -> String {
     let mut i = 0;
     while i < b.len() {
         let c = b[i];
+        if c != b'%' && c != b'+' {
+            // copy the run up to the next '%' or '+' at once
+            let mut j = i + 1;
+            while j < b.len() && b[j] != b'%' && b[j] != b'+' {
+                j += 1;
+            }
+            out.extend_from_slice(&b[i..j]);
+            i = j;
+            continue;
+        }
         if c == b'%' && i + 2 < b.len() {
             if let (Some(h), Some(l)) = (hexval(b[i + 1]), hexval(b[i + 2])) {
                 out.push(h << 4 | l);

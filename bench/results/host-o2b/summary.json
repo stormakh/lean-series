@@ -1,0 +1,32 @@
+{
+ "idle": {
+  "pss_mb_avg": 15.51,
+  "pss_mb_max": 15.54,
+  "cpu_pct": 0.068,
+  "cpu_s": 0.08,
+  "seconds": 117
+ },
+ "load": {
+  "pss_mb_avg": 17.82,
+  "pss_mb_max": 18.43,
+  "cpu_pct": 1.203,
+  "cpu_s": 7.3,
+  "seconds": 607,
+  "cpu_ms_per_request": 0.217
+ },
+ "after": {
+  "pss_mb_avg": 18.13,
+  "pss_mb_max": 18.18,
+  "cpu_pct": 0.063,
+  "cpu_s": 0.07,
+  "seconds": 112
+ },
+ "requests": {
+  "total": 33632,
+  "failed": 0,
+  "query_p50_ms": 0.48,
+  "query_p95_ms": 1.08,
+  "query_p99_ms": 1.38,
+  "bytes": 7369041
+ }
+}

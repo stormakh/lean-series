@@ -171,6 +171,20 @@ impl Context {
         None
     }
 
+    /// Whether the context or a parent is already known to be done (cancelled, or a deadline seen by an
+    /// earlier check), without reading the clock.
+    #[inline]
+    pub fn is_canceled(&self) -> bool {
+        let mut cur = self.inner.as_deref();
+        while let Some(i) = cur {
+            if i.state.load(Ordering::Relaxed) != NOT_DONE {
+                return true;
+            }
+            cur = i.parent.as_deref();
+        }
+        false
+    }
+
     /// Whether the context is cancelled or past its deadline.
     #[inline]
     pub fn is_done(&self) -> bool {

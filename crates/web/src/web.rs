@@ -325,15 +325,24 @@ impl WebMetrics {
 
     /// Go `instrumentHandler`: counts requests by status code, and observes the duration and the response size.
     pub fn instrument_handler(self: &Arc<Self>, name: &str, h: HandlerFn) -> HandlerFn {
-        self.request_counter.with_label_values(&[name, "200"]);
+        // The children used on every request, looked up once (each lookup builds a key and takes the vector's
+        // lock); the web handler never deletes them. The histogram children are made on first use, as in Go
+        // (a curried vector), so handlers that never ran export no histogram.
+        let ok_counter = self.request_counter.with_label_values(&[name, "200"]);
+        let duration_cell = std::sync::OnceLock::new();
+        let size_cell = std::sync::OnceLock::new();
         let m = self.clone();
         let name = name.to_string();
         Arc::new(move |req: Request| {
             let start = Instant::now();
             let head = req.method == "HEAD";
             let mut resp = h(req);
-            let code = resp.status.to_string();
-            m.request_counter.with_label_values(&[&name, &code]).inc();
+            if resp.status == 200 {
+                ok_counter.inc();
+            } else {
+                let code = resp.status.to_string();
+                m.request_counter.with_label_values(&[&name, &code]).inc();
+            }
             match std::mem::replace(&mut resp.body, Body::Bytes(Vec::new())) {
                 Body::Stream(f) => {
                     let m2 = m.clone();
@@ -357,8 +366,10 @@ impl WebMetrics {
                         }
                     };
                     resp.body = b;
-                    m.request_duration.with_label_values(&[&name]).observe(start.elapsed().as_secs_f64());
-                    m.response_size.with_label_values(&[&name]).observe(n as f64);
+                    let duration = duration_cell.get_or_init(|| m.request_duration.with_label_values(&[&name]));
+                    duration.observe(start.elapsed().as_secs_f64());
+                    let size = size_cell.get_or_init(|| m.response_size.with_label_values(&[&name]));
+                    size.observe(n as f64);
                 }
             }
             resp
@@ -486,6 +497,14 @@ fn text(code: u16, body: impl Into<Vec<u8>>) -> Response {
 pub fn go_path_clean(p: &str) -> String {
     if p.is_empty() {
         return ".".to_string();
+    }
+    // Fast path: a rooted path that is already clean (every request path, usually) is returned as it is.
+    if p == "/"
+        || (p.starts_with('/')
+            && !p.ends_with('/')
+            && p[1..].split('/').all(|s| !s.is_empty() && s != "." && s != ".."))
+    {
+        return p.to_string();
     }
     let rooted = p.starts_with('/');
     let mut out: Vec<&str> = Vec::new();

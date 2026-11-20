@@ -197,3 +197,62 @@ pub fn fs_size(path: &str) -> u64 {
         None => 0,
     }
 }
+
+/// A file mapped read-write and shared (`mmap(MAP_SHARED)`), as Go's `fileutil.OpenMmapFile` with write access:
+/// writes reach the page cache without a system call, and the kernel writes them to the file. Used by the active
+/// query tracker (`queries.active`), which Go also maps.
+pub struct SharedMap {
+    ptr: *mut u8,
+    len: usize,
+}
+
+// SAFETY: the mapping is plain memory owned by this value; `&self` only reads it, writes need `&mut self`.
+unsafe impl Send for SharedMap {}
+// SAFETY: see `Send`.
+unsafe impl Sync for SharedMap {}
+
+impl SharedMap {
+    /// Maps the first `len` bytes of `file` (opened read-write, at least `len` bytes long).
+    pub fn new(file: &std::fs::File, len: usize) -> std::io::Result<SharedMap> {
+        use std::os::unix::io::AsRawFd;
+        if len == 0 {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "mmap of zero bytes"));
+        }
+        // SAFETY: a new shared mapping of a file descriptor that is valid for the call; the result is checked.
+        let p = unsafe {
+            libc::mmap(std::ptr::null_mut(), len, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_SHARED, file.as_raw_fd(), 0)
+        };
+        if p == libc::MAP_FAILED {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(SharedMap { ptr: p as *mut u8, len })
+    }
+
+    pub fn as_slice(&self) -> &[u8] {
+        // SAFETY: `ptr` maps `len` readable bytes for the life of `self`.
+        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
+    }
+
+    pub fn as_mut_slice(&mut self) -> &mut [u8] {
+        // SAFETY: `ptr` maps `len` writable bytes for the life of `self`, and `&mut self` makes this the only access.
+        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }
+    }
+
+    /// `msync(MS_SYNC)`: writes the mapped pages to the file.
+    pub fn sync(&self) -> std::io::Result<()> {
+        // SAFETY: `ptr` and `len` are the mapping made in `new`.
+        if unsafe { libc::msync(self.ptr as *mut libc::c_void, self.len, libc::MS_SYNC) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+}
+
+impl Drop for SharedMap {
+    fn drop(&mut self) {
+        // SAFETY: `ptr` and `len` are the mapping made in `new`, unmapped only here.
+        unsafe {
+            libc::munmap(self.ptr as *mut libc::c_void, self.len);
+        }
+    }
+}

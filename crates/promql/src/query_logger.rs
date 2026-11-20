@@ -1,13 +1,12 @@
 //! Port of `promql/query_logger.go`: the active query tracker, which writes running queries to
 //! `queries.active` so that queries that crashed Prometheus are logged at the next start.
 //!
-//! Go maps the file into memory; here the tracker keeps the bytes in memory and writes every change through to
-//! the file at the same offsets (`unsafe` is not allowed outside the TSDB). The file content is the same.
+//! As in Go, the file is mapped into memory (through `util::runtime::SharedMap`), so tracking a query costs no
+//! system call.
 
 use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::os::unix::fs::FileExt;
 use std::path::Path;
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -71,37 +70,81 @@ pub fn trim_string_by_bytes(s: &[u8], mut size: usize) -> &[u8] {
 }
 
 fn json_entry(query: &[u8], timestamp: i64) -> Vec<u8> {
-    let mut out = String::from("{\"query\":");
-    json_write_str(&String::from_utf8_lossy(query), &mut out);
-    out.push_str(",\"timestamp_sec\":");
-    out.push_str(&timestamp.to_string());
-    out.push('}');
-    out.into_bytes()
+    let mut out = Vec::with_capacity(query.len() + query.len() / 8 + 48);
+    out.extend_from_slice(b"{\"query\":");
+    match std::str::from_utf8(query) {
+        Ok(q) => json_write_str(q, &mut out),
+        Err(_) => json_write_str(&String::from_utf8_lossy(query), &mut out),
+    }
+    out.extend_from_slice(b",\"timestamp_sec\":");
+    out.extend_from_slice(timestamp.to_string().as_bytes());
+    out.push(b'}');
+    out
 }
 
 /// Writes a JSON string like Go's encoding/json.
-fn json_write_str(v: &str, out: &mut String) {
-    use std::fmt::Write as _;
-    out.push('"');
-    for c in v.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '<' => out.push_str("\\u003c"),
-            '>' => out.push_str("\\u003e"),
-            '&' => out.push_str("\\u0026"),
-            '\u{2028}' => out.push_str("\\u2028"),
-            '\u{2029}' => out.push_str("\\u2029"),
-            c if (c as u32) < 0x20 => {
-                let _ = write!(out, "\\u{:04x}", c as u32);
-            }
-            c => out.push(c),
-        }
+/// Copies runs of plain bytes at once (query texts are mostly plain, but have quotes in label matchers).
+/// Bytes that `json_write_str` copies as they are (not control, `"`, `\`, `<`, `>`, `&`, or 0xE2 that may start
+/// U+2028/U+2029).
+static PLAIN: [bool; 256] = {
+    let mut t = [true; 256];
+    let mut i = 0;
+    while i < 0x20 {
+        t[i] = false;
+        i += 1;
     }
-    out.push('"');
+    t[b'"' as usize] = false;
+    t[b'\\' as usize] = false;
+    t[b'<' as usize] = false;
+    t[b'>' as usize] = false;
+    t[b'&' as usize] = false;
+    t[0xE2] = false;
+    t
+};
+
+fn json_write_str(v: &str, out: &mut Vec<u8>) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let b = v.as_bytes();
+    out.push(b'"');
+    let mut start = 0;
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        if PLAIN[c as usize] {
+            i += 1;
+            continue;
+        }
+        let (esc, n): (&[u8], usize) = match c {
+            b'"' => (b"\\\"", 1),
+            b'\\' => (b"\\\\", 1),
+            b'\n' => (b"\\n", 1),
+            b'\r' => (b"\\r", 1),
+            b'\t' => (b"\\t", 1),
+            b'<' => (b"\\u003c", 1),
+            b'>' => (b"\\u003e", 1),
+            b'&' => (b"\\u0026", 1),
+            // U+2028 and U+2029 (E2 80 A8 / E2 80 A9)
+            0xE2 if i + 2 < b.len() && b[i + 1] == 0x80 && b[i + 2] == 0xA8 => (b"\\u2028", 3),
+            0xE2 if i + 2 < b.len() && b[i + 1] == 0x80 && b[i + 2] == 0xA9 => (b"\\u2029", 3),
+            _ if c < 0x20 => (b"", 1),
+            _ => {
+                i += 1;
+                continue;
+            }
+        };
+        out.extend_from_slice(&b[start..i]);
+        if esc.is_empty() {
+            out.extend_from_slice(b"\\u00");
+            out.push(HEX[(c >> 4) as usize]);
+            out.push(HEX[(c & 15) as usize]);
+        } else {
+            out.extend_from_slice(esc);
+        }
+        i += n;
+        start = i;
+    }
+    out.extend_from_slice(&b[start..]);
+    out.push(b'"');
 }
 
 /// Go `newJSONEntry`.
@@ -112,45 +155,63 @@ pub fn new_json_entry(query: &[u8]) -> Vec<u8> {
     json_entry(q, ts)
 }
 
-/// A file with an in-memory copy of its bytes; writes go to both (Go maps the file).
+/// The bytes of the active query file: memory only (tests), or the file mapped shared as Go does, so that a write
+/// is a memory copy without a system call.
+enum Mem {
+    Bytes(Vec<u8>),
+    Map(util::runtime::SharedMap),
+    /// After `close` (Go unmaps the file; later writes are dropped here).
+    Closed,
+}
+
+/// The active query file (Go `mmappedFile`).
 pub struct MappedFile {
-    pub bytes: Vec<u8>,
-    file: Option<File>,
+    mem: Mem,
 }
 
 impl MappedFile {
     /// In-memory bytes without a file.
     pub fn from_bytes(bytes: Vec<u8>) -> MappedFile {
-        MappedFile { bytes, file: None }
+        MappedFile { mem: Mem::Bytes(bytes) }
+    }
+
+    /// The current bytes (empty after `close`).
+    pub fn bytes(&self) -> &[u8] {
+        match &self.mem {
+            Mem::Bytes(b) => b,
+            Mem::Map(m) => m.as_slice(),
+            Mem::Closed => &[],
+        }
     }
 
     /// Writes `data` at `at` (clipped to the file size), like Go's `copy` into the mapping.
     pub fn write(&mut self, at: usize, data: &[u8]) {
-        let end = (at + data.len()).min(self.bytes.len());
-        if at >= end {
-            return;
-        }
-        let n = end - at;
-        self.bytes[at..end].copy_from_slice(&data[..n]);
-        if let Some(f) = &self.file {
-            let _ = f.write_at(&data[..n], at as u64);
+        let b: &mut [u8] = match &mut self.mem {
+            Mem::Bytes(b) => b,
+            Mem::Map(m) => m.as_mut_slice(),
+            Mem::Closed => return,
+        };
+        let end = (at + data.len()).min(b.len());
+        if at < end {
+            b[at..end].copy_from_slice(&data[..end - at]);
         }
     }
 
-    /// Go `mmappedFile.Close`.
+    /// Go `mmappedFile.Close`: writes the mapped pages to the file and unmaps it.
     pub fn close(&mut self) -> io::Result<()> {
-        if let Some(f) = self.file.take() {
-            f.sync_all()?;
+        if let Mem::Map(m) = std::mem::replace(&mut self.mem, Mem::Closed) {
+            m.sync()?;
         }
         Ok(())
     }
 }
 
-/// Go `getMMappedFile`: creates the file with `filesize` zero bytes.
+/// Go `getMMappedFile`: creates the file with `filesize` zero bytes and maps it.
 pub fn get_mapped_file(filename: &Path, filesize: usize) -> io::Result<MappedFile> {
     let mut file = OpenOptions::new().create(true).read(true).write(true).truncate(true).open(filename)?;
     allocate_query_log_file(&mut file, filesize)?;
-    Ok(MappedFile { bytes: vec![0u8; filesize], file: Some(file) })
+    let m = util::runtime::SharedMap::new(&file, filesize)?;
+    Ok(MappedFile { mem: Mem::Map(m) })
 }
 
 /// Go `logUnfinishedQueries` without the logger: the unfinished queries of the file, if any.
@@ -179,13 +240,15 @@ pub struct ActiveQueryTracker {
 struct TrackerState {
     file: MappedFile,
     free_indices: VecDeque<usize>,
+    /// Inserts waiting for a free slot; `delete` wakes one only then (a futex wake is a system call).
+    waiters: usize,
 }
 
 impl ActiveQueryTracker {
     /// A tracker over in-memory bytes only (Go tests build the struct with a byte slice).
     pub fn with_bytes(bytes: Vec<u8>, max_concurrent: usize) -> ActiveQueryTracker {
         let t = ActiveQueryTracker {
-            state: Mutex::new(TrackerState { file: MappedFile::from_bytes(bytes), free_indices: VecDeque::new() }),
+            state: Mutex::new(TrackerState { file: MappedFile::from_bytes(bytes), free_indices: VecDeque::new(), waiters: 0 }),
             free: Condvar::new(),
             max_concurrent,
         };
@@ -210,7 +273,7 @@ impl ActiveQueryTracker {
         };
         file.write(0, b"[");
         let t = ActiveQueryTracker {
-            state: Mutex::new(TrackerState { file, free_indices: VecDeque::new() }),
+            state: Mutex::new(TrackerState { file, free_indices: VecDeque::new(), waiters: 0 }),
             free: Condvar::new(),
             max_concurrent,
         };
@@ -227,7 +290,7 @@ impl ActiveQueryTracker {
 
     /// A copy of the file bytes.
     pub fn bytes(&self) -> Vec<u8> {
-        self.state.lock().unwrap().file.bytes.clone()
+        self.state.lock().unwrap().file.bytes().to_vec()
     }
 }
 
@@ -237,10 +300,10 @@ impl QueryTracker for ActiveQueryTracker {
     }
 
     fn insert(&self, ctx: &Context, query: &str) -> Result<usize, Error> {
+        let entry = new_json_entry(query.as_bytes());
         let mut st = self.state.lock().unwrap();
         loop {
             if let Some(i) = st.free_indices.pop_front() {
-                let entry = new_json_entry(query.as_bytes());
                 st.file.write(i, &entry);
                 st.file.write(i + ENTRY_SIZE - 1, b",");
                 return Ok(i);
@@ -249,7 +312,9 @@ impl QueryTracker for ActiveQueryTracker {
                 return Err(e);
             }
             // Wake up regularly to notice a cancelled or expired context.
+            st.waiters += 1;
             st = self.free.wait_timeout(st, Duration::from_millis(10)).unwrap().0;
+            st.waiters -= 1;
         }
     }
 
@@ -257,8 +322,11 @@ impl QueryTracker for ActiveQueryTracker {
         let mut st = self.state.lock().unwrap();
         st.file.write(insert_index, &[0u8; ENTRY_SIZE]);
         st.free_indices.push_back(insert_index);
+        let wake = st.waiters > 0;
         drop(st);
-        self.free.notify_one();
+        if wake {
+            self.free.notify_one();
+        }
     }
 
     fn close(&self) -> Result<(), Error> {

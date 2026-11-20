@@ -412,22 +412,6 @@ const LEN_EXTRA: [u32; 29] = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3,
 const DIST_EXTRA: [u32; 30] = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13];
 const CL_ORDER: [usize; 19] = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15];
 
-fn fixed_lengths() -> ([u8; 286], [u8; 30]) {
-    let mut l = [0u8; 286];
-    for (i, v) in l.iter_mut().enumerate() {
-        *v = if i < 144 {
-            8
-        } else if i < 256 {
-            9
-        } else if i < 280 {
-            7
-        } else {
-            8
-        };
-    }
-    (l, [5u8; 30])
-}
-
 /// Bits of the code words for `freq` under `lens`.
 fn code_bits(freq: &[u32], lens: &[u8]) -> u64 {
     let mut b = 0u64;
@@ -493,6 +477,24 @@ fn rle_lengths(lens: &[u8], out: &mut Vec<(u8, u8)>) {
 /// Writes the pending symbols (input `bl.start..end`) as one block, the cheapest of dynamic, fixed, or stored.
 fn flush_block(w: &mut Bits<'_>, bl: &mut Block, data: &[u8], end: usize, last: bool) {
     bl.lfreq[256] += 1; // end of block
+    if end - bl.start < SMALL_BLOCK {
+        // Small input (a short JSON answer): a dynamic table costs more to build than it saves, so pick the
+        // cheaper of fixed Huffman and stored.
+        let fixed_bits = fixed_code_bits(bl) + extra_bits(bl);
+        let raw = (end - bl.start) as u64;
+        if (raw + 5) * 8 + 8 < fixed_bits {
+            put_stored(w, data, bl.start, end, last);
+        } else {
+            w.put(last as u32, 1);
+            w.put(1, 2);
+            write_syms_codes(w, bl, &FIXED_CODES.0, &FIXED_CODES.1);
+        }
+        bl.syms.clear();
+        bl.lfreq = [0; 286];
+        bl.dfreq = [0; 30];
+        bl.start = end;
+        return;
+    }
     let mut ll = [0u8; 286];
     let mut dl = [0u8; 30];
     build_lengths(&bl.lfreq, 15, &mut ll);
@@ -536,26 +538,11 @@ fn flush_block(w: &mut Bits<'_>, bl: &mut Block, data: &[u8], end: usize, last: 
     let stored_bits = (raw as u64 + 5 * (raw as u64 / 65535 + 1)) * 8 + 8;
     let bfinal = last as u32;
     if stored_bits < dyn_bits.min(fixed_bits) {
-        let mut s = bl.start;
-        loop {
-            let len = if end - s > 65535 { 65535 } else { end - s };
-            let fin = bfinal != 0 && s + len == end;
-            w.put(fin as u32, 1);
-            w.put(0, 2);
-            w.align();
-            w.out.extend_from_slice(&(len as u16).to_le_bytes());
-            w.out.extend_from_slice(&(!(len as u16)).to_le_bytes());
-            w.out.extend_from_slice(&data[s..s + len]);
-            s += len;
-            if s >= end {
-                break;
-            }
-        }
+        put_stored(w, data, bl.start, end, last);
     } else if fixed_bits <= dyn_bits {
         w.put(bfinal, 1);
         w.put(1, 2);
-        let (fl, fd) = fixed_lengths();
-        write_syms(w, bl, &fl, &fd);
+        write_syms_codes(w, bl, &FIXED_CODES.0, &FIXED_CODES.1);
     } else {
         w.put(bfinal, 1);
         w.put(2, 2);
@@ -585,11 +572,67 @@ fn flush_block(w: &mut Bits<'_>, bl: &mut Block, data: &[u8], end: usize, last: 
     bl.start = end;
 }
 
+/// Stored blocks for `data[start..end]`; the last one is final when `last`.
+fn put_stored(w: &mut Bits<'_>, data: &[u8], start: usize, end: usize, last: bool) {
+    let mut s = start;
+    loop {
+        let len = if end - s > 65535 { 65535 } else { end - s };
+        let fin = last && s + len == end;
+        w.put(fin as u32, 1);
+        w.put(0, 2);
+        w.align();
+        w.out.extend_from_slice(&(len as u16).to_le_bytes());
+        w.out.extend_from_slice(&(!(len as u16)).to_le_bytes());
+        w.out.extend_from_slice(&data[s..s + len]);
+        s += len;
+        if s >= end {
+            break;
+        }
+    }
+}
+
+/// Blocks of less input than this use fixed Huffman or stored only.
+const SMALL_BLOCK: usize = 1024;
+
+/// The fixed Huffman codes (RFC 1951 3.2.6) in the form of [`build_codes`].
+static FIXED_CODES: ([u32; 286], [u32; 30]) = fixed_codes();
+
+const fn fixed_codes() -> ([u32; 286], [u32; 30]) {
+    // literal/length: 0..144 -> 8 bits from 0x30, 144..256 -> 9 bits from 0x190, 256..280 -> 7 bits from 0,
+    // 280..286 -> 8 bits from 0xc0; distance: 5 bits, code = index
+    let mut lc = [0u32; 286];
+    let mut i = 0;
+    while i < 286 {
+        let (code, len) = if i < 144 {
+            (0x30 + i as u32, 8)
+        } else if i < 256 {
+            (0x190 + (i as u32 - 144), 9)
+        } else if i < 280 {
+            (i as u32 - 256, 7)
+        } else {
+            (0xc0 + (i as u32 - 280), 8)
+        };
+        lc[i] = ((code as u16).reverse_bits() >> (16 - len)) as u32 | len << 16;
+        i += 1;
+    }
+    let mut dc = [0u32; 30];
+    let mut d = 0;
+    while d < 30 {
+        dc[d] = ((d as u16).reverse_bits() >> 11) as u32 | 5 << 16;
+        d += 1;
+    }
+    (lc, dc)
+}
+
 fn write_syms(w: &mut Bits<'_>, bl: &Block, ll: &[u8], dl: &[u8]) {
     let mut lc = [0u32; 286];
     let mut dc = [0u32; 30];
     build_codes(ll, &mut lc);
     build_codes(dl, &mut dc);
+    write_syms_codes(w, bl, &lc, &dc);
+}
+
+fn write_syms_codes(w: &mut Bits<'_>, bl: &Block, lc: &[u32; 286], dc: &[u32; 30]) {
     for s in bl.syms.iter() {
         let s = *s;
         let dist = s >> 9;

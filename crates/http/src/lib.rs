@@ -92,7 +92,10 @@ impl Request {
     }
     /// The body as `application/x-www-form-urlencoded` pairs.
     pub fn form(&self) -> Vec<(String, String)> {
-        parse_query(&String::from_utf8_lossy(&self.body))
+        match std::str::from_utf8(&self.body) {
+            Ok(s) => parse_query(s),
+            Err(_) => parse_query(&String::from_utf8_lossy(&self.body)),
+        }
     }
     /// The body parsed as JSON.
     pub fn json(&self) -> Result<Json, json::JsonError> {
