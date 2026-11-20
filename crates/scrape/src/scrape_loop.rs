@@ -1172,9 +1172,24 @@ impl ScrapeLoop {
             app: base,
             limits: Limits::new(self.runtime.wall(), self.sample_limit, self.bucket_limit, self.max_schema),
         };
+        // Lines that repeat the previous scrape are found by position (start timestamps need the parsed labels).
+        let predict = !self.enable_st_zero_ingestion;
+        s.begin_order(p.kind());
 
         loop {
-            let et = match p.next() {
+            let mut predicted: Option<EntryId> = None;
+            let next = match if predict { s.predicted() } else { None } {
+                Some(id) => match p.next_if_series(s.entry(id).key_len(), &mut |t| s.entry(id).key_is(t)) {
+                    Ok(true) => {
+                        predicted = Some(id);
+                        Ok(Entry::Series)
+                    }
+                    Ok(false) => p.next(),
+                    Err(x) => Err(x),
+                },
+                None => p.next(),
+            };
+            let et = match next {
                 Ok(et) => et,
                 Err(x) if x.is_eof() => break,
                 Err(x) => {
@@ -1226,7 +1241,10 @@ impl ScrapeLoop {
                 }
             } else {
                 let (m, pts, v) = p.series();
-                met.extend_from_slice(m);
+                // A predicted line needs its text only to check dropped series (and for error messages).
+                if predicted.is_none() || s.has_dropped() {
+                    met.extend_from_slice(m);
+                }
                 parsed_ts = pts;
                 val = v;
             }
@@ -1239,7 +1257,10 @@ impl ScrapeLoop {
             if s.get_dropped(met) {
                 continue;
             }
-            let (mut ce, already) = s.get(met);
+            let (mut ce, already) = match predicted {
+                Some(id) => s.get_predicted(id),
+                None => s.get(met),
+            };
             let series_cached = ce.is_some();
             let mut r: SeriesRef = 0;
             if let Some(id) = ce {
@@ -1265,6 +1286,8 @@ impl ScrapeLoop {
                     err = Some(e);
                     break;
                 }
+                // The labels live on in the cache and the head: keep their strings once.
+                *lset = lset.interned();
             }
             macro_rules! ls {
                 () => {
@@ -1333,6 +1356,10 @@ impl ScrapeLoop {
                     s.track_staleness(er, id);
                 }
             }
+            if met.is_empty() && aerr.is_some() {
+                // The fast path does not copy the series text; the error messages need it.
+                met.extend_from_slice(p.series().0);
+            }
             let (sample_added, e2) =
                 self.check_add_error(met, &[], aerr, &mut sample_limit_err, &mut bucket_limit_err, &mut app_errs);
             if let Some(e2) = e2 {
@@ -1351,6 +1378,9 @@ impl ScrapeLoop {
                 if sample_limit_err.is_none() && bucket_limit_err.is_none() {
                     stats.series_added += 1;
                 }
+            }
+            if let Some(id) = ce {
+                s.note_order(id);
             }
             stats.added += 1;
 
@@ -1447,9 +1477,24 @@ impl ScrapeLoop {
         };
         // ST synthesis needs the metadata even without metadata appends.
         let want_meta = self.append_metadata_to_wal;
+        // Lines that repeat the previous scrape are found by position (start timestamps need the parsed labels).
+        let predict = !self.parse_st;
+        s.begin_order(p.kind());
 
         loop {
-            let et = match p.next() {
+            let mut predicted: Option<EntryId> = None;
+            let next = match if predict { s.predicted() } else { None } {
+                Some(id) => match p.next_if_series(s.entry(id).key_len(), &mut |t| s.entry(id).key_is(t)) {
+                    Ok(true) => {
+                        predicted = Some(id);
+                        Ok(Entry::Series)
+                    }
+                    Ok(false) => p.next(),
+                    Err(x) => Err(x),
+                },
+                None => p.next(),
+            };
+            let et = match next {
                 Ok(et) => et,
                 Err(x) if x.is_eof() => break,
                 Err(x) => {
@@ -1501,7 +1546,10 @@ impl ScrapeLoop {
                 }
             } else {
                 let (m, pts, v) = p.series();
-                met.extend_from_slice(m);
+                // A predicted line needs its text only to check dropped series (and for error messages).
+                if predicted.is_none() || s.has_dropped() {
+                    met.extend_from_slice(m);
+                }
                 parsed_ts = pts;
                 val = v;
             }
@@ -1514,7 +1562,10 @@ impl ScrapeLoop {
             if s.get_dropped(met) {
                 continue;
             }
-            let (mut ce, already) = s.get(met);
+            let (mut ce, already) = match predicted {
+                Some(id) => s.get_predicted(id),
+                None => s.get(met),
+            };
             let series_cached = ce.is_some();
             let mut r: SeriesRef = 0;
             if let Some(id) = ce {
@@ -1540,6 +1591,8 @@ impl ScrapeLoop {
                     err = Some(x);
                     break;
                 }
+                // The labels live on in the cache and the head: keep their strings once.
+                *lset = lset.interned();
             }
             macro_rules! ls {
                 () => {
@@ -1658,6 +1711,10 @@ impl ScrapeLoop {
                     }
                 }
             }
+            if met.is_empty() && aerr.is_some() {
+                // The fast path does not copy the series text; the error messages need it.
+                met.extend_from_slice(p.series().0);
+            }
             let (sample_added, e2) =
                 self.check_add_error(met, exemplars, aerr, &mut sample_limit_err, &mut bucket_limit_err, &mut app_errs);
             if let Some(e2) = e2 {
@@ -1689,6 +1746,7 @@ impl ScrapeLoop {
                 if er != 0 && track && sample_added {
                     s.track_staleness(er, id);
                 }
+                s.note_order(id);
             }
             stats.added += 1;
         }

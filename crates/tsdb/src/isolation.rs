@@ -256,10 +256,53 @@ impl std::fmt::Debug for IsolationState {
     }
 }
 
+/// The slots of a [`TxRing`]: none, four inline (the first size, so that most series need no allocation), or
+/// more on the heap. It dereferences to the slots.
+#[derive(Clone, Debug, Default)]
+pub enum TxIds {
+    #[default]
+    Empty,
+    Inline([u64; 4]),
+    Heap(Vec<u64>),
+}
+
+impl TxIds {
+    fn zeroed(n: usize) -> TxIds {
+        match n {
+            0 => TxIds::Empty,
+            4 => TxIds::Inline([0; 4]),
+            _ => TxIds::Heap(vec![0; n]),
+        }
+    }
+}
+
+impl std::ops::Deref for TxIds {
+    type Target = [u64];
+    #[inline]
+    fn deref(&self) -> &[u64] {
+        match self {
+            TxIds::Empty => &[],
+            TxIds::Inline(a) => a,
+            TxIds::Heap(v) => v,
+        }
+    }
+}
+
+impl std::ops::DerefMut for TxIds {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut [u64] {
+        match self {
+            TxIds::Empty => &mut [],
+            TxIds::Inline(a) => a,
+            TxIds::Heap(v) => v,
+        }
+    }
+}
+
 /// Go `txRing`: the transaction ID ring buffer of a series.
 #[derive(Clone, Debug, Default)]
 pub struct TxRing {
-    pub tx_ids: Vec<u64>,
+    pub tx_ids: TxIds,
     /// Position of the first id in the ring.
     pub tx_id_first: u32,
     /// How many ids in the ring.
@@ -270,7 +313,7 @@ impl TxRing {
     /// Go `newTxRing`.
     pub fn new(capacity: usize) -> TxRing {
         TxRing {
-            tx_ids: vec![0; capacity],
+            tx_ids: TxIds::zeroed(capacity),
             tx_id_first: 0,
             tx_id_count: 0,
         }
@@ -284,7 +327,7 @@ impl TxRing {
             if new_len == 0 {
                 new_len = 4;
             }
-            let mut new_ring = vec![0u64; new_len as usize];
+            let mut new_ring = TxIds::zeroed(new_len as usize);
             let first = self.tx_id_first as usize;
             let idx = self.tx_ids.len() - first;
             new_ring[..idx].copy_from_slice(&self.tx_ids[first..]);

@@ -163,27 +163,16 @@ impl Head {
         if is_ooo {
             return g.ooo_chunk(cid, &self.chunk_disk_mapper);
         }
-        let (c, head_chunk, is_open) = g.chunk(cid, &self.chunk_disk_mapper)?;
+        let (c, _, _) = g.chunk(cid, &self.chunk_disk_mapper)?;
         // This means that the chunk is outside the specified range.
         if !c.overlaps_closed_interval(mint, maxt) {
             return Err(ERR_NOT_FOUND);
         }
         let max_time = c.max_time;
-        let chk = if head_chunk && is_open {
-            // The open chunk is appended to while it is read: take a copy of its bytes (Go does so when asked
-            // to; here it is always done, because the open chunk is never shared).
-            let enc = c.chunk.encoding();
-            let b = c.chunk.bytes().to_vec();
-            drop(c);
-            let copied = match &self.opts.chunk_pool {
-                Some(p) => p.get(enc, b),
-                None => chunkenc::from_data(enc, b),
-            }
-            .map_err(Error::Chunk)?;
-            Arc::from(copied)
-        } else {
-            c.chunk
-        };
+        // The open chunk is appended to while it is read. Go copies its bytes for the reader; here the reader
+        // shares it, and the appender copies it before the next append while a reader holds it
+        // (`MemChunk::chunk_mut`), so the reader keeps the samples it saw.
+        let chk = c.chunk;
         Ok((
             Arc::new(SafeHeadChunk {
                 chunk: chk,

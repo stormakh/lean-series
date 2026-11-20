@@ -814,6 +814,40 @@ impl Parser for PromParser<'_> {
         }
     }
 
+    fn next_if_series(&mut self, len: usize, is_series: &mut dyn FnMut(&[u8]) -> bool) -> Result<bool, Error> {
+        let b = &self.b[..];
+        let i = self.l.i;
+        let end = i + len;
+        if self.l.state != S_INIT || len == 0 || end + 1 >= b.len() || !is_m(b[i]) {
+            return Ok(false);
+        }
+        let series = &b[i..end];
+        if !is_series(series) {
+            return Ok(false);
+        }
+        // Lexing the same bytes from the start of a line gives the same tokens; they must end exactly at `end`.
+        let name_end = lexutil::scan_while(series, 1, lexutil::MD);
+        if name_end == series.len() {
+            // A name alone: labels may still follow after whitespace; accept only a space and then the value.
+            if b[end] != b' ' || matches!(b[end + 1], 0 | b' ' | b'\t' | b'\n' | b'{') {
+                return Ok(false);
+            }
+        } else if series[name_end] != b'{' || series[series.len() - 1] != b'}' {
+            return Ok(false);
+        }
+        // The state of `next` after the series (label offsets are not filled in).
+        self.start = i;
+        self.offsets.clear();
+        self.offsets.push(i);
+        self.offsets.push(i + name_end);
+        self.series = (i, end);
+        self.l.i = end;
+        self.l.state = S_VALUE;
+        let t = self.next_token();
+        self.parse_metric_suffix(t)?;
+        Ok(true)
+    }
+
     fn kind(&self) -> ParserKind {
         ParserKind::Prom
     }

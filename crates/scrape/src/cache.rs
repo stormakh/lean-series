@@ -6,7 +6,7 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use model::labels::Labels;
+use model::labels::{Labels, METRIC_NAME as METRIC_NAME_LABEL};
 use model::metadata::{Metadata, MetricType};
 use storage::SeriesRef;
 
@@ -20,12 +20,148 @@ use crate::util::FxHashMap;
 pub struct CacheEntry {
     pub ref_: SeriesRef,
     pub last_iter: u64,
+    /// The labels of the series; they must not change while the entry is mapped (its text may be kept as a mask
+    /// over them).
     pub lset: Labels,
     /// Optional state for start timestamp synthesis.
     pub st: Option<Box<StCache>>,
+    /// The series text, when it is not the plain form of `lset` given by `mask`; empty otherwise.
+    key: Box<[u8]>,
+    /// When `key` is empty, the labels of `lset` (bit i for the i-th label) that the text lists: the text is
+    /// `name{n1="v1",n2="v2"}` of them in the order of `lset`, or the name alone when no bit is set. Bit 32 + i
+    /// is set when the text lists the value of label i without the ".0" that the parser added to it (classic
+    /// histogram `le` and summary `quantile` values are kept in OpenMetrics float form: `le="1"` gives "1.0").
+    mask: u64,
+    /// Hash and length of the series text.
+    hash: u64,
+    key_len: u32,
+    /// The next entry whose text has the same hash, or `NO_ENTRY`.
+    next: u32,
+    /// Position of the entry in the order of the scrape that saw it last, or `NO_ENTRY`.
+    pos: u32,
+    /// Whether the series map holds this entry (an entry replaced in the map may live on for staleness).
+    mapped: bool,
 }
 
+impl CacheEntry {
+    /// Whether `met` is the series text of the entry.
+    #[inline]
+    pub fn key_is(&self, met: &[u8]) -> bool {
+        if met.len() != self.key_len as usize {
+            return false;
+        }
+        if !self.key.is_empty() {
+            return *self.key == *met;
+        }
+        mask_matches(&self.lset, self.mask, met)
+    }
+
+    /// The length of the series text.
+    #[inline]
+    pub fn key_len(&self) -> usize {
+        self.key_len as usize
+    }
+
+    /// The series text.
+    pub fn key(&self) -> Vec<u8> {
+        if !self.key.is_empty() {
+            return self.key.to_vec();
+        }
+        let mut b = self.lset.get(METRIC_NAME_LABEL).as_bytes().to_vec();
+        let mut sep = b'{';
+        for (i, (n, v)) in self.lset.iter_bytes().enumerate().take(MAX_MASK_LABELS) {
+            if self.mask & (1 << i) != 0 {
+                b.push(sep);
+                b.extend_from_slice(n);
+                b.extend_from_slice(b"=\"");
+                b.extend_from_slice(if self.mask & (1 << (32 + i)) != 0 { &v[..v.len() - 2] } else { v });
+                b.push(b'"');
+                sep = b',';
+            }
+        }
+        if sep == b',' {
+            b.push(b'}');
+        }
+        b
+    }
+}
+
+/// The most labels a label set may have for its text to be kept as a mask.
+const MAX_MASK_LABELS: usize = 32;
+
+/// Strips `<sep>name="value"` from the front of `rest`, if it is there and ends a label; with `trim` the text
+/// has `value` without its trailing ".0".
+#[inline]
+fn strip_label<'a>(rest: &'a [u8], sep: u8, n: &[u8], v: &[u8], trim: bool) -> Option<&'a [u8]> {
+    let v = if trim { v.strip_suffix(b".0")? } else { v };
+    let r = rest.strip_prefix(&[sep])?.strip_prefix(n)?.strip_prefix(b"=\"")?.strip_prefix(v)?.strip_prefix(b"\"")?;
+    matches!(r.first(), Some(b',' | b'}')).then_some(r)
+}
+
+/// The metric name of `lset` (usually its first label).
+#[inline]
+fn metric_name(lset: &Labels) -> &[u8] {
+    lset.iter_bytes().find(|(n, _)| *n == METRIC_NAME_LABEL.as_bytes()).map_or(&[], |(_, v)| v)
+}
+
+/// Whether `met` is the text that `mask` selects from `lset` (see [`CacheEntry`]).
+#[inline]
+fn mask_matches(lset: &Labels, mask: u64, met: &[u8]) -> bool {
+    let Some(mut rest) = met.strip_prefix(metric_name(lset)) else { return false };
+    if mask == 0 {
+        return rest.is_empty();
+    }
+    let mut sep = b'{';
+    for (i, (n, v)) in lset.iter_bytes().enumerate().take(MAX_MASK_LABELS) {
+        if mask & (1 << i) != 0 {
+            match strip_label(rest, sep, n, v, mask & (1 << (32 + i)) != 0) {
+                Some(r) => rest = r,
+                None => return false,
+            }
+            sep = b',';
+        }
+    }
+    rest == b"}"
+}
+
+/// The mask for which `mask_matches(lset, mask, met)`, if there is one: the text must be the metric name of
+/// `lset`, then none or some of its other labels in braces, in the same order and without escapes.
+fn text_mask(lset: &Labels, met: &[u8]) -> Option<u64> {
+    let name = lset.get(METRIC_NAME_LABEL);
+    if name.is_empty() || lset.len() > MAX_MASK_LABELS || met.len() > u32::MAX as usize {
+        return None;
+    }
+    let mut rest = met.strip_prefix(name.as_bytes())?;
+    if rest.is_empty() {
+        return Some(0);
+    }
+    let mut mask = 0u64;
+    let mut sep = b'{';
+    for (i, (n, v)) in lset.iter_bytes().enumerate() {
+        if n == METRIC_NAME_LABEL.as_bytes() {
+            continue;
+        }
+        if let Some(r) = strip_label(rest, sep, n, v, false) {
+            rest = r;
+            mask |= 1 << i;
+            sep = b',';
+        } else if let Some(r) = strip_label(rest, sep, n, v, true) {
+            rest = r;
+            mask |= 1 << i | 1 << (32 + i);
+            sep = b',';
+        }
+    }
+    (mask != 0 && rest == b"}").then_some(mask)
+}
+
+const NO_ENTRY: u32 = u32::MAX;
+
 /// The series part of the cache; the scrape loop owns it while it appends.
+///
+/// The series map is a hash table of entry ids keyed by the hash of the series text, with collision chains
+/// through the entries, which own the text (most texts are kept as a mask over the labels of the entry). The
+/// cache also keeps the order of the series of the previous scrape: a scrape that repeats it finds each line by
+/// position with one comparison, without lexing or hashing the line (see [`SeriesCache::predicted`]).
 #[derive(Default)]
 pub struct SeriesCache {
     /// Current scrape iteration.
@@ -34,14 +170,27 @@ pub struct SeriesCache {
     pub successful_count: usize,
     entries: Vec<CacheEntry>,
     free: Vec<u32>,
-    series: FxHashMap<Box<[u8]>, u32>,
+    series: FxHashMap<u64, u32>,
+    series_count: usize,
     dropped_series: FxHashMap<Box<[u8]>, u64>,
     series_cur: FxHashMap<SeriesRef, u32>,
     series_prev: FxHashMap<SeriesRef, u32>,
+    /// Entry ids in the order of the sample lines of the previous scrape, and of the current one.
+    order_prev: Vec<u32>,
+    order_cur: Vec<u32>,
+    /// The position in `order_prev` of the entry that the next sample line is expected to be.
+    order_next: usize,
+    /// The parser of the scrape that `order_cur` is for.
+    order_kind: Option<textparse::ParserKind>,
 }
 
 /// The index of a cache entry.
 pub type EntryId = u32;
+
+#[inline]
+fn key_hash(met: &[u8]) -> u64 {
+    model::labels::xxhash::sum64(met)
+}
 
 impl SeriesCache {
     /// The entry for an id.
@@ -54,25 +203,131 @@ impl SeriesCache {
         &mut self.entries[id as usize]
     }
 
+    /// The id of the mapped entry for the series text.
+    #[inline]
+    fn find(&self, met: &[u8]) -> Option<EntryId> {
+        let mut id = *self.series.get(&key_hash(met))?;
+        while id != NO_ENTRY {
+            let e = &self.entries[id as usize];
+            if e.key_is(met) {
+                return Some(id);
+            }
+            id = e.next;
+        }
+        None
+    }
+
+    /// Removes the mapped entry `id` from the series map; it stays allocated.
+    fn unmap(&mut self, id: EntryId) {
+        let h = self.entries[id as usize].hash;
+        let next = self.entries[id as usize].next;
+        let head = self.series.get_mut(&h).expect("mapped cache entry");
+        if *head == id {
+            if next == NO_ENTRY {
+                self.series.remove(&h);
+            } else {
+                *head = next;
+            }
+        } else {
+            let mut p = *head;
+            while self.entries[p as usize].next != id {
+                p = self.entries[p as usize].next;
+            }
+            self.entries[p as usize].next = next;
+        }
+        let e = &mut self.entries[id as usize];
+        e.next = NO_ENTRY;
+        e.mapped = false;
+        self.series_count -= 1;
+    }
+
     /// Go `get`: the entry for the series text, whether it was found, and whether it was already seen in this
     /// scrape. Marks the entry as seen.
     #[inline]
     pub fn get(&mut self, met: &[u8]) -> (Option<EntryId>, bool) {
-        match self.series.get(met) {
+        match self.find(met) {
             None => (None, false),
-            Some(&id) => {
-                let iter = self.iter;
-                let e = &mut self.entries[id as usize];
-                let already = e.last_iter == iter;
-                e.last_iter = iter;
-                (Some(id), already)
-            }
+            Some(id) => self.touch(id),
+        }
+    }
+
+    #[inline]
+    fn touch(&mut self, id: EntryId) -> (Option<EntryId>, bool) {
+        let iter = self.iter;
+        let e = &mut self.entries[id as usize];
+        let already = e.last_iter == iter;
+        e.last_iter = iter;
+        (Some(id), already)
+    }
+
+    /// The entry that the next sample line is expected to be (the next one in the order of the previous scrape).
+    /// A parser that finds its series text next (see [`CacheEntry::key_is`]) need not lex it; the caller then
+    /// uses [`SeriesCache::get_predicted`] in place of [`SeriesCache::get`].
+    #[inline]
+    pub fn predicted(&self) -> Option<EntryId> {
+        let id = *self.order_prev.get(self.order_next)?;
+        self.entries[id as usize].mapped.then_some(id)
+    }
+
+    /// Starts the predictions of a scrape parsed by a parser of `kind`; the order of a scrape in another format
+    /// is not used (the same text may lex differently).
+    pub fn begin_order(&mut self, kind: textparse::ParserKind) {
+        if self.order_kind != Some(kind) {
+            self.order_prev.clear();
+            self.order_kind = Some(kind);
+        }
+        self.order_cur.clear();
+        self.order_next = 0;
+    }
+
+    /// [`SeriesCache::get`] for the text of the predicted entry `id`: the same result, without hashing.
+    #[inline]
+    pub fn get_predicted(&mut self, id: EntryId) -> (Option<EntryId>, bool) {
+        debug_assert!(self.entries[id as usize].mapped);
+        self.touch(id)
+    }
+
+    /// Records that the current sample line was the series of entry `id`, for the predictions of this scrape and
+    /// of the next one.
+    #[inline]
+    pub fn note_order(&mut self, id: EntryId) {
+        let e = &mut self.entries[id as usize];
+        let prev = e.pos as usize;
+        e.pos = self.order_cur.len() as u32;
+        self.order_cur.push(id);
+        // Continue after this entry's place in the previous order: series added or removed in between shift the
+        // positions.
+        if self.order_prev.get(prev) == Some(&id) {
+            self.order_next = prev + 1;
         }
     }
 
     /// Go `addRef`.
     pub fn add_ref(&mut self, met: &[u8], r: SeriesRef, lset: Labels) -> EntryId {
-        let e = CacheEntry { ref_: r, last_iter: self.iter, lset, st: None };
+        if let Some(old) = self.find(met) {
+            self.unmap(old);
+            self.release(old);
+        }
+        let h = key_hash(met);
+        let next = self.series.get(&h).copied().unwrap_or(NO_ENTRY);
+        let (key, mask) = match text_mask(&lset, met) {
+            Some(mask) => (Box::default(), mask),
+            None => (met.into(), 0),
+        };
+        let e = CacheEntry {
+            ref_: r,
+            last_iter: self.iter,
+            lset,
+            st: None,
+            key,
+            mask,
+            hash: h,
+            key_len: met.len() as u32,
+            next,
+            pos: NO_ENTRY,
+            mapped: true,
+        };
+        debug_assert!(e.key_is(met));
         let id = match self.free.pop() {
             Some(id) => {
                 self.entries[id as usize] = e;
@@ -83,9 +338,8 @@ impl SeriesCache {
                 (self.entries.len() - 1) as u32
             }
         };
-        if let Some(old) = self.series.insert(met.into(), id) {
-            self.release(old);
-        }
+        self.series.insert(h, id);
+        self.series_count += 1;
         id
     }
 
@@ -94,7 +348,11 @@ impl SeriesCache {
         if self.series_prev.values().any(|&x| x == id) || self.series_cur.values().any(|&x| x == id) {
             return;
         }
-        self.entries[id as usize] = CacheEntry::default();
+        self.free_entry(id);
+    }
+
+    fn free_entry(&mut self, id: EntryId) {
+        self.entries[id as usize] = CacheEntry { next: NO_ENTRY, pos: NO_ENTRY, ..Default::default() };
         self.free.push(id);
     }
 
@@ -102,6 +360,12 @@ impl SeriesCache {
     pub fn add_dropped(&mut self, met: &[u8]) {
         let iter = self.iter;
         self.dropped_series.insert(met.into(), iter);
+    }
+
+    /// Whether some series texts are dropped.
+    #[inline]
+    pub fn has_dropped(&self) -> bool {
+        !self.dropped_series.is_empty()
     }
 
     /// Go `getDropped`.
@@ -153,7 +417,7 @@ impl SeriesCache {
 
     /// The number of cached series (Go `len(c.series)`).
     pub fn series_len(&self) -> usize {
-        self.series.len()
+        self.series_count
     }
     /// The number of dropped series (Go `len(c.droppedSeries)`).
     pub fn dropped_len(&self) -> usize {
@@ -161,11 +425,11 @@ impl SeriesCache {
     }
     /// Whether the series text is cached.
     pub fn has_series(&self, met: &[u8]) -> bool {
-        self.series.contains_key(met)
+        self.find(met).is_some()
     }
     /// The entry of a series text without touching it.
     pub fn peek(&self, met: &[u8]) -> Option<&CacheEntry> {
-        self.series.get(met).map(|&id| &self.entries[id as usize])
+        self.find(met).map(|id| &self.entries[id as usize])
     }
     /// The references tracked in the current scrape (Go `c.seriesCur` keys).
     pub fn series_cur_refs(&self) -> Vec<SeriesRef> {
@@ -186,14 +450,13 @@ impl SeriesCache {
     /// Calls `f` with every cached series entry (Go `for _, v := range c.series`), for tests that change
     /// references.
     pub fn for_each_series_entry_mut(&mut self, mut f: impl FnMut(&mut CacheEntry)) {
-        let entries = &mut self.entries;
-        for &id in self.series.values() {
-            f(&mut entries[id as usize]);
+        for e in self.entries.iter_mut().filter(|e| e.mapped) {
+            f(e);
         }
     }
     /// All cached series texts and their entries.
-    pub fn series_iter(&self) -> impl Iterator<Item = (&[u8], &CacheEntry)> {
-        self.series.iter().map(|(k, &id)| (&**k, &self.entries[id as usize]))
+    pub fn series_iter(&self) -> impl Iterator<Item = (Vec<u8>, &CacheEntry)> {
+        self.entries.iter().filter(|e| e.mapped).map(|e| (e.key(), e))
     }
 }
 
@@ -258,7 +521,7 @@ impl ScrapeCache {
 
     /// Go `iterDone`.
     pub fn iter_done(&self, s: &mut SeriesCache, mut flush_cache: bool) {
-        let count = s.series.len() + s.dropped_series.len() + self.meta().metadata.len();
+        let count = s.series_count + s.dropped_series.len() + self.meta().metadata.len();
         if flush_cache {
             s.successful_count = count;
         } else if count > s.successful_count * 2 + 1000 {
@@ -268,14 +531,15 @@ impl ScrapeCache {
         }
         if flush_cache {
             let iter = s.iter;
-            let mut freed = Vec::new();
-            s.series.retain(|_, id| {
-                let keep = s.entries[*id as usize].last_iter == iter;
-                if !keep {
-                    freed.push(*id);
-                }
-                keep
-            });
+            let freed: Vec<u32> = (0..s.entries.len() as u32)
+                .filter(|&id| {
+                    let e = &s.entries[id as usize];
+                    e.mapped && e.last_iter != iter
+                })
+                .collect();
+            for &id in &freed {
+                s.unmap(id);
+            }
             s.dropped_series.retain(|_, i| *i == iter);
             // Entries still tracked as current stay alive until the swap below drops them from tracking.
             let mut m = self.meta();
@@ -295,12 +559,14 @@ impl ScrapeCache {
                 if tracked.contains(&id) {
                     continue;
                 }
-                s.entries[id as usize] = CacheEntry::default();
-                s.free.push(id);
+                s.free_entry(id);
             }
         }
         std::mem::swap(&mut s.series_prev, &mut s.series_cur);
         s.series_cur.clear();
+        std::mem::swap(&mut s.order_prev, &mut s.order_cur);
+        s.order_cur.clear();
+        s.order_next = 0;
         s.iter += 1;
     }
 
